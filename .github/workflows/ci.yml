@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run tests
+        run: tests/run.sh
+        env:
+          PYTHON: python
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install ruff
+        run: python -m pip install ruff==0.17.5
+      - name: ruff check
+        run: ruff check .
+      - name: ruff format --check
+        run: ruff format --check .
+      - name: shellcheck
+        run: shellcheck install.sh tests/run.sh scripts/scrub-check.sh
+      - name: compileall
+        run: |
+          python -m compileall -q bin tests
+          for f in bin/wake bin/wake-hook bin/wake-inbox-io bin/wake-mcp bin/wake-run; do
+            python -m py_compile "$f"
+          done
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Scan tracked files and history
+        run: scripts/scrub-check.sh --history
