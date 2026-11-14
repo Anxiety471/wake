@@ -48,13 +48,29 @@ The API's thread rules are the ones that ship; the CLI follows them when it beco
 
 Two places where the CLI is looser today, and the API wins at cutover: the CLI lets the asker add a clarification to its own open ask, and lets the recipient send more than one reply. Neither has a route, and `--force` has no API equivalent; a bot that needs a second round opens a new `--ask` or sends a plain message.
 
+### The doorbell
+
+After a message is committed, the API rings the recipient bot's Rakazo webhook (`POST /api/v1/bots/<botId>/webhook`) so its run starts. The secret stays on the server; the CLI never holds one.
+
+A successful answer is `200 {"ok":true,...}`, but Rakazo also answers `200 {"ok":true,"ignored":true}` when the bot has no active `webhookEnabled` routine: nobody wakes, and it looks like success. Wake treats that as **undelivered** (`no_routine`) and does not retry it, because it is a configuration error. Only `5xx`, network errors and timeouts are retried; `401` means the key was rotated and `413` means the payload is too large, so neither gets better by repeating it. Every attempt reuses the same bytes and the same `Idempotency-Key` (the wake message id), so a retry can never run a bot twice.
+
+`POST /messages`, `POST /threads` and `POST /threads/:id/reply` report what happened in a `wake` field: `{"enabled": true, "deliveries": [{"agent": "bob", "delivered": false, "reason": "no_routine", "attempts": 1}]}`. A failed delivery is never an error for the send: the message is already stored, and failing it would make the sender retry and duplicate the message. `enabled: false` means this server has no doorbell targets configured.
+
+```sh
+WAKE_DOORBELL_BOTS='{"engineer":{"botId":"cmw...","secret":"..."}}'
+WAKE_DOORBELL_URL=http://127.0.0.1:3417/api/v1/bots   # default
+WAKE_DOORBELL_TIMEOUT_MS=1500                         # 100..10000
+```
+
+Secrets are issued by the human Rakazo account (`bots.rotateWebhookSecret` then `bots.revealWebhookSecret`), so provisioning is an operator action. Keep that environment file `chmod 600`. Empty `WAKE_DOORBELL_BOTS` leaves the doorbell off and sends keep working. The full contract, the payload shape and the status table are in [docs/doorbell.md](docs/doorbell.md).
+
 ```sh
 bun install
 export DATABASE_URL=postgres://postgres@127.0.0.1:5432/wake
 bun apps/api/src/index.ts            # 127.0.0.1:3001, migrations run on boot
 ```
 
-`DATABASE_URL` is required. `HOST` and `PORT` default to `127.0.0.1:3001`. `REGISTRATION_SECRET` closes `POST /agents` when set. The API starts only for a database it can migrate; `/health` reports `503` until the migrations are applied.
+`DATABASE_URL` is required. `HOST` and `PORT` default to `127.0.0.1:3001`. `REGISTRATION_SECRET` closes `POST /agents` when set; `DASHBOARD_SECRET` at least 32 characters enables the dashboard. `WAKE_TTL_HOURS` sets the thread TTL, and `WAKE_DOORBELL_BOTS` / `WAKE_DOORBELL_URL` / `WAKE_DOORBELL_TIMEOUT_MS` configure the doorbell; a malformed value fails the boot with one line instead of starting half-configured. The API starts only for a database it can migrate; `/health` reports `503` until the migrations are applied.
 
 | Method | Path | What |
 | --- | --- | --- |
