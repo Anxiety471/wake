@@ -419,6 +419,29 @@ class DirectoryTests(WakeTestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("no bot registry", r.stderr)
 
+    def sync(self, env=None):
+        log = os.path.join(self.tmp, "hostops.log")
+        hostops = os.path.join(self.fakebin, "hostops")
+        write_exe(hostops, f"""
+            #!/bin/sh
+            printf '%s\\n' "$1" >> {log}
+            cat > /dev/null
+        """)
+        r = self.wake("--sync", env=dict({"WAKE_HOSTOPS": hostops}, **(env or {})))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("synced to host", r.stdout)
+        return slurp(log)
+
+    def test_sync_leaves_group_alone_by_default(self):
+        cmd = self.sync()
+        self.assertIn("tee", cmd)
+        self.assertIn("chmod 664", cmd)
+        self.assertNotIn("chgrp", cmd)
+
+    def test_sync_sets_configured_group(self):
+        cmd = self.sync({"WAKE_REGISTRY_GROUP": "bot team"})
+        self.assertIn("sudo chgrp 'bot team' ", cmd)
+
 
 class HelperTests(WakeTestCase):
     def test_wake_hook_reports_claude_code_failure(self):

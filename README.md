@@ -73,7 +73,7 @@ Every setting is an environment variable; the same names can be set in `~/.confi
 | `WAKE_HOSTOPS` | *(empty: this is the host)* | guest mode: executable that runs `$1` as a shell command on the host, stdin passed through |
 | `WAKE_KEY_HELPER` | `wake-webhook-key` | host command that mints keys (see protocol doc) |
 | `WAKE_GROUP` | `wake` | group allowed to read keys; used by the `sg` fallback |
-| `WAKE_REGISTRY_GROUP` | `sudo` | group set on the host registry copy by `--sync` |
+| `WAKE_REGISTRY_GROUP` | *(empty: unchanged)* | if set, `--sync` gives the host registry copy this group |
 | `WAKE_RATE_DIR` | `/tmp` | holds the per-user rate log `wake-rate-<uid>.json` |
 | `WAKE_BOT` | `coordinator` | default bot for `wake-hook`, `wake-run` and the legacy form |
 | `WAKE_SOURCE` | *(derived)* | sender label `kind:name`, e.g. `bot:engineer`, `skill:agent` |

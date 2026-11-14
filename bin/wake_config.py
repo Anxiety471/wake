@@ -12,7 +12,7 @@ DEFAULTS = {
     "WAKE_HOSTOPS": "",                       # executable: runs its one argument as a shell command on the host, stdin passed through
     "WAKE_KEY_HELPER": "wake-webhook-key",    # creates/rotates webhook keys: has-key ID | ID [--rotate] | enable-bot ID
     "WAKE_GROUP": "wake",                     # group that may read key files; used by the `sg` fallback
-    "WAKE_REGISTRY_GROUP": "sudo",            # group given to the host copy of the registry by --sync
+    "WAKE_REGISTRY_GROUP": "",                # group given to the host copy of the registry by --sync; empty = leave the group alone
     "WAKE_RATE_DIR": "/tmp",                  # where the per-uid rate log wake-rate-<uid>.json is kept
     "WAKE_BOT": "coordinator",                # default bot for wake-hook, wake-run and the legacy `wake <source> <event>` form
 }
