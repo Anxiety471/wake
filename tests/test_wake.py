@@ -143,6 +143,7 @@ class SendTests(WakeTestCase):
         self.assertEqual(req["bot"], "bot-engineer-0002")
         self.assertEqual(req["headers"]["Authorization"], "Bearer test-key")
         self.assertRegex(req["headers"]["Idempotency-Key"], r"^[0-9a-f]{32}$")
+        self.assertEqual(req["headers"]["User-Agent"], "wake-cli/" + wake_config.VERSION)
         body = req["json"]
         self.assertEqual((body["source"], body["event"], body["level"], body["depth"]), ("human:tester", "message", "info", 0))
         self.assertTrue(body["detail"].startswith("PR #42 is ready | host="), body["detail"])
@@ -419,6 +420,11 @@ class DirectoryTests(WakeTestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("no bot registry", r.stderr)
 
+    def test_version_needs_no_registry(self):
+        r = self.wake("--version", env={"WAKE_REGISTRY": os.path.join(self.tmp, "nope.tsv")})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "wake " + wake_config.VERSION)
+
     def sync(self, env=None):
         log = os.path.join(self.tmp, "hostops.log")
         hostops = os.path.join(self.fakebin, "hostops")
@@ -470,7 +476,7 @@ class HelperTests(WakeTestCase):
         ]
         r = self.run_bin("wake-mcp", stdin="".join(json.dumps(m) + "\n" for m in msgs))
         out = [json.loads(x) for x in r.stdout.splitlines()]
-        self.assertEqual(out[0]["result"]["serverInfo"]["name"], "wake")
+        self.assertEqual(out[0]["result"]["serverInfo"], {"name": "wake", "version": wake_config.VERSION})
         self.assertEqual([t["name"] for t in out[1]["result"]["tools"]], ["wake_bot", "wake_list"])
         self.assertFalse(out[2]["result"]["isError"], out[2])
         self.assertEqual(self.hook.requests[0]["json"]["source"], "harness:mcp")

@@ -88,6 +88,7 @@ wake --list                         # every bot: alias, name, kind, role
 wake --who dns nginx                # bots whose role matches
 wake --info engineer                # id, kind, role and how to reach it
 wake --me                           # which bot this shell is (cwd .../bots/<id>), and the sender label
+wake --version                      # e.g. "wake 0.1.0"; the same version is sent as User-Agent wake-cli/<version>
 
 wake engineer "PR #42 is ready"     # one-way notify
 wake                                # interactive picker (on a TTY)
@@ -172,6 +173,10 @@ tests/run.sh
 ```
 
 Offline: a fake webhook server on 127.0.0.1 records every request; state, keys, registry and rate log live in a temporary directory.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md). The version is `VERSION` in `bin/wake_config.py`.
 
 ## License
 

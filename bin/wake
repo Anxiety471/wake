@@ -288,7 +288,7 @@ def send(b, source, event, level, detail, ref, force=False, quiet=False):
     idem = hashlib.sha256(f"{b['id']}|{source}|{event}|{detail}|{int(time.time() // 600)}".encode()).hexdigest()[:32]
     req = urllib.request.Request(f"{BASE}/{b['id']}/webhook", data=json.dumps(payload).encode(), method="POST",
                                  headers={"Authorization": "Bearer " + key, "Content-Type": "application/json",
-                                          "Idempotency-Key": idem, "User-Agent": "wake-cli/2.1"})
+                                          "Idempotency-Key": idem, "User-Agent": "wake-cli/" + wake_config.VERSION})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             body = r.read().decode()
@@ -381,6 +381,7 @@ def reply(tid, text, source, notify, force):
 
 
 p = argparse.ArgumentParser(description="Wake or ask a bot. wake [bot] [message...]. No args = interactive picker.")
+p.add_argument("--version", action="version", version="wake " + wake_config.VERSION)
 p.add_argument("target", nargs="?")
 p.add_argument("message", nargs="*")
 p.add_argument("--list", action="store_true", help="all bots with role")

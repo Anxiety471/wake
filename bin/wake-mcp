@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # desc: tiny MCP stdio server exposing wake as tools (wake_bot, wake_list) so an agent can wake a bot mid-task. Not registered anywhere by default.
-import json, subprocess, sys
+import json, os, subprocess, sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import wake_config  # noqa: E402
 
 TOOLS = [
     {"name": "wake_bot",
@@ -41,7 +44,7 @@ for line in sys.stdin:
     if i is None:
         continue
     if method == "initialize":
-        reply(i, {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": "wake", "version": "1"}})
+        reply(i, {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": "wake", "version": wake_config.VERSION}})
     elif method == "tools/list":
         reply(i, {"tools": TOOLS})
     elif method == "tools/call":
