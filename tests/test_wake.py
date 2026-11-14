@@ -433,6 +433,29 @@ class ThreadTests(WakeTestCase):
         self.assertIn(f"{tid}.jsonl", slurp(log))
 
 
+    def test_unreadable_store_is_not_reported_as_a_missing_thread(self):
+        hostops = os.path.join(self.fakebin, "hostops-denied")
+        write_exe(
+            hostops,
+            """
+            #!/bin/sh
+            echo "wake-gate: refused (not a wake-store op)" >&2
+            exit 1
+        """,
+        )
+        env = {"WAKE_HOSTOPS": hostops}
+        r = self.wake("--thread", "0101-beef", env=env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("cannot read the thread store", r.stderr)
+        r = self.wake("--reply", "0101-beef", "x", env=dict(env, WAKE_SOURCE="bot:engineer"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("cannot read the thread store", r.stderr)
+        self.assertNotIn("never opened", r.stderr)
+        r = self.wake("--inbox", env=env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("cannot read the thread store", r.stderr)
+
+
 class DirectoryTests(WakeTestCase):
     def test_list_who_info_me(self):
         r = self.wake("--list")
@@ -452,6 +475,14 @@ class DirectoryTests(WakeTestCase):
         r = subprocess.run([os.path.join(BIN, "wake"), "--me"], env=self.env, cwd=d, capture_output=True, text=True)
         self.assertIn("this shell runs inside ops", r.stdout)
         self.assertIn("as       bot:ops", r.stdout)
+
+    def test_self_file_names_the_bot_from_any_cwd(self):
+        with open(os.path.join(self.cfg, "self"), "w") as f:
+            f.write("ops\n")
+        r = self.wake("--me")
+        self.assertIn("this shell runs inside ops", r.stdout)
+        self.assertIn("as       bot:ops", r.stdout)
+        self.assertIn("bot:ops", r.stdout)
 
     def test_missing_registry_is_a_clear_error(self):
         r = self.wake("--list", env={"WAKE_REGISTRY": os.path.join(self.tmp, "nope.tsv")})
@@ -488,6 +519,60 @@ class DirectoryTests(WakeTestCase):
     def test_sync_sets_configured_group(self):
         cmd = self.sync({"WAKE_REGISTRY_GROUP": "bot team"})
         self.assertIn("sudo chgrp 'bot team' ", cmd)
+
+
+class BulkTests(WakeTestCase):
+    def test_update_reports_key_state_for_every_bot(self):
+        self.put_key("bot-engineer-0002")
+        r = self.wake("--update")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("ALIAS", r.stdout)
+        self.assertRegex(r.stdout, r"engineer\s+open\s+ok")
+        self.assertRegex(r.stdout, r"coordinator\s+open\s+none")
+        self.assertRegex(r.stdout, r"vault\s+private\s+none")
+        self.assertEqual(self.hook.requests, [])
+
+    def test_update_ping_wakes_only_bots_with_readable_keys(self):
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-ops-0004")
+        r = self.wake("--update", "--ping", env={"WAKE_SOURCE": "bot:coordinator"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(sorted(q["bot"] for q in self.hook.requests), ["bot-engineer-0002", "bot-ops-0004"])
+        self.assertEqual({q["json"]["event"] for q in self.hook.requests}, {"update-ping"})
+        self.assertRegex(r.stdout, r"engineer\s+open\s+ok\s+sent")
+
+    def test_ping_without_update_is_refused(self):
+        r = self.wake("--ping")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("only makes sense with --update", r.stderr)
+
+    def test_all_messages_open_bots_except_self(self):
+        for bid in (
+            "bot-coordinator-0001",
+            "bot-engineer-0002",
+            "bot-reviewer-0003",
+            "bot-ops-0004",
+            "bot-docs-0005",
+            "bot-research-0006",
+            "bot-notes-0007",
+        ):
+            self.put_key(bid)
+        r = self.wake("--all", "maintenance in 10", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = sorted(q["bot"] for q in self.hook.requests)
+        self.assertNotIn("bot-engineer-0002", got)
+        self.assertNotIn("bot-vault-0008", got)
+        self.assertEqual(len(got), 6)
+        self.assertEqual({q["json"]["detail"].split(" | ")[0] for q in self.hook.requests}, {"maintenance in 10"})
+        self.assertIn("6 sent, 0 failed", r.stdout)
+
+    def test_all_reports_failures(self):
+        self.put_key("bot-ops-0004")
+        self.hook.status["bot-coordinator-0001"] = 500
+        r = self.wake("--all", "hi", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("failed coordinator", r.stdout)
+        self.assertIn("1 sent", r.stdout)
 
 
 class HelperTests(WakeTestCase):
