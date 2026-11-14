@@ -1,0 +1,5 @@
+# Fixed strings that scripts/scrub-check.sh may ignore. A hit line containing any of them is skipped.
+# Only list known fakes, never a real value. Lines starting with # are comments.
+
+# fake key printed by the fake key helper in tests/test_wake.py
+Bearer minted-bot-engineer-0002
