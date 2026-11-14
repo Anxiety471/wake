@@ -9,3 +9,8 @@ config.env
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# tool caches (uv run creates uv.lock and .venv here)
+.venv/
+.ruff_cache/
+uv.lock
