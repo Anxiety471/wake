@@ -1,0 +1,8 @@
+coordinator	bot-coordinator-0001	Coordinator Bot	open	plan, priority, routing, approval, merge/deploy, status of any work
+engineer	bot-engineer-0002	Engineer Bot	open	implement or fix code, branch, PR, tests, CI
+reviewer	bot-reviewer-0003	Reviewer Bot	open	adversarial review of a diff, PR, plan or design
+ops	bot-ops-0004	Ops Bot	open	server, systemd, nginx, backups, disk, cron, dns, ssl
+docs	bot-docs-0005	Docs Bot	open	reports, user guides, PDF/DOCX
+research	bot-research-0006	Research Bot	open	research, compare sources, evaluate tools
+notes	bot-notes-0007	Notes Bot	open	what was decided before, save or find a dated fact
+vault	bot-vault-0008	Vault Bot	private	private records; never route real material from a coding task

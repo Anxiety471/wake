@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+# desc: host/guest bridge for the agent-session wake inbox. `wake-inbox-io register <hash> [json]` makes the inbox and its active marker; `wake-inbox-io read <inbox>` prints the file; `wake-inbox-io beat <hash> [json]` refreshes the marker. Uses the local path when $WAKE_STATE_DIR/inbox is writable (or WAKE_HOSTOPS is unset), otherwise the host over WAKE_HOSTOPS.
+import os, subprocess, sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import wake_config  # noqa: E402
+
+CFG = wake_config.load()
+BASE = CFG["WAKE_STATE_DIR"] + "/inbox"
+ACTIVE = BASE + "/active"
+HOSTOPS = CFG["WAKE_HOSTOPS"]
+
+
+def local_ok():
+    return os.path.isdir(BASE) and os.access(BASE, os.W_OK)
+
+
+def sh(cmd, data=None):
+    if local_ok() or not HOSTOPS:
+        return subprocess.run(["bash", "-c", cmd], input=data, capture_output=True, text=True)
+    return subprocess.run([HOSTOPS, cmd], input=data, capture_output=True, text=True)
+
+
+def main():
+    if len(sys.argv) < 3:
+        sys.exit("usage: wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]")
+    op, key = sys.argv[1], sys.argv[2]
+    meta = sys.argv[3] if len(sys.argv) > 3 else "{}"
+    if op == "register":
+        box = f"{BASE}/{key}.jsonl"
+        marker = f"{ACTIVE}/{key}.json"
+        sh(
+            "mkdir -p %s 2>/dev/null; find %s -name '*.json' -mmin +1440 -delete 2>/dev/null; "
+            "touch %s %s; chmod 666 %s %s 2>/dev/null" % (ACTIVE, ACTIVE, box, marker, box, marker)
+        )
+        sh("cat > %s" % marker, meta)
+        print(box)
+        return
+    if op == "read":
+        sys.stdout.write(sh("cat %s 2>/dev/null" % key).stdout)
+        return
+    if op == "beat":
+        sh("cat > %s/%s.json" % (ACTIVE, key), meta)
+        return
+    sys.exit("unknown op " + op)
+
+
+main()
