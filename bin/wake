@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # desc: wake any bot over its webhook; ask it a question and read the answer. `wake` = picker; `wake ops "check disk"`; `wake --info engineer`; `wake --ask engineer "why does CI fail" --wait 180`; `wake --reply <id> "..."`; `wake --inbox`; `wake --list`; `wake --who dns`. See wake --help
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -369,6 +370,41 @@ def ensure_key(b, rotate=False):
 
 MAX_DEPTH = 2  # a wake started by a wake started by a wake is refused
 HOURLY_CAP = 30  # per target bot, per user
+REPLY_TTL_H = float(os.environ.get("WAKE_TTL_HOURS", "24"))  # older threads refuse answers (0 = off)
+
+
+def audit_file():
+    return os.path.join(CFG["WAKE_RATE_DIR"], f"wake-audit-{os.getuid()}.log")
+
+
+def audit(cmd, source, text, tid="", bot="", rc=0):
+    """One line per ask, reply and refusal, so a refusal leaves a trace instead of looking like a delivered answer."""
+    try:
+        with open(audit_file(), "a") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        "cmd": cmd,
+                        "source": source,
+                        "bot": bot,
+                        "thread": tid,
+                        "rc": rc,
+                        "text": text[:200],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except OSError:
+        pass
+
+
+def age_hours(ts):
+    try:
+        return (time.time() - datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S%z").timestamp()) / 3600
+    except (TypeError, ValueError):
+        return None
 
 
 def rate_file():
@@ -474,6 +510,7 @@ def ask(b, text, wait, level, source, force, no_send=False):
         send(b, source, "request", level, detail, "thread:" + tid, force)
     else:
         print(f"[dry-run] would ask {b['alias']}: {detail}")
+    audit("ask", source, text, tid, b["alias"], 99 if no_send else 0)
     print(f"thread {tid} opened with {b['alias']}" + (f"; waiting up to {wait}s" if wait else ""))
     if not wait:
         return 0
@@ -500,6 +537,7 @@ def reply(tid, text, source, notify, force):
             f"check WAKE_HOSTOPS (guest) and that the directory is readable."
         )
     if not recs:
+        audit("reply-refused", source, text, tid, rc=4)
         sys.exit(
             f"no thread {tid}: it was never opened, so there is nothing to answer. "
             f'A question thread is created by: wake --ask <bot> "<question>" (checked {THREADS}). '
@@ -508,6 +546,21 @@ def reply(tid, text, source, notify, force):
     head = recs[0]
     owner = head.get("owner") or head.get("from", "")
     reply_to = head.get("reply_to") or ("bot:" + head["to"] if head.get("to") else "")
+    answers = [r for r in recs if r.get("kind") == "reply"]
+    if REPLY_TTL_H and not force:
+        ah = age_hours(head.get("ts", ""))
+        if ah is not None and ah > REPLY_TTL_H:
+            audit("reply-refused", source, text, tid, reply_to, 5)
+            sys.exit(
+                f"thread {tid} is {ah:.0f}h old (TTL {REPLY_TTL_H:g}h): the asker has moved on, so this answer would land unread. "
+                f'Open a new one with wake --ask <bot> "..." (--force to answer anyway)'
+            )
+    if answers and source == owner and not force:
+        audit("reply-refused", source, text, tid, reply_to, 6)
+        sys.exit(
+            f"thread {tid} already has its answer from {answers[0].get('from', '?')}: one round only, so A to B to A cannot ping-pong. "
+            f"Ask again with wake --ask ... if you need more (--force to override)"
+        )
     mine_inbox = os.environ.get("WAKE_INBOX", "")
     is_target = bool(reply_to) and source == reply_to
     is_owner = (
@@ -520,6 +573,7 @@ def reply(tid, text, source, notify, force):
             f"thread {tid} is owned by {owner} and replies go to {reply_to}; {source} is neither, so it cannot answer. Use --force to override."
         )
     thread_append(tid, {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "from": source, "kind": "reply", "text": text})
+    audit("reply", source, text, tid, reply_to, 0)
     print(f"replied on thread {tid} (owner {owner}, reply_to {reply_to}): {text}")
     ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     if is_target:
