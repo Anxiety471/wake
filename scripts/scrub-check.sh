@@ -1,8 +1,8 @@
 #!/bin/sh
 # Secret scan. Fails if tracked files contain an IP address other than 127.0.0.1, an email address,
 # or a token-like string (API keys, private keys, long bearer tokens, long hex or base64 blobs).
-# Strong patterns (keys, bearer tokens) are checked everywhere; the long-blob heuristic skips URLs, so a
-# documentation link does not fail the build.
+# Strong patterns (keys, bearer tokens) are checked everywhere; the long-blob heuristic skips URLs and
+# lockfiles, so a documentation link or a sha512 integrity hash does not fail the build.
 #   scripts/scrub-check.sh             # tracked files
 #   scripts/scrub-check.sh --history   # also every commit message and patch on every branch
 # A hit line that contains any fixed string listed in scripts/scrub-allow.txt is skipped (known fakes only).
@@ -30,17 +30,28 @@ allow_file=$(mktemp)
 trap 'rm -f "$hits_file" "$allow_file"' EXIT
 grep -v -e '^#' -e '^$' scripts/scrub-allow.txt > "$allow_file" || true
 
+LOCKFILES='(^|/)(bun\.lock|pnpm-lock\.yaml|package-lock\.json)$'
+
 files() {   # grep tracked files: files <grep options...>
     git ls-files -z | xargs -0 grep -nIH "$@" -- || true
 }
 
+files_noblob() {   # same, minus lockfiles: their sha512 integrity hashes match the blob heuristic
+    git ls-files -z | grep -zvE "$LOCKFILES" | xargs -0 grep -nIH "$@" -- || true
+}
+
+strip_locks() {   # drop the patch sections of lockfiles: their sha512 integrity hashes are not secrets
+    awk '/^diff --git / { skip = ($0 ~ /(bun\.lock|pnpm-lock\.yaml|package-lock\.json)/) } !skip { print }'
+}
+
+
 history_text() {   # every commit message and patch, without hashes or author lines
-    git log -p --all --format='%s%n%b'
+    git log -p --all --format='%s%n%b' | strip_locks
 }
 
 
 history_text_nomerges() {   # same, but not merge commits: their subject quotes two 40-hex commit ids
-    git log -p --all --no-merges --format='%s%n%b'
+    git log -p --all --no-merges --format='%s%n%b' | strip_locks
 }
 
 report() {   # report <label>: stdin = hit lines; runs inside pipelines, so results go to a file
@@ -53,7 +64,7 @@ report() {   # report <label>: stdin = hit lines; runs inside pipelines, so resu
 files -E "$IP" | sed 's/127\.0\.0\.1//g' | grep -E "$IP" | report "IP addresses other than 127.0.0.1 (tracked files)"
 files -E "$EMAIL" | report "email addresses (tracked files)"
 files -E "$STRONG" | report "token-like strings (tracked files)"
-files -E "$BLOB" | sed -E 's#https?://[^ )>"]+#URL#g' | grep -E "$BLOB" | report "long blobs outside URLs (tracked files)"
+files_noblob -E "$BLOB" | sed -E 's#https?://[^ )>"]+#URL#g' | grep -E "$BLOB" | report "long blobs outside URLs (tracked files)"
 if [ "$history" = 1 ]; then
     history_text | grep -nE "$IP" | sed 's/127\.0\.0\.1//g' | grep -E "$IP" | report "IP addresses other than 127.0.0.1 (history)"
     history_text | grep -nE "$EMAIL" | report "email addresses (history)"
