@@ -81,6 +81,7 @@ Every setting is an environment variable; the same names can be set in `~/.confi
 | `WAKE_SOURCE` | *(derived)* | sender label `kind:name`, e.g. `bot:engineer`, `skill:agent` |
 | `WAKE_INBOX` | *(none)* | this session's inbox file; set by a session extension |
 | `WAKE_DEPTH` | `0` | wake nesting depth; raised by `wake-run` for child commands |
+| `WAKE_TTL_HOURS` | `24` | a thread older than this refuses answers (`0` = never expire) |
 | `WAKE_HOOK` | *(off)* | `errors` or `all` turns `wake-hook` on |
 
 ## Usage
@@ -169,7 +170,14 @@ Bots that wake bots can loop. Two limits apply to every send:
 1. **Depth.** `WAKE_DEPTH` is sent as `depth` in every payload, and `wake-run` raises it by one for the command it runs. A wake at depth 2 or more is refused (`refused: wake depth 2 >= 2 (loop guard)`). Receivers should export the incoming `depth` as `WAKE_DEPTH` for the run it starts.
 2. **Rate.** At most 30 wakes per target bot per hour per Unix user, tracked in `$WAKE_RATE_DIR/wake-rate-<uid>.json`.
 
-`--force` skips both. Agents are told not to use it: if the guard trips, stop and tell a human.
+Depth alone does not stop an ask/reply ping-pong, because every reply is a fresh wake. Two thread rules close that:
+
+- **One round.** A thread takes one answer. Once it has a reply, the asker cannot answer back on the same thread (`one round only, so A to B to A cannot ping-pong`); ask again with `wake --ask` if there is more to say.
+- **TTL.** A thread older than `WAKE_TTL_HOURS` (default 24) refuses answers, because the asker has already moved on and the answer would land unread (`thread ... is 72h old`). `WAKE_TTL_HOURS=0` turns this off.
+
+`--force` skips all of these. Agents are told not to use it: if the guard trips, stop and tell a human.
+
+Every ask, reply and refusal is appended to `$WAKE_RATE_DIR/wake-audit-<uid>.log` as one JSON line (`cmd`, `source`, `bot`, `thread`, `rc`, `text`), so a refused or failed answer is visible instead of looking like a delivered one. The log never holds key material.
 
 Each request also carries an `Idempotency-Key` derived from bot, source, event, detail and a 10-minute bucket, so a retried identical wake can be deduplicated by the server.
 

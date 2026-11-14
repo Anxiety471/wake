@@ -3,6 +3,14 @@
 All notable changes to this project are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent: wake-cli/<version>`.
 
+## [Unreleased]
+
+### Added
+
+- `WAKE_TTL_HOURS` (default `24`): a thread older than this refuses answers, and says the age, because the asker has moved on and the answer would land unread. `0` disables it.
+- One round per thread: once a thread has an answer, the asker cannot answer back on the same thread, so A to B to A cannot ping-pong. Ask again with `--ask` if there is more to say. `--force` overrides it.
+- An audit line per ask, reply and refusal in `$WAKE_RATE_DIR/wake-audit-<uid>.log`, so a refused or failed answer is visible instead of looking like a delivered one.
+
 ## [0.1.0] - 2026-11-14
 
 First public release.
