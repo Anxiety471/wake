@@ -156,7 +156,11 @@ wake --sync                                                       # guest: copy 
 - **Private bots** (`kind=private` in the registry) are refused unless `--allow-private` is given, and are listed last in role matches.
 - **Thread ownership.** Only the owner or the target may append to a thread; thread ids with `/` or `..` are rejected.
 - **Payload context.** Every wake appends `host=<hostname> user=<user> cwd=<cwd>` to `detail` so the receiver can see where it came from. Do not use wake from a directory whose path is itself sensitive.
-- **Shared state.** Thread files are world-writable (`666`, directory `1777`) so every bot account on the host can append. Anyone with a shell on the host can read and forge thread lines; keep untrusted users off that host.
+- **Shared state.** The store is group-owned and group-writable: `$WAKE_STATE_DIR` and its `threads/` and
+  `inbox/` dirs are `root:wake 2770` (setgid, so new files inherit the `wake` group) and thread files are
+  `664`. Every bot account that appends is in the `wake` group. `wake` never changes these modes, so
+  an append cannot widen a store an admin tightened. Anyone in the group can read and forge thread
+  lines; keep untrusted users out of it.
 - **Host commands.** Thread and inbox I/O runs as shell commands on the host: through `WAKE_HOSTOPS` from a guest, or `bash -lc` (a login shell, so profiles are sourced) on the host itself. Every value placed in those commands is quoted with `shlex.quote`; thread ids and inbox hashes are validated first.
 - **Nothing secret in messages.** Messages go to bot runs and logs. Do not send keys, tokens or personal data.
 

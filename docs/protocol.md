@@ -42,7 +42,10 @@ Id format `MMDDHHMM-xxxx`. First line is the ask, later lines are replies:
 {"ts": "...", "from": "bot:engineer", "kind": "reply", "text": "flaky test"}
 ```
 
-The directory is created `1777` and files `666` (falls back to `sudo` if the directory cannot be created as the current user).
+The store is provisioned once on the host, never by `wake`: `threads/` and `inbox/` are `root:wake 2770`
+(setgid, so new files inherit the `wake` group) and thread files are group-writable (`664`). An append
+only appends: `wake` never re-applies a mode, so tightening the store sticks. Writing to a store the
+user cannot write exits 1 and names the expected mode.
 
 ## Session inbox: `$WAKE_STATE_DIR/inbox/`
 
