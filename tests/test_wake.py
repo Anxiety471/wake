@@ -454,15 +454,91 @@ class HelperTests(WakeTestCase):
 
     def test_wake_inbox_io_register_and_read(self):
         meta = json.dumps({"pid": 1})
-        r = self.run_bin("wake-inbox-io", "register", "abc", meta)
+        r = self.run_bin("wake-inbox-io", "register", "abc123", meta)
         self.assertEqual(r.returncode, 0, r.stderr)
         box = r.stdout.strip()
-        self.assertEqual(box, os.path.join(self.state, "inbox", "abc.jsonl"))
-        self.assertEqual(json.loads(slurp(os.path.join(self.state, "inbox", "active", "abc.json"))), {"pid": 1})
+        self.assertEqual(box, os.path.join(self.state, "inbox", "abc123.jsonl"))
+        self.assertEqual(json.loads(slurp(os.path.join(self.state, "inbox", "active", "abc123.json"))), {"pid": 1})
         with open(box, "a") as f:
             f.write('{"text": "hi"}\n')
         r = self.run_bin("wake-inbox-io", "read", box)
         self.assertEqual(r.stdout, '{"text": "hi"}\n')
+        r = self.run_bin("wake-inbox-io", "beat", "abc123", json.dumps({"pid": 2}))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(slurp(os.path.join(self.state, "inbox", "active", "abc123.json"))), {"pid": 2})
+
+
+class InboxIoHostileInputTests(WakeTestCase):
+    """wake-inbox-io builds shell commands that may run on the host; hostile arguments must be refused."""
+
+    def setUp(self):
+        super().setUp()
+        self.inbox = os.path.join(self.state, "inbox")
+        os.makedirs(os.path.join(self.inbox, "active"))
+        self.pwned = os.path.join(self.tmp, "pwned")
+        self.tmp_pwned_existed = os.path.exists("/tmp/pwned")
+        self.hostops_log = os.path.join(self.tmp, "hostops.log")
+        self.hostops = os.path.join(self.fakebin, "hostops")
+        write_exe(self.hostops, f"""
+            #!/bin/sh
+            echo "$1" >> {self.hostops_log}
+            exec bash -c "$1"
+        """)
+
+    def assert_refused(self, *args, env=None):
+        r = self.run_bin("wake-inbox-io", *args, env=env)
+        self.assertEqual(r.returncode, 1, (args, r.stdout, r.stderr))
+        self.assertIn("bad inbox", r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertFalse(os.path.exists(self.pwned), args)
+        if not self.tmp_pwned_existed:
+            self.assertFalse(os.path.exists("/tmp/pwned"), args)
+        self.assertFalse(os.path.exists(self.hostops_log), "a command reached the host bridge")
+
+    def hostile_hashes(self):
+        return ["x; touch /tmp/pwned", f"x; touch {self.pwned}", f"$(touch {self.pwned})", f"`touch {self.pwned}`",
+                "../../etc/passwd", "ABCDEF", "abc", "a" * 33, "abc123\n", "abc123 ", ""]
+
+    def hostile_paths(self):
+        box = os.path.join(self.inbox, "abc123.jsonl")
+        return ["x; touch /tmp/pwned", f"{box}; touch {self.pwned}", f"{box} $(touch {self.pwned})",
+                "/etc/passwd", os.path.join(self.inbox, "..", "..", "etc", "passwd"),
+                os.path.join(self.inbox, "active", "abc123.json"), os.path.join(self.inbox, "abc123.json"),
+                os.path.join(self.inbox, "x;y.jsonl"), "inbox/abc123.jsonl", self.inbox + "//abc123.jsonl"]
+
+    def test_register_and_beat_refuse_bad_hash(self):
+        for env in (None, {"WAKE_HOSTOPS": self.hostops}):
+            for h in self.hostile_hashes():
+                self.assert_refused("register", h, "{}", env=env)
+                self.assert_refused("beat", h, "{}", env=env)
+
+    def test_read_refuses_paths_outside_inbox_dir(self):
+        with open(os.path.join(self.inbox, "abc123.jsonl"), "w") as f:
+            f.write("secret\n")
+        for env in (None, {"WAKE_HOSTOPS": self.hostops}):
+            for p in self.hostile_paths():
+                self.assert_refused("read", p, env=env)
+
+    def test_meta_is_data_not_shell(self):
+        meta = f'{{"x": "$(touch {self.pwned})"}}; touch {self.pwned}'
+        r = self.run_bin("wake-inbox-io", "register", "abc123", meta)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(slurp(os.path.join(self.inbox, "active", "abc123.json")), meta)
+        self.assertFalse(os.path.exists(self.pwned))
+
+    def test_paths_with_spaces_are_quoted_in_guest_mode(self):
+        state = os.path.join(self.tmp, "state dir; touch " + self.pwned)
+        env = {"WAKE_STATE_DIR": state, "WAKE_HOSTOPS": self.hostops}
+        r = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        box = r.stdout.strip()
+        self.assertEqual(box, os.path.join(state, "inbox", "abc123.jsonl"))
+        self.assertTrue(os.path.exists(os.path.join(state, "inbox", "active", "abc123.json")))
+        self.assertTrue(os.path.exists(self.hostops_log))   # went through the host bridge
+        with open(box, "a") as f:
+            f.write("hi\n")
+        self.assertEqual(self.run_bin("wake-inbox-io", "read", box, env=env).stdout, "hi\n")
+        self.assertFalse(os.path.exists(self.pwned))
 
 
 class ConfigTests(unittest.TestCase):
