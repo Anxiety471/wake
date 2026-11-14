@@ -10,7 +10,8 @@ permissions:
 jobs:
   test:
     name: test (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # pinned, not ubuntu-latest: 3.9 has no build for the newest image (Ubuntu 26.04)
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
