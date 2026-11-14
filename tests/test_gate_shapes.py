@@ -88,6 +88,37 @@ def exercise(test):
     return slurp(log).splitlines()
 
 
+def exercise_inbox_io(test):
+    """Drive register, beat and read through a host stub that runs every command, and return
+    the commands that reached the host. The inbox directory is removed before each call so
+    `sh()` takes the host path: it prefers the local path whenever the directory is writable.
+    """
+    log = os.path.join(test.tmp, "hostops-inbox.log")
+    hostops = os.path.join(test.fakebin, "hostops-inbox")
+    write_exe(
+        hostops,
+        f"""
+        #!/bin/sh
+        printf '%s\\n' "$1" >> {log}
+        exec bash -c "$1"
+        """,
+    )
+    base = os.path.join(test.state, "inbox")
+    env = {"WAKE_HOSTOPS": hostops}
+    shutil.rmtree(base, ignore_errors=True)
+    r = test.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
+    test.assertEqual(r.returncode, 0, r.stderr)
+    box = r.stdout.strip()
+    test.assertEqual(box, os.path.join(base, "abc123.jsonl"))
+    shutil.rmtree(base, ignore_errors=True)
+    r = test.run_bin("wake-inbox-io", "beat", "abc123", '{"pid": 2}', env=env)
+    test.assertEqual(r.returncode, 0, r.stderr)
+    shutil.rmtree(base, ignore_errors=True)
+    r = test.run_bin("wake-inbox-io", "read", box, env=env)
+    test.assertEqual(r.returncode, 0, r.stderr)
+    return slurp(log).splitlines()
+
+
 class CommandShapeTests(WakeTestCase):
     def test_append_never_changes_modes_and_reads_silence_stderr(self):
         cmds = exercise(self)
@@ -127,6 +158,24 @@ class GateAllowListTests(WakeTestCase):
         gate = self.load_gate()
         refused = [c for c in exercise(self) if gate.match(c) is None]
         self.assertEqual(refused, [], "the gate would refuse these wake commands:\n" + "\n".join(refused))
+
+    def test_every_inbox_io_command_is_allow_listed(self):
+        gate = self.load_gate()
+        refused = [c for c in exercise_inbox_io(self) if gate.match(c) is None]
+        self.assertEqual(refused, [], "the gate would refuse these wake-inbox-io commands:\n" + "\n".join(refused))
+
+
+class InboxIoShapeTests(WakeTestCase):
+    def test_register_keeps_the_mode_tail_the_gate_matches_literally(self):
+        """The gate's inbox-register route is an exact literal that includes the chmod tail, so
+        dropping it refuses registration on a gated host instead of fixing anything. The store
+        itself is 2770/660 and the gate never runs this text: it creates both files at 660.
+        """
+        cmds = exercise_inbox_io(self)
+        reg = [c for c in cmds if "chmod 666" in c]
+        self.assertEqual(len(reg), 1, cmds)
+        self.assertRegex(reg[0], r"; chmod 666 \S+\.jsonl \S+\.json 2>/dev/null$")
+        self.assertTrue(reg[0].startswith("mkdir -p "), reg[0])
 
 
 class StagedGatePickTests(unittest.TestCase):
