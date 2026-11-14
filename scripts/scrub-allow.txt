@@ -3,3 +3,7 @@
 
 # fake key printed by the fake key helper in tests/test_wake.py
 Bearer minted-bot-engineer-0002
+
+# the owner's public identity (LICENSE, CODEOWNERS, commit author); other uses of these names still fail
+Joshua M. Valderrama
+@Anxiety471
