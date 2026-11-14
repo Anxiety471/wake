@@ -1,5 +1,6 @@
 import { buildApp, parseHost, parsePort } from './app.js';
-import { enforceRuntimeSecrets } from './options.js';
+import { parseDoorbell } from './doorbell.js';
+import { enforceConfig, enforceRuntimeSecrets } from './options.js';
 import { parseThreadTtlHours } from './threads.js';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -8,11 +9,26 @@ if (!databaseUrl) {
 }
 
 const port = parsePort(process.env.PORT);
+const doorbell = enforceConfig(() => parseDoorbell(process.env));
 const app = buildApp(databaseUrl, {
   logger: true,
   ...enforceRuntimeSecrets(process.env),
-  threadTtlHours: parseThreadTtlHours(process.env.WAKE_TTL_HOURS),
+  threadTtlHours: enforceConfig(() =>
+    parseThreadTtlHours(process.env.WAKE_TTL_HOURS),
+  ),
+  doorbell,
 });
+
+if (doorbell === null) {
+  app.log.warn(
+    'doorbell disabled: WAKE_DOORBELL_BOTS is empty, so no send wakes a bot',
+  );
+} else {
+  app.log.info(
+    { url: doorbell.url, targets: [...doorbell.targets.keys()] },
+    'doorbell ready',
+  );
+}
 
 await app.listen({ host: parseHost(process.env.HOST), port });
 
