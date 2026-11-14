@@ -1,0 +1,11 @@
+# secrets and local registries: never commit real keys or bot lists
+*.key
+bots.tsv
+config.env
+.env
+.env.*
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
