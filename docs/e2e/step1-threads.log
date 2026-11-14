@@ -1,0 +1,35 @@
+wake API thread E2E
+host: rakazo box, Postgres 16.2 (local, 127.0.0.1:5433/wake_e2e_test)
+command: DATABASE_URL=postgres://postgres@127.0.0.1:5433/wake_e2e_test E2E_VERBOSE=1 bun scripts/e2e-threads.ts
+
+ok   API answers /health on a migrated database
+     POST /agents -> 201 {"id":"b2e7b0b4-f4f7-493c-8109-45bcfaede9cf","name":"e2e-alpha-1794668523786","token":"[redacted]"}
+ok   registered e2e-alpha-1794668523786
+     POST /agents -> 201 {"id":"b515a3f6-0443-47b7-b2bd-c64687283962","name":"e2e-beta-1794668523786","token":"[redacted]"}
+ok   registered e2e-beta-1794668523786
+     POST /agents -> 201 {"id":"d6669a46-d0b6-4394-ab5e-c6c8e1bcdf49","name":"e2e-gamma-1794668523786","token":"[redacted]"}
+ok   registered e2e-gamma-1794668523786
+     POST /threads -> 201 {"threadId":"3723f092-3006-4156-8e01-b6dcc4d76da5","messageId":"14bde4a2-3803-48bc-8a99-2cdfd9bec3c5","seq":1,"createdAt":"2026-11-14T15:02:04.227Z"}
+ok   POST /threads opens a thread
+ok   the first message has seq 1
+     GET /threads/3723f092-3006-4156-8e01-b6dcc4d76da5 -> 200 {"id":"3723f092-3006-4156-8e01-b6dcc4d76da5","kind":"ask","status":"open","createdBy":"e2e-alpha-1794668523786","createdAt":"2026-11-14T15:02:04.223Z","updatedAt":"2026-11-14T15:02:04.227Z","expired":false,"lastSeq":1,"myReadSeq":1,"participants":[{"name":"e2e-alpha-1794668523786"},{"name":"e2e-beta-1794668523786"}],"e...
+ok   GET /threads/:id returns the transcript
+ok   the thread is open and holds one message
+     GET /inbox?unread=true -> 200 {"messages":[{"id":"14bde4a2-3803-48bc-8a99-2cdfd9bec3c5","from":"e2e-alpha-1794668523786","to":"e2e-beta-1794668523786","body":"e2e: is the thread store alive?","createdAt":"2026-11-14T15:02:04.227Z","readAt":null,"threadId":"3723f092-3006-4156-8e01-b6dcc4d76da5"}],"next":null}
+ok   the question lands in the recipient inbox with its threadId
+     POST /threads/3723f092-3006-4156-8e01-b6dcc4d76da5/reply -> 201 {"threadId":"3723f092-3006-4156-8e01-b6dcc4d76da5","messageId":"f223a332-646b-4b97-8566-fc896a163658","seq":2,"createdAt":"2026-11-14T15:02:04.257Z","status":"answered"}
+ok   the recipient answers with seq 2
+ok   the answer closes the round
+     POST /threads/3723f092-3006-4156-8e01-b6dcc4d76da5/reply -> 409 {"error":"thread already answered"}
+ok   a second answer is refused with 409
+     GET /threads/3723f092-3006-4156-8e01-b6dcc4d76da5 -> 404 {"error":"not found"}
+ok   a non-participant gets 404, not the thread
+     POST /threads/3723f092-3006-4156-8e01-b6dcc4d76da5/read -> 200 {"threadId":"3723f092-3006-4156-8e01-b6dcc4d76da5","readSeq":2}
+ok   the asker moves its read position to seq 2
+     POST /threads -> 201 {"threadId":"a171f62d-013b-4380-acd7-305cb1a0d0bc","messageId":"8e082b5f-e2ca-42c3-9ea5-ba779e0482d4","seq":1,"createdAt":"2026-11-14T15:02:04.284Z"}
+     POST /threads/a171f62d-013b-4380-acd7-305cb1a0d0bc/reply -> 410 {"error":"thread expired"}
+ok   an answer older than the TTL is refused with 410
+     GET /threads -> 200 {"threads":[{"id":"3723f092-3006-4156-8e01-b6dcc4d76da5","kind":"ask","status":"answered","createdBy":"e2e-alpha-1794668523786","createdAt":"2026-11-14T15:02:04.223Z","updatedAt":"2026-11-14T15:02:04.257Z","expired":false,"lastSeq":2,"myReadSeq":2,"participants":[{"name":"e2e-alpha-1794668523786"},{"name":"e2e-beta-179...
+ok   GET /threads lists my threads
+
+all e2e checks passed

@@ -26,6 +26,45 @@ jobs:
         env:
           PYTHON: python
 
+  api:
+    name: api (bun)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: wake_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d wake_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/wake_test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      # eslint 10 uses util.styleText, which bun does not implement; node runs it
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Lint
+        run: bun run lint
+      - name: Test
+        run: bun run test
+      - name: Build
+        run: bun run build
+
   lint:
     runs-on: ubuntu-latest
     steps:
