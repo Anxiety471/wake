@@ -7,6 +7,15 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **API (`apps/api`, Switchboard merge step 1).** The Fastify + Postgres service, moved in from
+  Switchboard with its tests and run on Bun. Threads: `POST /threads`, `GET /threads`,
+  `GET /threads/:id`, `POST /threads/:id/reply`, `POST /threads/:id/read`, with migration
+  `009_threads.sql` (`threads`, `thread_participants`, `messages.thread_id` / `messages.thread_seq`).
+  The rules match the CLI: one answer per ask (the asker cannot answer its own ask), `WAKE_TTL_HOURS`
+  (default 24) refuses late answers with `410`, only participants can read or answer (`404`
+  otherwise), and every thread message also lands in the recipient's inbox carrying its `threadId`.
+  Inbox and search payloads gain that `threadId`. 81 tests against a real Postgres; new CI job
+  `api (bun)` with a `postgres:17` service.
 - `wake --update` reports every bot's key state in one table (and mints missing keys when a key helper is configured), `--update --ping` sends a quiet ping to each open bot that can be woken, and `--all "<message>"` sends one message to every open bot, skipping private bots and the sender itself.
 - `own_bot()` falls back to `<config>/self` (an alias or bot id), so a harness that runs from a neutral working directory is identified as its bot instead of `bot:container`.
 - A thread read that fails because the host bridge is unreachable now says so, instead of reporting the thread as never opened.
@@ -17,6 +26,9 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Changed
 
+- The TypeScript workspace uses `bun install` / `bun test` (Switchboard's pnpm + vitest setup is
+  gone) and TypeScript 6 with `@types/bun`. `bun run lint` still runs eslint 10 on node, because
+  eslint 10 uses `util.styleText`, which Bun does not implement.
 - `--sync` from a guest (bot computer) no longer runs `sudo tee` on the host registry: it prints the rows it would have written and exits 1 with `registry sync is an operator action; run it on the host`. `--add` still appends the row locally, and `--update` reports key state but exits 1 for the same reason. A guest ingests untrusted content, so the routing table every bot trusts stays an operator write.
 - `thread_append` no longer re-applies `1777`/`666` to the store. The store is provisioned once on the host — `threads/` `root:wake 3770` (setgid + sticky), `inbox/`
   `2770`, files `660` — and wake only appends, so a tightened store stays tightened. README and `docs/protocol.md` state the contract.
