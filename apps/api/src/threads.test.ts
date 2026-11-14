@@ -587,6 +587,46 @@ test('reading an ask in the inbox also moves the thread read position', async ()
   expect(list.threads[0]?.unread).toBe(0);
 });
 
+test('one read receipt covering two messages of the same thread advances to the newest', async () => {
+  const alpha = await register('alpha');
+  const beta = await register('beta');
+
+  const created = await ask(alpha.token, {
+    to: 'beta',
+    body: 'discussing',
+    kind: 'thread',
+  });
+  const first = await reply(beta.token, created.threadId, 'first');
+  expect(first.seq).toBe(2);
+  const second = await reply(alpha.token, created.threadId, 'second');
+  expect(second.seq).toBe(3);
+
+  const before = await detail(beta.token, created.threadId);
+  expect(before.myReadSeq).toBe(2);
+  expect(before.lastSeq).toBe(3);
+
+  const pending = await inbox(beta.token);
+  const ids = pending.messages
+    .filter((message) => message.threadId === created.threadId)
+    .map((message) => message.id);
+  expect(ids).toContain(created.messageId);
+  expect(ids).toContain(second.messageId);
+
+  const read = await app.inject({
+    method: 'POST',
+    url: '/inbox/read',
+    headers: bearer(beta.token),
+    payload: { ids },
+  });
+  expect(read.statusCode).toBe(200);
+
+  const after = await detail(beta.token, created.threadId);
+  expect(after.myReadSeq).toBe(3);
+  const list = await threads(beta.token);
+  expect(list.threads[0]?.myReadSeq).toBe(3);
+  expect(list.threads[0]?.unread).toBe(0);
+});
+
 test('WAKE_TTL_HOURS accepts 0 and 1 to 720, rejecting anything else', () => {
   expect(parseThreadTtlHours(undefined)).toBe(24);
   expect(parseThreadTtlHours('')).toBe(24);
