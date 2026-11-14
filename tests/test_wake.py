@@ -4,6 +4,7 @@ Every webhook call goes to a fake HTTP server on 127.0.0.1; nothing touches the 
 the real ~/.config/wake, the real rate log in /tmp, or a real host. Run: python3 -m unittest discover -s tests
 """
 
+import datetime
 import json
 import os
 import re
@@ -472,6 +473,87 @@ class ThreadTests(WakeTestCase):
         r = self.wake("--inbox", env=env)
         self.assertEqual(r.returncode, 1)
         self.assertIn("cannot read the thread store", r.stderr)
+
+
+class ReplyGuardTests(WakeTestCase):
+    def ask(self, source, bot="engineer", text="why does CI fail", env=None):
+        r = self.wake("--ask", bot, text, env=dict({"WAKE_SOURCE": source}, **(env or {})))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return re.search(r"thread (\S+) opened", r.stdout).group(1)
+
+    def thread(self, tid):
+        with open(os.path.join(self.state, "threads", tid + ".jsonl")) as f:
+            return [json.loads(x) for x in f]
+
+    def age_thread(self, tid, hours):
+        recs = self.thread(tid)
+        old = datetime.datetime.now().astimezone() - datetime.timedelta(hours=hours)
+        recs[0]["ts"] = old.strftime("%Y-%m-%dT%H:%M:%S%z")
+        with open(os.path.join(self.state, "threads", tid + ".jsonl"), "w") as f:
+            for rec in recs:
+                f.write(json.dumps(rec) + "\n")
+
+    def audit(self):
+        path = os.path.join(self.rate, f"wake-audit-{os.getuid()}.log")
+        with open(path) as f:
+            return [json.loads(x) for x in f]
+
+    def test_reply_after_ttl_is_refused(self):
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        tid = self.ask("bot:coordinator")
+        self.age_thread(tid, 72)
+        r = self.wake("--reply", tid, "late", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("72h old", r.stderr)
+        self.assertIn("moved on", r.stderr)
+        self.assertEqual(len(self.thread(tid)), 1)  # nothing appended
+
+    def test_ttl_off_answers_an_old_thread(self):
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        tid = self.ask("bot:coordinator")
+        self.age_thread(tid, 72)
+        r = self.wake("--reply", tid, "late", env={"WAKE_SOURCE": "bot:engineer", "WAKE_TTL_HOURS": "0"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.thread(tid)[1]["text"], "late")
+
+    def test_force_answers_a_stale_thread(self):
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        tid = self.ask("bot:coordinator")
+        self.age_thread(tid, 72)
+        r = self.wake("--reply", tid, "late", "--force", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_asker_cannot_answer_its_own_answered_thread(self):
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        tid = self.ask("bot:coordinator")
+        r = self.wake("--reply", tid, "first answer", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # A asks, B answers, A answers the answer: one round only
+        r = self.wake("--reply", tid, "ping", env={"WAKE_SOURCE": "bot:coordinator"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("one round only", r.stderr)
+        self.assertEqual(len(self.thread(tid)), 2)
+        r = self.wake("--reply", tid, "forced ping", "--force", env={"WAKE_SOURCE": "bot:coordinator"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_audit_log_records_ask_reply_and_refusal(self):
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        tid = self.ask("bot:coordinator")
+        self.wake("--reply", tid, "answer", env={"WAKE_SOURCE": "bot:engineer"})
+        self.wake("--reply", "0101-beef", "x", env={"WAKE_SOURCE": "bot:engineer"})
+        rows = self.audit()
+        self.assertEqual([r["cmd"] for r in rows], ["ask", "reply", "reply-refused"])
+        self.assertEqual(rows[0]["thread"], tid)
+        self.assertEqual(rows[0]["source"], "bot:coordinator")
+        self.assertEqual(rows[0]["bot"], "engineer")
+        self.assertEqual(rows[1]["source"], "bot:engineer")
+        self.assertEqual(rows[2]["rc"], 4)
+        self.assertNotIn("PWNED", json.dumps(rows))  # never carries key material, only the text it was given
 
 
 class DirectoryTests(WakeTestCase):
