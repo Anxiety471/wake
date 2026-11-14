@@ -493,6 +493,100 @@ test('unknown thread ids are not found', async () => {
   expect(malformed.statusCode).toBe(400);
 });
 
+test('two simultaneous answers yield one 201 and one 409, never a 500', async () => {
+  const alpha = await register('alpha');
+  const beta = await register('beta');
+  const created = await ask(alpha.token, { to: 'beta', body: 'race' });
+
+  const gate = new Client({ connectionString: databaseUrl });
+  await gate.connect();
+  try {
+    await gate.query('BEGIN');
+    await gate.query('SELECT 1 FROM threads WHERE id = $1 FOR UPDATE', [
+      created.threadId,
+    ]);
+
+    const first = app.inject({
+      method: 'POST',
+      url: `/threads/${created.threadId}/reply`,
+      headers: bearer(beta.token),
+      payload: { body: 'one' },
+    });
+    const second = app.inject({
+      method: 'POST',
+      url: `/threads/${created.threadId}/reply`,
+      headers: bearer(beta.token),
+      payload: { body: 'two' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await gate.query('COMMIT');
+
+    const codes = (await Promise.all([first, second]))
+      .map((response) => response.statusCode)
+      .sort();
+    expect(codes).toEqual([201, 409]);
+  } finally {
+    await gate.query('ROLLBACK').catch(() => undefined);
+    await gate.end();
+  }
+
+  const after = await detail(alpha.token, created.threadId);
+  expect(after.lastSeq).toBe(2);
+  expect(after.status).toBe('answered');
+});
+
+test('paging by creation never skips a thread that is answered mid-page', async () => {
+  const alpha = await register('alpha');
+  const beta = await register('beta');
+  const oldest = await ask(alpha.token, { to: 'beta', body: 'one' });
+  for (const body of ['two', 'three', 'four', 'five', 'six']) {
+    await ask(alpha.token, { to: 'beta', body });
+  }
+
+  const first = await threads(beta.token, { limit: 2 });
+  expect(first.threads).toHaveLength(2);
+  expect(first.next).not.toBeNull();
+
+  await reply(beta.token, oldest.threadId, 'answered after page one');
+
+  const seen = new Set(first.threads.map((thread) => thread.id));
+  let cursor = first.next;
+  while (cursor !== null) {
+    const page = await threads(beta.token, { limit: 2, cursor });
+    for (const thread of page.threads) {
+      seen.add(thread.id);
+    }
+    cursor = page.next;
+  }
+
+  expect(seen.size).toBe(6);
+  expect(seen.has(oldest.threadId)).toBe(true);
+});
+
+test('reading an ask in the inbox also moves the thread read position', async () => {
+  const alpha = await register('alpha');
+  const beta = await register('beta');
+  const created = await ask(alpha.token, { to: 'beta', body: 'ping?' });
+
+  const pending = await inbox(beta.token);
+  expect(pending.messages).toHaveLength(1);
+  expect(pending.messages[0]?.threadId).toBe(created.threadId);
+
+  const read = await app.inject({
+    method: 'POST',
+    url: '/inbox/read',
+    headers: bearer(beta.token),
+    payload: { ids: [pending.messages[0]?.id] },
+  });
+  expect(read.statusCode).toBe(200);
+
+  const after = await detail(beta.token, created.threadId);
+  expect(after.myReadSeq).toBe(1);
+  const list = await threads(beta.token);
+  expect(list.threads[0]?.myReadSeq).toBe(1);
+  expect(list.threads[0]?.unread).toBe(0);
+});
+
 test('WAKE_TTL_HOURS accepts 0 and 1 to 720, rejecting anything else', () => {
   expect(parseThreadTtlHours(undefined)).toBe(24);
   expect(parseThreadTtlHours('')).toBe(24);
