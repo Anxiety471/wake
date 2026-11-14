@@ -202,8 +202,9 @@ def _host_run(cmd, data=None):
 def thread_append(tid, rec):
     line = json.dumps(rec, ensure_ascii=False) + "\n"
     path = q(f"{THREADS}/{tid}.jsonl")
-    # The store is provisioned once on the host (root:wake 2770, setgid) and wake never changes
-    # its mode: re-applying 1777 on every append is what kept the store world-writable.
+    # The thread store is provisioned once on the host (root:wake 3770: setgid + sticky, so
+    # only a file's owner may unlink it) and wake never changes its mode: re-applying 1777
+    # on every append is what kept the store world-writable.
     cmd = (
         f"mkdir -p {q(THREADS)} 2>/dev/null || sudo mkdir -p {q(THREADS)}; "
         f"if [ -e {path} ]; then dd of={path} oflag=append conv=notrunc,nocreat status=none; "
@@ -219,7 +220,7 @@ def thread_append(tid, rec):
             + tid
             + ": "
             + (r.stderr or r.stdout).strip()[-200:]
-            + f" (the store {THREADS} must exist and be writable by this user: root:wake 2770)"
+            + f" (the store {THREADS} must exist and be writable by this user: root:wake 3770, setgid + sticky)"
         )
 
 

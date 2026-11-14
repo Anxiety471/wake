@@ -173,8 +173,9 @@ wake --all "read-only window until 18:00"   # one message to every open bot; pri
 - **Thread ownership.** Only the owner or the target may append to a thread; thread ids with `/` or `..` are rejected.
 - **Payload context.** Every wake appends `host=<hostname> user=<user> cwd=<cwd>` to `detail` so the receiver can see where it came from. Do not use wake from a directory whose path is itself sensitive.
 - **Shared state.** The store is group-owned and group-writable: `$WAKE_STATE_DIR` and its `threads/` and
-  `inbox/` dirs are `root:wake 2770` (setgid, so new files inherit the `wake` group) and thread files are
-  `660`. Every bot account that appends is in the `wake` group. `wake` never changes these modes, so
+  `inbox/` dirs are `root:wake 2770` (setgid, so new files inherit the `wake` group); `threads/` is
+  `root:wake 3770` — the same, plus sticky, so only a file's owner can unlink it — and thread files
+  are `660`. Every bot account that appends is in the `wake` group. `wake` never changes these modes, so
   an append cannot widen a store an admin tightened. Anyone in the group can read and forge thread
   lines; keep untrusted users out of it.
 - **Host commands.** Thread and inbox I/O runs as shell commands on the host: through `WAKE_HOSTOPS` from a guest, or `bash -lc` (a login shell, so profiles are sourced) on the host itself. Every value placed in those commands is quoted with `shlex.quote`; thread ids and inbox hashes are validated first.
