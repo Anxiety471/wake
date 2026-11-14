@@ -43,6 +43,21 @@ wake --list
 
 Put each bot's webhook key in `~/.config/wake/<bot-id>.key` (`chmod 600`), or let `wake --setup <bot>` create it through your key helper (below).
 
+### Every bot needs its own copy
+
+`wake` is only a command. A bot that receives a wake as a webhook run answers a question with `wake --reply <thread-id> "<answer>"`. That only works if `wake` exists **on that bot's own computer**.
+
+Bots with separate computers do not share a home folder, so installing `wake` on one machine does not install it on another. A bot without it gets "command not found" on `--reply` and will usually answer in its own chat instead. The asker sees no reply on the thread, and the user gets an unexpected message.
+
+Checklist for each bot (do this when you add a bot to `bots.tsv`):
+
+1. Run `./install.sh` on that bot's computer, so `wake` is on its PATH.
+2. Put the keys in `WAKE_KEY_DIR`. Keys are per target bot, so the replying bot needs the key for whichever bot it is answering, not only its own.
+3. Add a rule to the bot's webhook routine: *if `ref` starts with `thread:`, answer only with `wake --reply <id> "<short answer>" --source bot:<alias>` and send no other message.* Without this rule a bot may treat the payload as untrusted text and report in its own chat.
+4. Verify: run `command -v wake` on that computer, send it `wake --ask <alias> "ping" --wait 60`, and confirm a reply appears with `wake --thread <id>`.
+
+Symptom of a missing install: the thread file shows the ask and the wake, but no `reply` record.
+
 ### Configuration
 
 Every setting is an environment variable; the same names can be set in `~/.config/wake/config.env` (`KEY=VALUE`). The environment wins.
