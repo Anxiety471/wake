@@ -137,22 +137,24 @@ If no key is saved and no key helper is reachable, wake exits with a clear messa
 ### Registry maintenance
 
 ```sh
-wake --add ops2 bot-ops2-0009 "Ops Bot 2" open "second ops bot"   # append a row (then --sync)
-wake --sync                                                       # guest: copy the registry to the host
+wake --add ops2 bot-ops2-0009 "Ops Bot 2" open "second ops bot"   # append a row here (then sync on the host)
+wake --sync                                                       # guest: print the rows, write nothing
 ```
 
-Behind a forced-command gate this is refused by design: rewriting the bot registry needs privileges a
-bot key must not carry, so `--sync` stays an operator action on the host side.
+A guest shell (bot computer, `WAKE_HOSTOPS` set) does not push the registry. It prints the rows it would
+have written, says `registry sync is an operator action; run it on the host`, and exits 1. A guest ingests
+untrusted content, and the bot list is the routing table every bot trusts: rewriting it needs privileges a
+bot key must not carry. On the host the registry is already the live copy, so there is nothing to push.
 
 ### `--update`, `--ping`, `--all`: every bot at once
 
 ```sh
-wake --update            # sync the registry, pull missing keys, print key state per bot
+wake --update            # pull missing keys, print key state per bot (registry push is refused in a guest)
 wake --update --ping     # also send a quiet ping to every open bot with a readable key
 wake --all "read-only window until 18:00"   # one message to every open bot; private bots and yourself are skipped
 ```
 
-`--update` never guesses: a bot whose key was made elsewhere is shown as `elsewhere`, one with an unreadable key as `locked`, and one with no key as `none`. `--all` prints a per-bot line and a `N sent, M failed` summary, and exits 1 if any send failed.
+`--update` never guesses: a bot whose key was made elsewhere is shown as `elsewhere`, one with an unreadable key as `locked`, and one with no key as `none`. `--all` prints a per-bot line and a `N sent, M failed` summary, and exits 1 if any send failed. `--update` also exits 1 in a guest, because the registry push it would do is an operator action.
 
 ### Helpers
 
