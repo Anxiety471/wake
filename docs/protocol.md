@@ -30,7 +30,9 @@ Tab-separated, 4 or 5 columns, other lines ignored:
 alias  id  name  kind  role
 ```
 
-`kind` is `open` or `private`. A shell whose working directory contains `/bots/<id>` is treated as that bot (`bot:<alias>`).
+`kind` is `open` or `private`. A shell whose working directory contains `/bots/<id>` is treated as that bot
+(`bot:<alias>`). A harness that always runs from a neutral directory (cwd `/tmp`) can write its alias or id to
+`<config>/self` instead; `wake --me` shows which of the two named it.
 
 ## Thread file: `$WAKE_STATE_DIR/threads/<id>.jsonl`
 
@@ -42,14 +44,18 @@ Id format `MMDDHHMM-xxxx`. First line is the ask, later lines are replies:
 {"ts": "...", "from": "bot:engineer", "kind": "reply", "text": "flaky test"}
 ```
 
-The directory is created `1777` and files `666` (falls back to `sudo` if the directory cannot be created as the current user).
+The store is provisioned once on the host, never by `wake`: `inbox/` and `inbox/active/` are
+`root:wake 2770` (setgid, so new files inherit the `wake` group) and `threads/` is `root:wake 3770`
+(setgid + sticky, so only a file's owner can unlink it); thread files are group-writable (`660`). An append
+only appends: `wake` never re-applies a mode, so tightening the store sticks. Writing to a store the
+user cannot write exits 1 and names the expected mode.
 
 ## Session inbox: `$WAKE_STATE_DIR/inbox/`
 
 - `<hash>.jsonl` — the inbox; each delivered reply is one line `{"from", "kind": "reply", "thread", "text", "ts"}`.
 - `active/<hash>.json` — liveness marker `{"inbox": "<path>", "pid": <session pid>, ...}`. A reply is delivered to the inbox recorded on the thread if its pid is alive, otherwise to the single live inbox; with two or more live inboxes and no match, nothing is guessed. Markers older than a day are pruned on `register`.
 
-`wake-inbox-io register <hash> [json]` creates both and prints the inbox path; `beat <hash> [json]` rewrites the marker; `read <inbox>` prints the inbox. `<hash>` must be 6 to 32 lowercase hex characters (`[0-9a-f]{6,32}`), and `<inbox>` must be exactly `$WAKE_STATE_DIR/inbox/<hash>.jsonl`; anything else exits 1 before a command runs. The JSON goes through stdin, never through the shell, and every path is quoted with `shlex.quote`.
+`wake-inbox-io register <hash> [json]` creates both and prints the inbox path; `beat <hash> [json]` rewrites the marker; `read <inbox>` prints the inbox. `<hash>` must be 6 to 32 lowercase hex characters (`[0-9a-f]{6,32}`), and `<inbox>` must be exactly `$WAKE_STATE_DIR/inbox/<hash>.jsonl`; anything else exits 1 before a command runs. The JSON goes through stdin, never through the shell, and every path is quoted with `shlex.quote`. The `register` command shape is matched by the host gate as an exact literal, including its trailing `; chmod 666 <inbox> <marker> 2>/dev/null`: the gate never runs that text and creates both files at `660` itself, but a command that drops the tail is refused, so the tail stays until the gate route is widened. `tests/test_gate_shapes.py` fails if it changes.
 
 ## `WAKE_HOSTOPS` (guest mode)
 
