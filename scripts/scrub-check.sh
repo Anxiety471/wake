@@ -40,8 +40,8 @@ files_noblob() {   # same, minus lockfiles: their sha512 integrity hashes match 
     git ls-files -z | grep -zvE "$LOCKFILES" | xargs -0 grep -nIH "$@" -- || true
 }
 
-strip_hashes() {   # drop sha512 integrity lines only: a hash is not a secret, the rest of a lockfile is still scanned
-    grep -vE 'sha512-[A-Za-z0-9+/=]+' || true
+strip_hashes() {   # mask sha512 integrity hashes: a hash is not a secret, the rest of the line is still scanned
+    sed -E 's/sha512-[A-Za-z0-9+/=]+/sha512-HASH/g' || true
 }
 
 

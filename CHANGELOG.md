@@ -42,6 +42,10 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   run before the fix and passes after.
 - `010_drop_threads_updated_at_idx.sql` drops the index `009` created before paging moved to
   `created_at`, for databases that ran that earlier `009`. Fresh databases never create it.
+- The history secret scan masks `sha512` integrity hashes instead of dropping the whole line, so a
+  registry token sitting on the same line as an integrity hash in a lockfile is still found. Proven:
+  a repo whose history holds an `sk-…` token on such a `bun.lock` line is clean under the dropping
+  filter and fails under this one.
 
 ### Changed
 
