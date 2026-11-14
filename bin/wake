@@ -282,8 +282,8 @@ def inbox_live():
     live = []
     for fn in (r.stdout or "").split():
         try:
-            rec = json.loads(_host_run(f"cat {q(fn)}").stdout)
-        except Exception:
+            rec = json.loads(_host_run(f"cat {q(fn)} 2>/dev/null").stdout)
+        except (OSError, ValueError):
             continue
         if rec.get("inbox") and rec.get("pid") and _host_run(f"test -d /proc/{int(rec['pid'])}").returncode == 0:
             live.append(rec["inbox"])
