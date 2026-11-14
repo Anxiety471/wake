@@ -209,7 +209,7 @@ describe('doorbellPayload', () => {
       time: new Date('2026-11-14T16:00:00.000Z'),
     });
     expect(payload).toEqual({
-      depth: 1,
+      depth: 0,
       source: 'bot:alice',
       event: 'message',
       level: 'info',
@@ -223,20 +223,38 @@ describe('doorbellPayload', () => {
     });
   });
 
-  test('carries the thread ref and the reply hint for a thread message', () => {
+  test('carries the thread ref and the reply hint for a request', () => {
     const payload = doorbellPayload({
       messageId: 'm2',
+      from: 'alice',
+      to: 'bob',
+      body: 'why is CI red?',
+      event: 'request',
+      threadId: 'thread-1',
+      time: new Date('2026-11-14T16:00:00.000Z'),
+    });
+    expect(payload.ref).toBe('thread:thread-1');
+    expect(payload.detail).toBe(`why is CI red?${replyHint('thread-1')}`);
+    expect(payload.detail).toContain(
+      'reply: wake --reply thread-1 "YOUR ANSWER"',
+    );
+    expect(payload.threadId).toBe('thread-1');
+  });
+
+  test('tells the asker to reply on the thread, not to answer its own ask', () => {
+    const payload = doorbellPayload({
+      messageId: 'm3',
       from: 'bob',
       to: 'alice',
-      body: 'the answer',
+      body: 'because billing',
       event: 'reply',
       threadId: 'thread-1',
       time: new Date('2026-11-14T16:00:00.000Z'),
     });
     expect(payload.ref).toBe('thread:thread-1');
-    expect(payload.detail).toBe(`the answer${replyHint('thread-1')}`);
-    expect(payload.detail).toContain('wake --reply thread-1');
-    expect(payload.threadId).toBe('thread-1');
+    expect(payload.detail).toBe('reply on thread thread-1: because billing');
+    // wake --reply from the asker is a 409: the asker cannot answer its own ask.
+    expect(payload.detail).not.toContain('wake --reply');
   });
 });
 

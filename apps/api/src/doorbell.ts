@@ -199,6 +199,26 @@ export function replyHint(threadId: string): string {
   return ` [thread ${threadId}] reply: wake --reply ${threadId} "YOUR ANSWER"`;
 }
 
+// A reply wakes the asker, who cannot answer its own ask (409), so it carries
+// what bin/wake sends the asker instead of the reply hint: `reply on thread <id>: <text>`.
+function replyNotice(threadId: string, body: string): string {
+  return `reply on thread ${threadId}: ${body}`;
+}
+
+function detailFor(input: {
+  body: string;
+  event: DoorbellEvent;
+  threadId: string | null;
+}): string {
+  if (input.threadId === null) {
+    return input.body;
+  }
+  if (input.event === 'reply') {
+    return replyNotice(input.threadId, input.body);
+  }
+  return `${input.body}${replyHint(input.threadId)}`;
+}
+
 export function doorbellPayload(input: {
   messageId: string;
   from: string;
@@ -209,14 +229,14 @@ export function doorbellPayload(input: {
   time: Date;
 }): DoorbellPayload {
   return {
-    depth: 1,
+    // The CLI sends WAKE_DEPTH, 0 for a normal bot (bin/wake:417, docs/protocol.md).
+    // A receiver that exports it and runs through wake-run reaches depth 2, where
+    // wake refuses, so 1 here would strangle its completion wakes.
+    depth: 0,
     source: `bot:${input.from}`,
     event: input.event,
     level: 'info',
-    detail:
-      input.threadId === null
-        ? input.body
-        : `${input.body}${replyHint(input.threadId)}`,
+    detail: detailFor(input),
     ref: input.threadId === null ? '' : `thread:${input.threadId}`,
     time: input.time.toISOString(),
     messageId: input.messageId,
