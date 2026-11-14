@@ -16,11 +16,16 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   wakes — is **undelivered** (`no_routine`), not success, and is not retried; only `5xx`, network
   errors and timeouts are retried, with the same bytes and the same `Idempotency-Key` (the message
   row id) every time, so a retry cannot run a bot twice. The payload keeps the CLI's field names,
-  `ref: thread:<id>` and the reply hint, so a recipient's routine keeps working at cutover. A
-  failed delivery never fails the send: the message is already committed. `WAKE_DOORBELL_BOTS`
-  (JSON, agent → `{botId, secret}`), `WAKE_DOORBELL_URL` and `WAKE_DOORBELL_TIMEOUT_MS`; an empty
-  map leaves the doorbell off. 28 new tests, including a stub doorbell that asserts the ignored,
-  401 and 413 paths do not retry. Contract: [docs/doorbell.md](docs/doorbell.md).
+  `ref: thread:<id>` and `depth: 0` (the depth the CLI sends for a normal bot, so a receiver that
+  exports it can still wake), and `detail` carries the reply hint for a `request` and
+  `reply on thread <id>: <text>` for a `reply`, which is what the CLI sends the asker: the asker
+  cannot answer its own ask. A failed delivery never fails the send: the message is already
+  committed, and `POST /threads` releases its pool connection before it rings, so a full pool
+  cannot turn an ask into a silent drop. `WAKE_DOORBELL_BOTS` (JSON, agent → `{botId, secret}`),
+  `WAKE_DOORBELL_URL` and `WAKE_DOORBELL_TIMEOUT_MS`; an empty map leaves the doorbell off. 31 new
+  tests, including a stub doorbell that asserts the ignored, 401 and 413 paths do not retry and a
+  one-connection pool that asserts the ask still rings. Contract:
+  [docs/doorbell.md](docs/doorbell.md).
 - **API (`apps/api`, Switchboard merge step 1).** The Fastify + Postgres service, moved in from
   Switchboard with its tests and run on Bun. Threads: `POST /threads`, `GET /threads`,
   `GET /threads/:id`, `POST /threads/:id/reply`, `POST /threads/:id/read`, with migration

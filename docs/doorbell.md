@@ -38,17 +38,19 @@ The rest of the route's contract (`apps/api/src/webhook.ts`,
 | `200` that is not a delivery JSON | not a doorbell answer | no (`bad_response`) |
 
 Retries use the same bytes and the same `Idempotency-Key` every time, so
-Rakazo's idempotency (which keys on `webhook:<botId>:sha256(key)` and only
-collapses byte-identical retries) can never run a bot twice.
+Rakazo's idempotency (a nonce its side builds as `webhook:<botId>:sha256(key)`,
+keyed on the key alone, so identical bytes are not what makes a retry replay)
+can never run a bot twice: the key is the message row id, and one message is one
+delivery per bot.
 
 ## Payload
 
-The recipient sees the same shape the CLI sends today, so an existing routine
+The recipient sees the CLI's field names and wording, so an existing routine
 keeps working when the CLI becomes a client of the API:
 
 ```json
 {
-  "depth": 1,
+  "depth": 0,
   "source": "bot:alice",
   "event": "request",
   "level": "info",
@@ -66,7 +68,17 @@ keeps working when the CLI becomes a client of the API:
   `POST /threads`, and `reply` for `POST /threads/:id/reply`.
 - `ref` starts with `thread:` for thread messages, which is the routing signal a
   routine uses today; it is empty for a plain message.
-- `detail` carries the CLI's reply hint for thread messages, verbatim.
+- `depth` is `0`, the depth the CLI sends for a normal bot, so a receiver that
+  exports it as `WAKE_DEPTH` can still send its own wakes (`wake-run` raises it
+  to 1, and `wake` refuses at 2).
+- `detail` for a `request` is the body followed by the CLI's reply hint,
+  verbatim. For a `reply` it is `reply on thread <id>: <body>`: the reply wakes
+  the asker, who cannot answer its own ask (`409`), so the reply hint would
+  invite a refused call.
+- What the payload does **not** carry: the CLI appends ` | host=… user=… cwd=…`
+  to `detail`, and the API has no sender working directory, so it sends none of
+  that. `time` is ISO 8601 with `Z` (`2026-11-14T16:14:49.244Z`) where the CLI
+  sends `+0800`; both parse.
 - The payload is capped at Rakazo's 64 KiB limit and refused locally
   (`payload_too_large`, no request) rather than sent and rejected. A wake that
   needs 64 KiB is a bug: send a summary and the ids.
