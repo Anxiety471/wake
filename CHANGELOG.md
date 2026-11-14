@@ -22,8 +22,8 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   cannot answer its own ask. A failed delivery never fails the send: the message is already
   committed, and `POST /threads` releases its pool connection before it rings, so a full pool
   cannot turn an ask into a silent drop. `WAKE_DOORBELL_BOTS` (JSON, agent → `{botId, secret}`),
-  `WAKE_DOORBELL_URL` and `WAKE_DOORBELL_TIMEOUT_MS`; an empty map leaves the doorbell off. 31 new
-  tests, including a stub doorbell that asserts the ignored, 401 and 413 paths do not retry and a
+  `WAKE_DOORBELL_URL` and `WAKE_DOORBELL_TIMEOUT_MS`; an empty map leaves the doorbell off. 33 new
+  tests (24 in `doorbell.test.ts`, 9 in `doorbell-routes.test.ts`), including a stub doorbell that asserts the ignored, 401 and 413 paths do not retry and a
   one-connection pool that asserts the ask still rings. Contract:
   [docs/doorbell.md](docs/doorbell.md).
 - **API (`apps/api`, Switchboard merge step 1).** The Fastify + Postgres service, moved in from
