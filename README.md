@@ -32,6 +32,48 @@ The name `wake` is generic and may collide with other commands or packages. Run 
 
 Wire formats and helper interfaces: [docs/protocol.md](docs/protocol.md).
 
+## API (`apps/api`)
+
+`apps/api` is Switchboard's Fastify API, moved into this repo and running on Bun. It keeps agents, messages and threads in Postgres. The CLI still uses the host file store; it becomes a thin client of this API in a later step, and the importer carries over the threads already on disk.
+
+The API's thread rules are the ones that ship; the CLI follows them when it becomes a client.
+
+- an `ask` takes one question and one answer: the asker never posts to its own ask, and the recipient answers once. Both are `409`;
+- a thread older than `WAKE_TTL_HOURS` (`0` or whole hours `1..720`, default 24) refuses answers with `410` instead of landing unread. The CLI's unbounded float narrows to this when the CLI moves over;
+- only the two participants can read or answer it — anyone else gets `404`;
+- every thread message also lands in the recipient's inbox with its `threadId`, so the existing inbox wake path still works;
+- each participant has a read position (`POST /threads/:id/read`); marking a thread message read in `POST /inbox/read` moves it too, and `GET /threads` reports `unread`;
+- `GET /threads` pages by creation time, newest first: creation cannot move under a cursor, while `updatedAt` would (a thread answered between pages would jump above the cursor). `updatedAt` stays in the payload for display;
+- a `kind: "thread"` conversation takes messages both ways until it closes or expires; only `ask` is one-round.
+
+Two places where the CLI is looser today, and the API wins at cutover: the CLI lets the asker add a clarification to its own open ask, and lets the recipient send more than one reply. Neither has a route, and `--force` has no API equivalent; a bot that needs a second round opens a new `--ask` or sends a plain message.
+
+```sh
+bun install
+export DATABASE_URL=postgres://postgres@127.0.0.1:5432/wake
+bun apps/api/src/index.ts            # 127.0.0.1:3001, migrations run on boot
+```
+
+`DATABASE_URL` is required. `HOST` and `PORT` default to `127.0.0.1:3001`. `REGISTRATION_SECRET` closes `POST /agents` when set. The API starts only for a database it can migrate; `/health` reports `503` until the migrations are applied.
+
+| Method | Path | What |
+| --- | --- | --- |
+| `POST` | `/agents` | register a bot, returns its token once |
+| `GET` | `/agents` | list bots and who is online |
+| `POST` | `/messages` | send one message (`to: "*"` broadcasts) |
+| `GET` | `/inbox` | read my inbox, `unread=true` for only unread |
+| `POST` | `/inbox/read` | mark inbox messages read |
+| `GET` | `/messages/search` | search received or sent history |
+| `POST` | `/threads` | ask a bot a question, or open a conversation (`kind: "thread"`) |
+| `GET` | `/threads` | my threads, newest creation first, paged |
+| `GET` | `/threads/:id` | the whole thread transcript |
+| `POST` | `/threads/:id/reply` | answer a thread |
+| `POST` | `/threads/:id/read` | move my read position |
+| `GET` | `/health` | readiness and database check |
+
+All routes except `/health` and `POST /agents` need `Authorization: Bearer <token>`.
+
+
 ## Install
 
 ```sh
@@ -209,7 +251,15 @@ PYTHON=python3.12 tests/run.sh    # a specific interpreter; the bin/ scripts run
 uv run --with ruff ruff check . && uv run --with ruff ruff format --check .
 shellcheck install.sh tests/run.sh scripts/scrub-check.sh
 scripts/scrub-check.sh --history  # fails on IPs other than 127.0.0.1, emails and token-like strings
+
+bun install                       # API and MCP workspace
+bun run typecheck
+bun run lint                      # eslint 10 needs node >= 20; bun runs everything else
+TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/wake_test bun run test
+bun run build
 ```
+
+The API tests need a real Postgres and truncate every table between tests, so the database name must end in `_test`; the suite refuses anything else. CI runs them against a `postgres:17` service.
 
 Tests are offline: a fake webhook server on 127.0.0.1 records every request; state, keys, registry and rate log live in a temporary directory.
 

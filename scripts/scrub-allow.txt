@@ -10,3 +10,8 @@ Signed-off-by: dependabot[bot] <support@github.com>
 # the owner's public identity (LICENSE, CODEOWNERS, commit author); other uses of these names still fail
 Joshua M. Valderrama
 @Anxiety471
+
+# the API test suite: parseHost passes a bind-all host through unchanged, and the dashboard
+# tests use a repeated fake secret for a desk key (apps/api/src/*.test.ts)
+parseHost('0.0.0.0')
+desk-secret-desk-secret-desk-secret
