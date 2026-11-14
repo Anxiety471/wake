@@ -3,6 +3,13 @@
 All notable changes to this project are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent: wake-cli/<version>`.
 
+## [Unreleased]
+
+### Changed
+
+- CI runs the test matrix on `ubuntu-24.04`, because `ubuntu-latest` (Ubuntu 26) no longer has a Python 3.9 build to install.
+- `scripts/scrub-check.sh` keeps the strong secret patterns (keys, bearer tokens, private keys) on every file and commit, but the long-blob heuristic now skips URLs and the scan no longer fails on a dependency bot's own `Signed-off-by` trailer, so a documentation link or a dependabot merge cannot fail the build.
+
 ## [0.1.0] - 2026-11-14
 
 First public release.
