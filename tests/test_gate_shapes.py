@@ -18,7 +18,7 @@ import os
 import re
 import unittest
 
-from test_wake import WakeTestCase, write_exe, slurp  # noqa: E402
+from test_wake import WakeTestCase, slurp, write_exe  # noqa: E402
 
 GATE_DEFAULT = "/home/rakazo/shared/ops-review/rakazo-wake-gate"
 

@@ -573,7 +573,9 @@ p.add_argument(
     action="store_true",
     help="sync the registry, then report every bot's key state (add --ping to wake each open bot)",
 )
-p.add_argument("--ping", action="store_true", help="with --update: send a quiet ping to every open bot that has a readable key")
+p.add_argument(
+    "--ping", action="store_true", help="with --update: send a quiet ping to every open bot that has a readable key"
+)
 p.add_argument("--all", metavar="MESSAGE", help="send one message to every open bot (private bots are skipped)")
 a = p.parse_args()
 bots = load()
@@ -651,7 +653,10 @@ if a.me:
     else:
         print("not inside a bot computer: a human or harness shell, so wakes are sent as " + a.source)
         print("  to be treated as a bot, or as an agent harness, set WAKE_SOURCE=bot:<alias> or skill:<name>")
-        print("  a harness that always runs from the same computer can write its alias to " + os.path.join(CFG["WAKE_CONFIG_DIR"], "self"))
+        print(
+            "  a harness that always runs from the same computer can write its alias to "
+            + os.path.join(CFG["WAKE_CONFIG_DIR"], "self")
+        )
     sys.exit(0)
 
 if a.thread:

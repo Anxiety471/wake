@@ -30,7 +30,9 @@ Tab-separated, 4 or 5 columns, other lines ignored:
 alias  id  name  kind  role
 ```
 
-`kind` is `open` or `private`. A shell whose working directory contains `/bots/<id>` is treated as that bot (`bot:<alias>`).
+`kind` is `open` or `private`. A shell whose working directory contains `/bots/<id>` is treated as that bot
+(`bot:<alias>`). A harness that always runs from a neutral directory (cwd `/tmp`) can write its alias or id to
+`<config>/self` instead; `wake --me` shows which of the two named it.
 
 ## Thread file: `$WAKE_STATE_DIR/threads/<id>.jsonl`
 
@@ -43,7 +45,7 @@ Id format `MMDDHHMM-xxxx`. First line is the ask, later lines are replies:
 ```
 
 The store is provisioned once on the host, never by `wake`: `threads/` and `inbox/` are `root:wake 2770`
-(setgid, so new files inherit the `wake` group) and thread files are group-writable (`664`). An append
+(setgid, so new files inherit the `wake` group) and thread files are group-writable (`660`). An append
 only appends: `wake` never re-applies a mode, so tightening the store sticks. Writing to a store the
 user cannot write exits 1 and names the expected mode.
 
