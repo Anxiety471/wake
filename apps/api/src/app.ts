@@ -1113,12 +1113,23 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
            RETURNING message_id, read_at
          ), bumped AS (
            UPDATE thread_participants tp
-           SET last_read_seq = GREATEST(tp.last_read_seq, m.thread_seq)
-           FROM messages m
-           JOIN marked ON marked.message_id = m.id
-           WHERE tp.thread_id = m.thread_id
-             AND tp.agent_id = $1::uuid
-             AND m.thread_seq IS NOT NULL
+           SET last_read_seq = GREATEST(
+             tp.last_read_seq,
+             (
+               SELECT max(m.thread_seq)
+               FROM messages m
+               JOIN marked ON marked.message_id = m.id
+               WHERE m.thread_id = tp.thread_id
+                 AND m.thread_seq IS NOT NULL
+             )
+           )
+           WHERE tp.agent_id = $1::uuid
+             AND tp.thread_id IN (
+               SELECT m.thread_id
+               FROM messages m
+               JOIN marked ON marked.message_id = m.id
+               WHERE m.thread_id IS NOT NULL
+             )
            RETURNING tp.thread_id
          )
          SELECT message_id, read_at FROM marked`,

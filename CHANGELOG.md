@@ -19,7 +19,7 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   the asker on its own open ask and a second reply from the recipient, and `--force` has no route.
   `GET /threads` pages by creation, not by the mutable `updated_at`, so a thread answered between
   pages cannot jump above the cursor; `POST /inbox/read` also moves the thread read position, so the
-  inbox and the thread agree on `unread`. 85 tests against a real Postgres; new CI job `api (bun)`
+  inbox and the thread agree on `unread`. 86 tests against a real Postgres; new CI job `api (bun)`
   with a `postgres:17` service.
 - `wake --update` reports every bot's key state in one table (and mints missing keys when a key helper is configured), `--update --ping` sends a quiet ping to each open bot that can be woken, and `--all "<message>"` sends one message to every open bot, skipping private bots and the sender itself.
 - `own_bot()` falls back to `<config>/self` (an alias or bot id), so a harness that runs from a neutral working directory is identified as its bot instead of `bot:container`.
@@ -35,9 +35,13 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   CTE), so `POST /threads/:id/reply` answered `500` where it documents `409`. The read position is
   now kept when nothing was inserted, and a row-locked test proves one `201` and one `409` — never a
   `500`.
-- The history secret scan drops `sha512` integrity lines instead of whole lockfile patches, so a
-  token committed to a lockfile and later removed is still found. Proven: a repo whose history holds
-  a `sk-…` token in `bun.lock` is clean under the old filter and fails under this one.
+- A read receipt naming two messages of the same thread left the thread read position on whichever
+  row Postgres happened to match, so `GET /threads` still reported `unread: 1`. The position now
+  moves to the newest message the receipt covers, and only the threads the receipt names are
+  updated. A test that asks, replies, replies, then reads both messages in one receipt fails on every
+  run before the fix and passes after.
+- `010_drop_threads_updated_at_idx.sql` drops the index `009` created before paging moved to
+  `created_at`, for databases that ran that earlier `009`. Fresh databases never create it.
 
 ### Changed
 
