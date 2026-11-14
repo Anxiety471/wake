@@ -141,6 +141,19 @@ wake --add ops2 bot-ops2-0009 "Ops Bot 2" open "second ops bot"   # append a row
 wake --sync                                                       # guest: copy the registry to the host
 ```
 
+Behind a forced-command gate this is refused by design: rewriting the bot registry needs privileges a
+bot key must not carry, so `--sync` stays an operator action on the host side.
+
+### `--update`, `--ping`, `--all`: every bot at once
+
+```sh
+wake --update            # sync the registry, pull missing keys, print key state per bot
+wake --update --ping     # also send a quiet ping to every open bot with a readable key
+wake --all "read-only window until 18:00"   # one message to every open bot; private bots and yourself are skipped
+```
+
+`--update` never guesses: a bot whose key was made elsewhere is shown as `elsewhere`, one with an unreadable key as `locked`, and one with no key as `none`. `--all` prints a per-bot line and a `N sent, M failed` summary, and exits 1 if any send failed.
+
 ### Helpers
 
 - `wake-run [--bot BOT] [--only-errors] [--name label] -- cmd...` — run a command, wake a bot when it ends (`ok` on exit 0, `error` otherwise). Child commands see `WAKE_DEPTH+1`.
@@ -158,7 +171,7 @@ wake --sync                                                       # guest: copy 
 - **Payload context.** Every wake appends `host=<hostname> user=<user> cwd=<cwd>` to `detail` so the receiver can see where it came from. Do not use wake from a directory whose path is itself sensitive.
 - **Shared state.** The store is group-owned and group-writable: `$WAKE_STATE_DIR` and its `threads/` and
   `inbox/` dirs are `root:wake 2770` (setgid, so new files inherit the `wake` group) and thread files are
-  `664`. Every bot account that appends is in the `wake` group. `wake` never changes these modes, so
+  `660`. Every bot account that appends is in the `wake` group. `wake` never changes these modes, so
   an append cannot widen a store an admin tightened. Anyone in the group can read and forge thread
   lines; keep untrusted users out of it.
 - **Host commands.** Thread and inbox I/O runs as shell commands on the host: through `WAKE_HOSTOPS` from a guest, or `bash -lc` (a login shell, so profiles are sourced) on the host itself. Every value placed in those commands is quoted with `shlex.quote`; thread ids and inbox hashes are validated first.
