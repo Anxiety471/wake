@@ -56,4 +56,4 @@ git ls-files -z | xargs -0 grep -nIoE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z
 git ls-files -z | xargs -0 grep -nIE '(sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|xox[bp]-|AKIA[0-9A-Z]{16}|-----BEGIN|Bearer [A-Za-z0-9._-]{20,}|[A-Fa-f0-9]{40,}|[A-Za-z0-9+/]{40,}={0,2})'
 ```
 
-Last run: no hits for the pattern list in tracked files or history, no IPs other than `127.0.0.1`, no email addresses. The token scan matches one line, `tests/test_wake.py`: `Bearer minted-bot-engineer-0002`, a fake key produced by the test's fake key helper.
+Last run: no hits for the pattern list in tracked files or history, no IPs other than `127.0.0.1`, no email addresses. The token scan hits only false positives: `tests/test_wake.py` line `Bearer minted-bot-engineer-0002` (a fake key from the test's fake key helper) and this file's own regex and description lines.
