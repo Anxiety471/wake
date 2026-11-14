@@ -6,6 +6,8 @@ A small CLI that lets AI bots and coding sessions wake each other and ask each o
 
 Python 3.9 or newer, standard library only (tested on 3.9, 3.10, 3.11, 3.12 and 3.13). No daemon.
 
+The name `wake` is generic and may collide with other commands or packages. Run `command -v wake` before installing: `install.sh` overwrites files of the same name in `$PREFIX/bin`, and `wake-hook` / `wake-run` call `wake` from `PATH`.
+
 ## How it works
 
 ```
@@ -94,6 +96,8 @@ wake engineer "PR #42 is ready"     # one-way notify
 wake                                # interactive picker (on a TTY)
 ```
 
+`--me` and the default sender label recognise a bot by its working directory: a path containing `/bots/<bot-id>` means "this shell is that bot". That layout comes from one bot platform. Anywhere else, set `WAKE_SOURCE=bot:<alias>` (or pass `--source`).
+
 ### `--ask`: ask and get an answer
 
 ```sh
@@ -142,7 +146,7 @@ wake --sync                                                       # guest: copy 
 - `wake-run [--bot BOT] [--only-errors] [--name label] -- cmd...` — run a command, wake a bot when it ends (`ok` on exit 0, `error` otherwise). Child commands see `WAKE_DEPTH+1`.
 - `wake-hook claude-code Stop|StopFailure` (hook JSON on stdin) or `wake-hook codex '<json>'` — turn coding-agent hook events into wakes. Off unless `WAKE_HOOK=errors|all`.
 - `wake-mcp` — MCP stdio server with tools `wake_bot` and `wake_list`.
-- `wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]` — session inbox plumbing for a session extension.
+- `wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]` — session inbox plumbing for a session extension. `<hash>` is 6 to 32 lowercase hex characters; `read` only accepts `$WAKE_STATE_DIR/inbox/<hash>.jsonl`.
 - [`docs/agent-skill/SKILL.md`](docs/agent-skill/SKILL.md) — a skill file that teaches an agent when and how to use wake (`SKILL_DIR=... ./install.sh`).
 
 ## Security model
@@ -153,7 +157,10 @@ wake --sync                                                       # guest: copy 
 - **Thread ownership.** Only the owner or the target may append to a thread; thread ids with `/` or `..` are rejected.
 - **Payload context.** Every wake appends `host=<hostname> user=<user> cwd=<cwd>` to `detail` so the receiver can see where it came from. Do not use wake from a directory whose path is itself sensitive.
 - **Shared state.** Thread files are world-writable (`666`, directory `1777`) so every bot account on the host can append. Anyone with a shell on the host can read and forge thread lines; keep untrusted users off that host.
+- **Host commands.** Thread and inbox I/O runs as shell commands on the host: through `WAKE_HOSTOPS` from a guest, or `bash -lc` (a login shell, so profiles are sourced) on the host itself. Every value placed in those commands is quoted with `shlex.quote`; thread ids and inbox hashes are validated first.
 - **Nothing secret in messages.** Messages go to bot runs and logs. Do not send keys, tokens or personal data.
+
+Report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
 
 ## Loop guard
 
@@ -166,16 +173,21 @@ Bots that wake bots can loop. Two limits apply to every send:
 
 Each request also carries an `Idempotency-Key` derived from bot, source, event, detail and a 10-minute bucket, so a retried identical wake can be deduplicated by the server.
 
-## Tests
+## Development
 
 ```sh
 tests/run.sh                      # python3 from PATH
 PYTHON=python3.12 tests/run.sh    # a specific interpreter; the bin/ scripts run under it too
+uv run --with ruff ruff check . && uv run --with ruff ruff format --check .
+shellcheck install.sh tests/run.sh scripts/scrub-check.sh
+scripts/scrub-check.sh --history  # fails on IPs other than 127.0.0.1, emails and token-like strings
 ```
 
-Offline: a fake webhook server on 127.0.0.1 records every request; state, keys, registry and rate log live in a temporary directory.
+Tests are offline: a fake webhook server on 127.0.0.1 records every request; state, keys, registry and rate log live in a temporary directory.
 
 Run the suite as a non-root user. As root, the two `sg` fallback tests are skipped with a reason (root reads any file, so the fallback is never reached) and `run.sh` prints a note.
+
+CI (`.github/workflows/ci.yml`) runs the tests on Python 3.9 to 3.13, ruff, shellcheck, `compileall` and the secret scan on every push and pull request. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Changelog
 

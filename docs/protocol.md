@@ -49,7 +49,7 @@ The directory is created `1777` and files `666` (falls back to `sudo` if the dir
 - `<hash>.jsonl` — the inbox; each delivered reply is one line `{"from", "kind": "reply", "thread", "text", "ts"}`.
 - `active/<hash>.json` — liveness marker `{"inbox": "<path>", "pid": <session pid>, ...}`. A reply is delivered to the inbox recorded on the thread if its pid is alive, otherwise to the single live inbox; with two or more live inboxes and no match, nothing is guessed. Markers older than a day are pruned on `register`.
 
-`wake-inbox-io register <hash> [json]` creates both and prints the inbox path; `beat` rewrites the marker; `read <inbox>` prints it.
+`wake-inbox-io register <hash> [json]` creates both and prints the inbox path; `beat <hash> [json]` rewrites the marker; `read <inbox>` prints the inbox. `<hash>` must be 6 to 32 lowercase hex characters (`[0-9a-f]{6,32}`), and `<inbox>` must be exactly `$WAKE_STATE_DIR/inbox/<hash>.jsonl`; anything else exits 1 before a command runs. The JSON goes through stdin, never through the shell, and every path is quoted with `shlex.quote`.
 
 ## `WAKE_HOSTOPS` (guest mode)
 
