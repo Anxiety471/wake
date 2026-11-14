@@ -169,7 +169,7 @@ class InboxIoShapeTests(WakeTestCase):
     def test_register_keeps_the_mode_tail_the_gate_matches_literally(self):
         """The gate's inbox-register route is an exact literal that includes the chmod tail, so
         dropping it refuses registration on a gated host instead of fixing anything. The store
-        itself is 2770/660 and the gate never runs this text: it creates both files at 660.
+        inbox dir is 2770 and the gate never runs this text: it creates both files at 660.
         """
         cmds = exercise_inbox_io(self)
         reg = [c for c in cmds if "chmod 666" in c]

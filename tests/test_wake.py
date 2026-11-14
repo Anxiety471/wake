@@ -452,6 +452,23 @@ class ThreadTests(WakeTestCase):
         self.assertNotIn("chmod", cmds)
         self.assertNotIn("sudo chmod", cmds)
 
+    def test_append_failure_names_the_thread_store_mode(self):
+        hostops = os.path.join(self.fakebin, "hostops-deny-write")
+        write_exe(
+            hostops,
+            """
+            #!/bin/sh
+            cat > /dev/null
+            echo "wake-gate: mkdir: permission denied" >&2
+            exit 1
+        """,
+        )
+        r = self.wake("--ask", "engineer", "mode probe", "--no-send", env={"WAKE_HOSTOPS": hostops})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("3770", r.stderr)
+        self.assertIn("sticky", r.stderr)
+        self.assertNotIn("2770", r.stderr)
+
     def test_unreadable_store_is_not_reported_as_a_missing_thread(self):
         hostops = os.path.join(self.fakebin, "hostops-denied")
         write_exe(
