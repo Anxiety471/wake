@@ -447,8 +447,9 @@ class ThreadTests(WakeTestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         cmds = slurp(log)
         self.assertIn(".jsonl", cmds)
-        for mode in ("chmod", "1777", "666"):
-            self.assertNotIn(mode, cmds)
+        # a thread id is four hex digits, so "1777" or "666" can appear in a name: only chmod matters
+        self.assertNotIn("chmod", cmds)
+        self.assertNotIn("sudo chmod", cmds)
 
     def test_unreadable_store_is_not_reported_as_a_missing_thread(self):
         hostops = os.path.join(self.fakebin, "hostops-denied")

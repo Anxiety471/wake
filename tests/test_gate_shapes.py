@@ -66,8 +66,8 @@ class CommandShapeTests(WakeTestCase):
         cmds = exercise(self)
         self.assertTrue(any(".jsonl" in c for c in cmds), cmds)
         for c in cmds:
-            for mode in ("chmod", "1777", "666"):
-                self.assertNotIn(mode, c)
+            # a thread id is four hex digits, so "1777" or "666" can appear in a name: only chmod matters
+            self.assertNotIn("chmod", c)
             if c.startswith("cat "):
                 self.assertTrue(c.endswith("2>/dev/null"), c)
 
