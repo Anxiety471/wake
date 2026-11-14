@@ -3,6 +3,7 @@
 Every webhook call goes to a fake HTTP server on 127.0.0.1; nothing touches the network,
 the real ~/.config/wake, the real rate log in /tmp, or a real host. Run: python3 -m unittest discover -s tests
 """
+
 import json
 import os
 import re
@@ -23,8 +24,10 @@ sys.path.insert(0, BIN)
 import wake_config  # noqa: E402
 
 IS_ROOT = os.getuid() == 0
-ROOT_SKIP = ("running as root: root reads files regardless of mode, so the sg fallback for an unreadable key "
-             "is never reached. Run tests/run.sh as a non-root user to cover it (CI does).")
+ROOT_SKIP = (
+    "running as root: root reads files regardless of mode, so the sg fallback for an unreadable key "
+    "is never reached. Run tests/run.sh as a non-root user to cover it (CI does)."
+)
 
 
 class FakeWebhook:
@@ -40,8 +43,9 @@ class FakeWebhook:
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 m = re.match(r"^/api/v1/bots/([^/]+)/webhook$", self.path)
                 bot = m.group(1) if m else None
-                outer.requests.append({"path": self.path, "bot": bot, "headers": dict(self.headers),
-                                       "json": json.loads(body or b"{}")})
+                outer.requests.append(
+                    {"path": self.path, "bot": bot, "headers": dict(self.headers), "json": json.loads(body or b"{}")}
+                )
                 code = outer.status.get(bot, 200) if bot else 404
                 out = json.dumps({"ok": code == 200}).encode()
                 self.send_response(code)
@@ -116,7 +120,7 @@ class WakeTestCase(unittest.TestCase):
 
     def tearDown(self):
         self.hook.close()
-        for root, dirs, files in os.walk(self.tmp):
+        for root, _dirs, files in os.walk(self.tmp):
             for n in files:
                 try:
                     os.chmod(os.path.join(root, n), 0o600)
@@ -126,8 +130,15 @@ class WakeTestCase(unittest.TestCase):
 
     def run_bin(self, name, *args, env=None, stdin=None):
         e = dict(self.env, **(env or {}))
-        return subprocess.run([os.path.join(BIN, name), *args], env=e, cwd=self.work, input=stdin,
-                              capture_output=True, text=True, timeout=60)
+        return subprocess.run(
+            [os.path.join(BIN, name), *args],
+            env=e,
+            cwd=self.work,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
 
     def wake(self, *args, env=None):
         return self.run_bin("wake", *args, env=env)
@@ -151,7 +162,9 @@ class SendTests(WakeTestCase):
         self.assertRegex(req["headers"]["Idempotency-Key"], r"^[0-9a-f]{32}$")
         self.assertEqual(req["headers"]["User-Agent"], "wake-cli/" + wake_config.VERSION)
         body = req["json"]
-        self.assertEqual((body["source"], body["event"], body["level"], body["depth"]), ("human:tester", "message", "info", 0))
+        self.assertEqual(
+            (body["source"], body["event"], body["level"], body["depth"]), ("human:tester", "message", "info", 0)
+        )
         self.assertTrue(body["detail"].startswith("PR #42 is ready | host="), body["detail"])
 
     def test_no_key_and_no_helper_is_a_clear_error(self):
@@ -171,11 +184,17 @@ class SendTests(WakeTestCase):
     def test_config_file_supplies_settings_and_env_wins(self):
         self.put_key("bot-engineer-0002")
         with open(os.path.join(self.cfg, "config.env"), "w") as f:
-            f.write(f"# comment\nexport WAKE_API_BASE=\"{self.hook.base}\"\n")
+            f.write(f'# comment\nexport WAKE_API_BASE="{self.hook.base}"\n')
         env = dict(self.env)
         del env["WAKE_API_BASE"]
-        r = subprocess.run([os.path.join(BIN, "wake"), "engineer", "via file"], env=env, cwd=self.work,
-                           capture_output=True, text=True, timeout=60)
+        r = subprocess.run(
+            [os.path.join(BIN, "wake"), "engineer", "via file"],
+            env=env,
+            cwd=self.work,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(len(self.hook.requests), 1)
         r = self.wake("engineer", "via env", env={"WAKE_API_BASE": "http://127.0.0.1:9/nowhere"})
@@ -215,11 +234,14 @@ class KeyTests(WakeTestCase):
         path = self.put_key("bot-engineer-0002", "unused")
         os.chmod(path, 0)
         log = os.path.join(self.tmp, "sg.log")
-        write_exe(os.path.join(self.fakebin, "sg"), f"""
+        write_exe(
+            os.path.join(self.fakebin, "sg"),
+            f"""
             #!/bin/sh
             printf '%s\\n' "$@" > {log}
             echo sg-key
-        """)
+        """,
+        )
         r = self.wake("engineer", "hello", env={"WAKE_GROUP": "botkeys"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.hook.requests[0]["headers"]["Authorization"], "Bearer sg-key")
@@ -237,7 +259,9 @@ class KeyTests(WakeTestCase):
 
     def test_setup_creates_key_with_helper_then_send_uses_it(self):
         log = os.path.join(self.tmp, "helper.log")
-        write_exe(os.path.join(self.fakebin, "fake-key-helper"), f"""
+        write_exe(
+            os.path.join(self.fakebin, "fake-key-helper"),
+            f"""
             #!/bin/sh
             echo "$*" >> {log}
             case "$1" in
@@ -245,7 +269,8 @@ class KeyTests(WakeTestCase):
               enable-bot) echo "1 routine" ;;
               *) echo "minted-$1" ;;
             esac
-        """)
+        """,
+        )
         env = {"WAKE_KEY_HELPER": "fake-key-helper"}
         r = self.wake("--setup", "engineer", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -259,7 +284,7 @@ class KeyTests(WakeTestCase):
         self.assertEqual(self.hook.requests[0]["headers"]["Authorization"], "Bearer minted-bot-engineer-0002")
 
     def test_setup_refuses_when_key_exists_elsewhere(self):
-        write_exe(os.path.join(self.fakebin, "fake-key-helper"), "#!/bin/sh\n[ \"$1\" = has-key ] && echo yes\n")
+        write_exe(os.path.join(self.fakebin, "fake-key-helper"), '#!/bin/sh\n[ "$1" = has-key ] && echo yes\n')
         r = self.wake("--setup", "engineer", env={"WAKE_KEY_HELPER": "fake-key-helper"})
         self.assertEqual(r.returncode, 1)
         self.assertIn("--rotate", r.stderr)
@@ -277,7 +302,7 @@ class LoopGuardTests(WakeTestCase):
         self.assertEqual(len(log["bot-engineer-0002"]), 1)
 
         now = time.time()
-        log["bot-engineer-0002"] = [now - 10] * 30 + [now - 7200]   # 30 recent, 1 expired
+        log["bot-engineer-0002"] = [now - 10] * 30 + [now - 7200]  # 30 recent, 1 expired
         write_json(self.rate_path(), log)
         r = self.wake("engineer", "too many")
         self.assertEqual(r.returncode, 1)
@@ -307,8 +332,9 @@ class LoopGuardTests(WakeTestCase):
     def test_wake_run_raises_depth_and_reports_exit(self):
         self.put_key("bot-engineer-0002")
         out = os.path.join(self.tmp, "depth")
-        r = self.run_bin("wake-run", "--bot", "engineer", "--name", "job", "--",
-                         "sh", "-c", f"echo $WAKE_DEPTH > {out}; exit 3")
+        r = self.run_bin(
+            "wake-run", "--bot", "engineer", "--name", "job", "--", "sh", "-c", f"echo $WAKE_DEPTH > {out}; exit 3"
+        )
         self.assertEqual(r.returncode, 3)
         self.assertEqual(slurp(out).strip(), "1")
         [req] = self.hook.requests
@@ -376,7 +402,7 @@ class ThreadTests(WakeTestCase):
         self.assertIn("delivered into the owner's session", r.stdout)
         [msg] = [json.loads(x) for x in slurp(inbox).splitlines()]
         self.assertEqual((msg["from"], msg["thread"], msg["text"]), ("bot:engineer", tid, "done"))
-        self.assertEqual(len(self.hook.requests), 1)   # the ask only; the reply went to the inbox
+        self.assertEqual(len(self.hook.requests), 1)  # the ask only; the reply went to the inbox
 
     def test_no_send_records_thread_only(self):
         r = self.wake("--ask", "engineer", "dry", "--no-send")
@@ -389,11 +415,14 @@ class ThreadTests(WakeTestCase):
     def test_hostops_bridge_is_used_in_guest_mode(self):
         log = os.path.join(self.tmp, "hostops.log")
         hostops = os.path.join(self.fakebin, "hostops")
-        write_exe(hostops, f"""
+        write_exe(
+            hostops,
+            f"""
             #!/bin/sh
             echo "$1" >> {log}
             exec bash -c "$1"
-        """)
+        """,
+        )
         r = self.wake("--ask", "engineer", "via host", "--no-send", env={"WAKE_HOSTOPS": hostops})
         self.assertEqual(r.returncode, 0, r.stderr)
         tid = re.search(r"thread (\S+) opened", r.stdout).group(1)
@@ -434,11 +463,14 @@ class DirectoryTests(WakeTestCase):
     def sync(self, env=None):
         log = os.path.join(self.tmp, "hostops.log")
         hostops = os.path.join(self.fakebin, "hostops")
-        write_exe(hostops, f"""
+        write_exe(
+            hostops,
+            f"""
             #!/bin/sh
             printf '%s\\n' "$1" >> {log}
             cat > /dev/null
-        """)
+        """,
+        )
         r = self.wake("--sync", env=dict({"WAKE_HOSTOPS": hostops}, **(env or {})))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("synced to host", r.stdout)
@@ -478,7 +510,12 @@ class HelperTests(WakeTestCase):
         msgs = [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "wake_bot", "arguments": {"bot": "engineer", "message": "hi"}}},
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "wake_bot", "arguments": {"bot": "engineer", "message": "hi"}},
+            },
         ]
         r = self.run_bin("wake-mcp", stdin="".join(json.dumps(m) + "\n" for m in msgs))
         out = [json.loads(x) for x in r.stdout.splitlines()]
@@ -514,11 +551,14 @@ class InboxIoHostileInputTests(WakeTestCase):
         self.tmp_pwned_existed = os.path.exists("/tmp/pwned")
         self.hostops_log = os.path.join(self.tmp, "hostops.log")
         self.hostops = os.path.join(self.fakebin, "hostops")
-        write_exe(self.hostops, f"""
+        write_exe(
+            self.hostops,
+            f"""
             #!/bin/sh
             echo "$1" >> {self.hostops_log}
             exec bash -c "$1"
-        """)
+        """,
+        )
 
     def assert_refused(self, *args, env=None):
         r = self.run_bin("wake-inbox-io", *args, env=env)
@@ -531,15 +571,34 @@ class InboxIoHostileInputTests(WakeTestCase):
         self.assertFalse(os.path.exists(self.hostops_log), "a command reached the host bridge")
 
     def hostile_hashes(self):
-        return ["x; touch /tmp/pwned", f"x; touch {self.pwned}", f"$(touch {self.pwned})", f"`touch {self.pwned}`",
-                "../../etc/passwd", "ABCDEF", "abc", "a" * 33, "abc123\n", "abc123 ", ""]
+        return [
+            "x; touch /tmp/pwned",
+            f"x; touch {self.pwned}",
+            f"$(touch {self.pwned})",
+            f"`touch {self.pwned}`",
+            "../../etc/passwd",
+            "ABCDEF",
+            "abc",
+            "a" * 33,
+            "abc123\n",
+            "abc123 ",
+            "",
+        ]
 
     def hostile_paths(self):
         box = os.path.join(self.inbox, "abc123.jsonl")
-        return ["x; touch /tmp/pwned", f"{box}; touch {self.pwned}", f"{box} $(touch {self.pwned})",
-                "/etc/passwd", os.path.join(self.inbox, "..", "..", "etc", "passwd"),
-                os.path.join(self.inbox, "active", "abc123.json"), os.path.join(self.inbox, "abc123.json"),
-                os.path.join(self.inbox, "x;y.jsonl"), "inbox/abc123.jsonl", self.inbox + "//abc123.jsonl"]
+        return [
+            "x; touch /tmp/pwned",
+            f"{box}; touch {self.pwned}",
+            f"{box} $(touch {self.pwned})",
+            "/etc/passwd",
+            os.path.join(self.inbox, "..", "..", "etc", "passwd"),
+            os.path.join(self.inbox, "active", "abc123.json"),
+            os.path.join(self.inbox, "abc123.json"),
+            os.path.join(self.inbox, "x;y.jsonl"),
+            "inbox/abc123.jsonl",
+            self.inbox + "//abc123.jsonl",
+        ]
 
     def test_register_and_beat_refuse_bad_hash(self):
         for env in (None, {"WAKE_HOSTOPS": self.hostops}):
@@ -569,7 +628,7 @@ class InboxIoHostileInputTests(WakeTestCase):
         box = r.stdout.strip()
         self.assertEqual(box, os.path.join(state, "inbox", "abc123.jsonl"))
         self.assertTrue(os.path.exists(os.path.join(state, "inbox", "active", "abc123.json")))
-        self.assertTrue(os.path.exists(self.hostops_log))   # went through the host bridge
+        self.assertTrue(os.path.exists(self.hostops_log))  # went through the host bridge
         with open(box, "a") as f:
             f.write("hi\n")
         self.assertEqual(self.run_bin("wake-inbox-io", "read", box, env=env).stdout, "hi\n")
@@ -590,8 +649,10 @@ class ConfigTests(unittest.TestCase):
             with open(os.path.join(d, "config.env"), "w") as f:
                 f.write("WAKE_STATE_DIR=/srv/wake/\nWAKE_GROUP='team'\nWAKE_BOT=lead\n")
             cfg = wake_config.load({"WAKE_CONFIG_DIR": d, "WAKE_BOT": "ops", "WAKE_KEY_DIR": "/k"})
-        self.assertEqual((cfg["WAKE_STATE_DIR"], cfg["WAKE_GROUP"], cfg["WAKE_BOT"], cfg["WAKE_KEY_DIR"]),
-                         ("/srv/wake", "team", "ops", "/k"))
+        self.assertEqual(
+            (cfg["WAKE_STATE_DIR"], cfg["WAKE_GROUP"], cfg["WAKE_BOT"], cfg["WAKE_KEY_DIR"]),
+            ("/srv/wake", "team", "ops", "/k"),
+        )
 
 
 if __name__ == "__main__":

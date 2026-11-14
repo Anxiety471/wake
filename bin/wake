@@ -1,17 +1,28 @@
 #!/usr/bin/env python3
 # desc: wake any bot over its webhook; ask it a question and read the answer. `wake` = picker; `wake ops "check disk"`; `wake --info engineer`; `wake --ask engineer "why does CI fail" --wait 180`; `wake --reply <id> "..."`; `wake --inbox`; `wake --list`; `wake --who dns`. See wake --help
-import argparse, hashlib, json, os, random, shlex, shutil, subprocess, sys, time, urllib.request, urllib.error
+import argparse
+import hashlib
+import json
+import os
+import random
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import wake_config  # noqa: E402
 
 CFG = wake_config.load()
 BASE = CFG["WAKE_API_BASE"].rstrip("/")
-REGISTRY = CFG["WAKE_REGISTRY"]           # bots.tsv: alias, id, name, kind, role
-KEYS = CFG["WAKE_KEY_DIR"]                # <bot-id>.key files, mode 600
-HOSTOPS = CFG["WAKE_HOSTOPS"]             # set = this shell is a guest that reaches the host through HOSTOPS
+REGISTRY = CFG["WAKE_REGISTRY"]  # bots.tsv: alias, id, name, kind, role
+KEYS = CFG["WAKE_KEY_DIR"]  # <bot-id>.key files, mode 600
+HOSTOPS = CFG["WAKE_HOSTOPS"]  # set = this shell is a guest that reaches the host through HOSTOPS
 STATE = CFG["WAKE_STATE_DIR"]
-THREADS = STATE + "/threads"              # on the host: shared by every bot and session that talks through it
+THREADS = STATE + "/threads"  # on the host: shared by every bot and session that talks through it
 KEY_HELPER = CFG["WAKE_KEY_HELPER"]
 GROUP = CFG["WAKE_GROUP"]
 DEFAULT_BOT = CFG["WAKE_BOT"]
@@ -77,7 +88,7 @@ def default_source():
 
 
 def context():
-    return "host=%s user=%s cwd=%s" % (os.uname().nodename, os.environ.get("USER", "?"), os.getcwd())
+    return f"host={os.uname().nodename} user={os.environ.get('USER', '?')} cwd={os.getcwd()}"
 
 
 def host(cmd):
@@ -92,7 +103,11 @@ def sync_registry():
     if HOSTOPS and os.path.exists(HOSTOPS) and in_container():
         dst = q(STATE + "/bots.tsv")
         group = CFG["WAKE_REGISTRY_GROUP"]
-        cmd = f"sudo tee {dst} >/dev/null" + (f" && sudo chgrp {q(group)} {dst}" if group else "") + f" && sudo chmod 664 {dst}"
+        cmd = (
+            f"sudo tee {dst} >/dev/null"
+            + (f" && sudo chgrp {q(group)} {dst}" if group else "")
+            + f" && sudo chmod 664 {dst}"
+        )
         r = subprocess.run([HOSTOPS, cmd], input=rows, capture_output=True, text=True)
         print("synced to host" if r.returncode == 0 else "sync failed: " + r.stderr[-200:])
     else:
@@ -101,8 +116,9 @@ def sync_registry():
 
 # ---------- threads: one JSON object per line, shared on the host ----------
 
+
 def tid_new():
-    return "%s-%04x" % (time.strftime("%m%d%H%M"), random.getrandbits(16))
+    return f"{time.strftime('%m%d%H%M')}-{random.getrandbits(16):04x}"
 
 
 def _host_run(cmd, data=None):
@@ -115,8 +131,10 @@ def _host_run(cmd, data=None):
 def thread_append(tid, rec):
     line = json.dumps(rec, ensure_ascii=False) + "\n"
     d, path = q(THREADS), q(f"{THREADS}/{tid}.jsonl")
-    cmd = (f"[ -d {d} ] || {{ mkdir -p {d} 2>/dev/null && chmod 1777 {d}; }} || {{ sudo mkdir -p {d} && sudo chmod 1777 {d}; }}; "
-           f"if [ -e {path} ]; then dd of={path} oflag=append conv=notrunc,nocreat status=none; else cat >> {path} && chmod 666 {path}; fi")
+    cmd = (
+        f"[ -d {d} ] || {{ mkdir -p {d} 2>/dev/null && chmod 1777 {d}; }} || {{ sudo mkdir -p {d} && sudo chmod 1777 {d}; }}; "
+        f"if [ -e {path} ]; then dd of={path} oflag=append conv=notrunc,nocreat status=none; else cat >> {path} && chmod 666 {path}; fi"
+    )
     r = _host_run(cmd, line)
     if r.returncode != 0:
         sys.exit("cannot write thread " + tid + ": " + (r.stderr or r.stdout).strip()[-200:])
@@ -200,6 +218,7 @@ def show(recs, tid=""):
 
 # ---------- sending ----------
 
+
 def key_helper_available():
     if HOSTOPS:
         return os.path.exists(HOSTOPS)
@@ -214,8 +233,10 @@ def ensure_key(b, rotate=False):
     path = f"{KEYS}/{b['id']}.key"
     if os.path.exists(path) and not rotate:
         return path
-    no_key = (f"{b['name']} has no wake key yet ({path} is missing) and this account cannot create one. "
-              f"Ask an admin of the host to run: wake --setup {b['alias']}")
+    no_key = (
+        f"{b['name']} has no wake key yet ({path} is missing) and this account cannot create one. "
+        f"Ask an admin of the host to run: wake --setup {b['alias']}"
+    )
     if not key_helper_available():
         sys.exit(no_key)
     try:
@@ -225,7 +246,9 @@ def ensure_key(b, rotate=False):
     if rc != 0:
         sys.exit(f"cannot reach host: {err[-200:]}")
     if out == "yes" and not rotate:
-        sys.exit(f"{b['name']} already has a key made elsewhere and none is saved here. Run: wake --setup {b['alias']} --rotate (old key stops working)")
+        sys.exit(
+            f"{b['name']} already has a key made elsewhere and none is saved here. Run: wake --setup {b['alias']} --rotate (old key stops working)"
+        )
     rc, out, err = host(f"{KEY_HELPER} {q(b['id'])}" + (" --rotate" if rotate else ""))
     if rc != 0 or not out:
         sys.exit(f"key creation failed: {err[-200:]}")
@@ -238,8 +261,8 @@ def ensure_key(b, rotate=False):
     return path
 
 
-MAX_DEPTH = 2      # a wake started by a wake started by a wake is refused
-HOURLY_CAP = 30    # per target bot, per user
+MAX_DEPTH = 2  # a wake started by a wake started by a wake is refused
+HOURLY_CAP = 30  # per target bot, per user
 
 
 def rate_file():
@@ -259,7 +282,9 @@ def guard(b, force):
         log = {}
     hits = [t for t in log.get(b["id"], []) if now - t < 3600]
     if len(hits) >= HOURLY_CAP and not force:
-        sys.exit(f"refused: {len(hits)} wakes to {b['alias']} in the last hour (cap {HOURLY_CAP}). Use --force to override.")
+        sys.exit(
+            f"refused: {len(hits)} wakes to {b['alias']} in the last hour (cap {HOURLY_CAP}). Use --force to override."
+        )
     log[b["id"]] = hits + [now]
     json.dump(log, open(path, "w"))
     return depth
@@ -272,8 +297,10 @@ def read_key(path):
     except PermissionError:
         r = subprocess.run(["sg", GROUP, "-c", "cat " + q(path)], capture_output=True, text=True)
         if r.returncode:
-            sys.exit(f"cannot read {path}: permission denied, and `sg {GROUP}` failed too. "
-                     f"Add this user to group {GROUP!r} (then start a new login) or ask an admin.")
+            sys.exit(
+                f"cannot read {path}: permission denied, and `sg {GROUP}` failed too. "
+                f"Add this user to group {GROUP!r} (then start a new login) or ask an admin."
+            )
         return r.stdout.strip()
 
 
@@ -283,12 +310,27 @@ def send(b, source, event, level, detail, ref, force=False, quiet=False):
     depth = guard(b, force)
     key = read_key(ensure_key(b))
     detail = (detail + " | " + context()).strip(" |")
-    payload = {"depth": depth, "source": source, "event": event, "level": level, "detail": detail, "ref": ref,
-               "time": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    payload = {
+        "depth": depth,
+        "source": source,
+        "event": event,
+        "level": level,
+        "detail": detail,
+        "ref": ref,
+        "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
     idem = hashlib.sha256(f"{b['id']}|{source}|{event}|{detail}|{int(time.time() // 600)}".encode()).hexdigest()[:32]
-    req = urllib.request.Request(f"{BASE}/{b['id']}/webhook", data=json.dumps(payload).encode(), method="POST",
-                                 headers={"Authorization": "Bearer " + key, "Content-Type": "application/json",
-                                          "Idempotency-Key": idem, "User-Agent": "wake-cli/" + wake_config.VERSION})
+    req = urllib.request.Request(
+        f"{BASE}/{b['id']}/webhook",
+        data=json.dumps(payload).encode(),
+        method="POST",
+        headers={
+            "Authorization": "Bearer " + key,
+            "Content-Type": "application/json",
+            "Idempotency-Key": idem,
+            "User-Agent": "wake-cli/" + wake_config.VERSION,
+        },
+    )
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             body = r.read().decode()
@@ -297,8 +339,10 @@ def send(b, source, event, level, detail, ref, force=False, quiet=False):
             return body
     except urllib.error.HTTPError as e:
         body = e.read().decode()[:200]
-        hint = {401: f" (key rejected; try wake --setup {b['alias']} --rotate)",
-                404: " (no enabled webhook routine on that bot; ask an admin to enable one)"}.get(e.code, "")
+        hint = {
+            401: f" (key rejected; try wake --setup {b['alias']} --rotate)",
+            404: " (no enabled webhook routine on that bot; ask an admin to enable one)",
+        }.get(e.code, "")
         sys.exit(f"{e.code} {body}{hint}")
     except urllib.error.URLError as e:
         sys.exit(f"cannot reach {BASE}: {e.reason}")
@@ -306,7 +350,6 @@ def send(b, source, event, level, detail, ref, force=False, quiet=False):
 
 def ask(b, text, wait, level, source, force, no_send=False):
     tid = tid_new()
-    me = own_bot(load())
     thread_append(
         tid,
         {
@@ -345,7 +388,7 @@ def reply(tid, text, source, notify, force):
     if not recs:
         sys.exit(
             f"no thread {tid}: it was never opened, so there is nothing to answer. "
-            f"A question thread is created by: wake --ask <bot> \"<question>\" (checked {THREADS}). "
+            f'A question thread is created by: wake --ask <bot> "<question>" (checked {THREADS}). '
             f"To reach that sender directly, wake the bot instead."
         )
     head = recs[0]
@@ -353,11 +396,15 @@ def reply(tid, text, source, notify, force):
     reply_to = head.get("reply_to") or ("bot:" + head["to"] if head.get("to") else "")
     mine_inbox = os.environ.get("WAKE_INBOX", "")
     is_target = bool(reply_to) and source == reply_to
-    is_owner = source == owner or (
-        owner.startswith("human:") and source.split(":", 1)[0] in ("human", "skill")
-    ) or (bool(mine_inbox) and mine_inbox == head.get("inbox"))
+    is_owner = (
+        source == owner
+        or (owner.startswith("human:") and source.split(":", 1)[0] in ("human", "skill"))
+        or (bool(mine_inbox) and mine_inbox == head.get("inbox"))
+    )
     if not (is_target or is_owner) and not force:
-        sys.exit(f"thread {tid} is owned by {owner} and replies go to {reply_to}; {source} is neither, so it cannot answer. Use --force to override.")
+        sys.exit(
+            f"thread {tid} is owned by {owner} and replies go to {reply_to}; {source} is neither, so it cannot answer. Use --force to override."
+        )
     thread_append(tid, {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "from": source, "kind": "reply", "text": text})
     print(f"replied on thread {tid} (owner {owner}, reply_to {reply_to}): {text}")
     ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -375,7 +422,15 @@ def reply(tid, text, source, notify, force):
     else:
         tgt = resolve(reply_to[4:], load()) if reply_to.startswith("bot:") else None
         if tgt:
-            send(tgt, source, "reply", "info", f"answer on thread {tid} from {source} (no reply needed): {text}", "", force)
+            send(
+                tgt,
+                source,
+                "reply",
+                "info",
+                f"answer on thread {tid} from {source} (no reply needed): {text}",
+                "",
+                force,
+            )
             print(f"  woke {reply_to} with the reply")
     return 0
 
@@ -389,7 +444,7 @@ p.add_argument("--info", metavar="BOT", help="who a bot is, its role, and how to
 p.add_argument("--me", action="store_true", help="which bot this shell is inside, from the registry")
 p.add_argument("--ask", metavar="BOT", help="ask a bot and record a thread; --wait N blocks for its reply")
 p.add_argument("--wait", type=int, default=0, metavar="SECONDS")
-p.add_argument("--reply", nargs="+", metavar="THREAD_ID TEXT", help="answer a thread: wake --reply <id> \"<text>\"")
+p.add_argument("--reply", nargs="+", metavar="THREAD_ID TEXT", help='answer a thread: wake --reply <id> "<text>"')
 p.add_argument("--thread", metavar="ID", help="show one thread")
 p.add_argument("--inbox", action="store_true", help="my threads and their answers")
 p.add_argument("--notify", action="store_true", help="wake the asker bot when replying (default for bot askers)")
@@ -404,7 +459,9 @@ p.add_argument("--allow-private", action="store_true")
 p.add_argument("--force", action="store_true", help="skip loop guard")
 p.add_argument("--sync", action="store_true", help="push the bot list to the host copy")
 p.add_argument("--who", nargs="+", metavar="WORD", help="list bots whose role matches these words")
-p.add_argument("--add", nargs="+", metavar="ROW", help="add a bot row: ALIAS ID NAME KIND(open|private) [ROLE] and sync")
+p.add_argument(
+    "--add", nargs="+", metavar="ROW", help="add a bot row: ALIAS ID NAME KIND(open|private) [ROLE] and sync"
+)
 a = p.parse_args()
 bots = load()
 if a.source is None:
@@ -451,10 +508,15 @@ if a.info:
             sys.exit(f"no bot {a.info!r}; try `wake --list`")
     print(f"{b['alias']} · {b['name']}")
     print(f"  id       {b['id']}")
-    print(f"  kind     {b['kind']}" + ("  (never in group chats; material stays with its owner)" if b["kind"] == "private" else ""))
+    print(
+        f"  kind     {b['kind']}"
+        + ("  (never in group chats; material stays with its owner)" if b["kind"] == "private" else "")
+    )
     print(f"  role     {b['role'] or 'not set'}")
-    print(f"  reach    wake {b['alias']} \"<message>\"      ask: wake --ask {b['alias']} \"<question>\" --wait 180")
-    print(f"  private  {'yes: add --allow-private, and only for real material it owns' if b['kind'] == 'private' else 'no'}")
+    print(f'  reach    wake {b["alias"]} "<message>"      ask: wake --ask {b["alias"]} "<question>" --wait 180')
+    print(
+        f"  private  {'yes: add --allow-private, and only for real material it owns' if b['kind'] == 'private' else 'no'}"
+    )
     sys.exit(0)
 
 if a.me:

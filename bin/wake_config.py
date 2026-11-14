@@ -4,19 +4,20 @@ Every setting is read from the environment first, then from a KEY=VALUE file
 ($WAKE_CONFIG, default $WAKE_CONFIG_DIR/config.env, default ~/.config/wake/config.env),
 then falls back to the default below. An empty value in the environment counts as set.
 """
+
 import os
 
 VERSION = "0.1.0"
 
 DEFAULTS = {
-    "WAKE_API_BASE": "",                      # e.g. https://bots.example.com/api/v1/bots ; POST {base}/{bot-id}/webhook
-    "WAKE_STATE_DIR": "/var/lib/wake",        # shared threads/ and inbox/ live here (on the host)
-    "WAKE_HOSTOPS": "",                       # executable: runs its one argument as a shell command on the host, stdin passed through
-    "WAKE_KEY_HELPER": "wake-webhook-key",    # creates/rotates webhook keys: has-key ID | ID [--rotate] | enable-bot ID
-    "WAKE_GROUP": "wake",                     # group that may read key files; used by the `sg` fallback
-    "WAKE_REGISTRY_GROUP": "",                # group given to the host copy of the registry by --sync; empty = leave the group alone
-    "WAKE_RATE_DIR": "/tmp",                  # where the per-uid rate log wake-rate-<uid>.json is kept
-    "WAKE_BOT": "coordinator",                # default bot for wake-hook, wake-run and the legacy `wake <source> <event>` form
+    "WAKE_API_BASE": "",  # e.g. https://bots.example.com/api/v1/bots ; POST {base}/{bot-id}/webhook
+    "WAKE_STATE_DIR": "/var/lib/wake",  # shared threads/ and inbox/ live here (on the host)
+    "WAKE_HOSTOPS": "",  # executable: runs its one argument as a shell command on the host, stdin passed through
+    "WAKE_KEY_HELPER": "wake-webhook-key",  # creates/rotates webhook keys: has-key ID | ID [--rotate] | enable-bot ID
+    "WAKE_GROUP": "wake",  # group that may read key files; used by the `sg` fallback
+    "WAKE_REGISTRY_GROUP": "",  # group given to the host copy of the registry by --sync; empty = leave the group alone
+    "WAKE_RATE_DIR": "/tmp",  # where the per-uid rate log wake-rate-<uid>.json is kept
+    "WAKE_BOT": "coordinator",  # default bot for wake-hook, wake-run and the legacy `wake <source> <event>` form
 }
 
 
@@ -35,7 +36,7 @@ def parse_env_file(text):
         k, v = ln.split("=", 1)
         k = k.strip()
         if k.startswith("export "):
-            k = k[len("export "):].strip()
+            k = k[len("export ") :].strip()
         v = v.strip()
         if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
             v = v[1:-1]
