@@ -512,7 +512,8 @@ class DirectoryTests(WakeTestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), "wake " + wake_config.VERSION)
 
-    def sync(self, env=None):
+    def guest(self, env=None):
+        """A guest shell: WAKE_HOSTOPS points at a stub that records every command it is given."""
         log = os.path.join(self.tmp, "hostops.log")
         hostops = os.path.join(self.fakebin, "hostops")
         write_exe(
@@ -524,19 +525,36 @@ class DirectoryTests(WakeTestCase):
         """,
         )
         r = self.wake("--sync", env=dict({"WAKE_HOSTOPS": hostops}, **(env or {})))
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("synced to host", r.stdout)
-        return slurp(log)
+        return r, (slurp(log) if os.path.exists(log) else "")
 
-    def test_sync_leaves_group_alone_by_default(self):
-        cmd = self.sync()
-        self.assertIn("tee", cmd)
-        self.assertIn("chmod 664", cmd)
-        self.assertNotIn("chgrp", cmd)
+    def test_sync_from_a_guest_is_refused_and_writes_nothing(self):
+        r, sent = self.guest()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("registry sync is an operator action", r.stdout)
+        self.assertEqual(sent, "", "a guest must not touch the host registry")
 
-    def test_sync_sets_configured_group(self):
-        cmd = self.sync({"WAKE_REGISTRY_GROUP": "bot team"})
-        self.assertIn("sudo chgrp 'bot team' ", cmd)
+    def test_sync_prints_the_rows_it_would_have_written(self):
+        r, _sent = self.guest()
+        with open(os.path.join(self.cfg, "bots.tsv")) as f:
+            rows = [line for line in f.read().splitlines() if line.strip()]
+        for row in rows:
+            self.assertIn(row.split("\t")[0], r.stdout)
+
+    def test_sync_ignores_the_group_setting_when_refusing(self):
+        r, sent = self.guest({"WAKE_REGISTRY_GROUP": "bot team"})
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("chgrp", r.stdout + sent)
+
+    def test_add_keeps_the_row_local_and_refuses_the_push(self):
+        hostops = os.path.join(self.fakebin, "hostops2")
+        write_exe(hostops, "#!/bin/sh\nexit 0\n")
+        r = self.wake(
+            "--add", "ops9", "bot-ops9-0009", "Ops Bot 9", "open",
+            env={"WAKE_HOSTOPS": hostops},
+        )
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("registry sync is an operator action", r.stdout)
+        self.assertIn("bot-ops9-0009", slurp(os.path.join(self.cfg, "bots.tsv")))
 
 
 class BulkTests(WakeTestCase):

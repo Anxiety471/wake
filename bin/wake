@@ -107,20 +107,25 @@ def host(cmd):
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
 
-def sync_registry():
+SYNC_REFUSAL = "registry sync is an operator action; run it on the host"
+
+
+def sync_registry(show_rows=True):
+    """Hand the bot list to the host copy -- on the host, not from a guest.
+
+    A guest shell ingests untrusted content (webhook payloads, mail, pages). Giving it
+    `sudo tee` on bots.tsv would hand the routing table every bot trusts to whatever that
+    content says, so a guest prints the rows it would have written and exits non-zero
+    without touching the host. Returns the exit code."""
     rows = open(REGISTRY).read()
     if HOSTOPS and os.path.exists(HOSTOPS) and in_container():
-        dst = q(STATE + "/bots.tsv")
-        group = CFG["WAKE_REGISTRY_GROUP"]
-        cmd = (
-            f"sudo tee {dst} >/dev/null"
-            + (f" && sudo chgrp {q(group)} {dst}" if group else "")
-            + f" && sudo chmod 664 {dst}"
-        )
-        r = subprocess.run([HOSTOPS, cmd], input=rows, capture_output=True, text=True)
-        print("synced to host" if r.returncode == 0 else "sync failed: " + r.stderr[-200:])
-    else:
-        print("sync only runs from a guest with WAKE_HOSTOPS set (edit " + REGISTRY + " here)")
+        if show_rows:
+            sys.stdout.write(rows if rows.endswith("\n") else rows + "\n")
+        print("would write " + STATE + "/bots.tsv")
+        print(SYNC_REFUSAL)
+        return 1
+    print("sync only runs from a guest with WAKE_HOSTOPS set (edit " + REGISTRY + " here)")
+    return 0
 
 
 def key_state(b):
@@ -132,11 +137,14 @@ def key_state(b):
 
 
 def update_all(bots, source, ping, force):
-    """--update: sync the registry, pull missing keys when a helper exists, then report key state per bot."""
+    """--update: pull missing keys when a helper exists, then report key state per bot. A guest's
+    registry push is refused (operator action); that makes the exit code 1."""
+    rc = 0
     try:
-        sync_registry()
+        rc = sync_registry(show_rows=False)
     except SystemExit as e:
         print("registry sync failed: " + str(e)[:120])
+        rc = 1
     me = own_bot(bots)
     print(f"{'ALIAS':<11} {'KIND':<8} {'KEY':<8} PING")
     for b in bots:
@@ -155,7 +163,7 @@ def update_all(bots, source, ping, force):
             except SystemExit as e:
                 pg = str(e)[:40]
         print(f"{b['alias']:<11} {b['kind']:<8} {ks:<8} {pg}")
-    return 0
+    return rc
 
 
 def message_all(bots, text, source, event, level, ref, force):
@@ -591,8 +599,7 @@ if a.add or a.sync:
             sys.exit("bad kind or alias/id already listed")
         with open(REGISTRY, "a") as f:
             f.write("\t".join(a.add) + "\n")
-    sync_registry()
-    sys.exit(0)
+    sys.exit(sync_registry())
 
 if a.update or a.ping:
     if a.ping and not a.update:
