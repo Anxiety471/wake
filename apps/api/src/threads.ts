@@ -142,7 +142,7 @@ WITH bumped AS (
   RETURNING message_id
 ), seen AS (
   UPDATE thread_participants
-  SET last_read_seq = (SELECT thread_seq FROM inserted)
+  SET last_read_seq = COALESCE((SELECT thread_seq FROM inserted), last_read_seq)
   WHERE thread_id = $1::uuid AND agent_id = $2::uuid
   RETURNING agent_id
 )
@@ -476,10 +476,10 @@ export function registerThreadRoutes(
          JOIN agents creator ON creator.id = t.created_by
          WHERE (
            $3::timestamptz IS NULL
-           OR (date_trunc('milliseconds', t.updated_at), t.id)
+           OR (date_trunc('milliseconds', t.created_at), t.id)
               < ($3::timestamptz, $4::uuid)
          )
-         ORDER BY date_trunc('milliseconds', t.updated_at) DESC, t.id DESC
+         ORDER BY date_trunc('milliseconds', t.created_at) DESC, t.id DESC
          LIMIT $5`,
         [
           agent.id,
@@ -513,7 +513,7 @@ export function registerThreadRoutes(
         threads,
         next:
           hasMore && last !== undefined
-            ? encodeSearchCursor(last.updatedAt, last.id)
+            ? encodeSearchCursor(last.createdAt, last.id)
             : null,
       };
       return page;

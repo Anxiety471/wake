@@ -1103,13 +1103,25 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
           message_id: string;
           read_at: Date | string | null;
         }>(
-          `UPDATE message_receipts
-         SET read_at = COALESCE(read_at, clock_timestamp())
-         WHERE agent_id = $1::uuid
-           AND message_id IN (
-             SELECT value::uuid FROM unnest($2::text[]) AS value
-           )
-         RETURNING message_id, read_at`,
+          `WITH marked AS (
+           UPDATE message_receipts
+           SET read_at = COALESCE(read_at, clock_timestamp())
+           WHERE agent_id = $1::uuid
+             AND message_id IN (
+               SELECT value::uuid FROM unnest($2::text[]) AS value
+             )
+           RETURNING message_id, read_at
+         ), bumped AS (
+           UPDATE thread_participants tp
+           SET last_read_seq = GREATEST(tp.last_read_seq, m.thread_seq)
+           FROM messages m
+           JOIN marked ON marked.message_id = m.id
+           WHERE tp.thread_id = m.thread_id
+             AND tp.agent_id = $1::uuid
+             AND m.thread_seq IS NOT NULL
+           RETURNING tp.thread_id
+         )
+         SELECT message_id, read_at FROM marked`,
           [agent.id, request.body.ids],
         );
         const byId = new Map(

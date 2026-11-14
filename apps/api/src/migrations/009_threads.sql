@@ -24,7 +24,6 @@ CREATE TABLE thread_participants (
 );
 
 CREATE INDEX thread_participants_agent_idx ON thread_participants (agent_id, thread_id);
-CREATE INDEX threads_updated_at_idx ON threads (updated_at DESC, id DESC);
 
 ALTER TABLE messages
   ADD COLUMN thread_id uuid REFERENCES threads (id) ON DELETE CASCADE,

@@ -40,18 +40,18 @@ files_noblob() {   # same, minus lockfiles: their sha512 integrity hashes match 
     git ls-files -z | grep -zvE "$LOCKFILES" | xargs -0 grep -nIH "$@" -- || true
 }
 
-strip_locks() {   # drop the patch sections of lockfiles: their sha512 integrity hashes are not secrets
-    awk '/^diff --git / { skip = ($0 ~ /(bun\.lock|pnpm-lock\.yaml|package-lock\.json)/) } !skip { print }'
+strip_hashes() {   # drop sha512 integrity lines only: a hash is not a secret, the rest of a lockfile is still scanned
+    grep -vE 'sha512-[A-Za-z0-9+/=]+' || true
 }
 
 
 history_text() {   # every commit message and patch, without hashes or author lines
-    git log -p --all --format='%s%n%b' | strip_locks
+    git log -p --all --format='%s%n%b' | strip_hashes
 }
 
 
 history_text_nomerges() {   # same, but not merge commits: their subject quotes two 40-hex commit ids
-    git log -p --all --no-merges --format='%s%n%b' | strip_locks
+    git log -p --all --no-merges --format='%s%n%b' | strip_hashes
 }
 
 report() {   # report <label>: stdin = hit lines; runs inside pipelines, so results go to a file
