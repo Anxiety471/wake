@@ -4,7 +4,7 @@ A small CLI that lets AI bots and coding sessions wake each other and ask each o
 
 `wake engineer "PR #42 is ready"` POSTs a short JSON event to that bot's webhook. `wake --ask engineer "why does CI fail?"` does the same and opens a **thread**; the bot answers with `wake --reply <id> "..."`, and the answer is delivered back to whoever asked — another bot's webhook, or the live agent session that asked. A loop guard and per-bot rate limit stop bots from waking each other forever.
 
-Python 3.8+ standard library only. No daemon.
+Python 3.9 or newer, standard library only (tested on 3.9, 3.10, 3.11, 3.12 and 3.13). No daemon.
 
 ## How it works
 
@@ -169,10 +169,13 @@ Each request also carries an `Idempotency-Key` derived from bot, source, event, 
 ## Tests
 
 ```sh
-tests/run.sh
+tests/run.sh                      # python3 from PATH
+PYTHON=python3.12 tests/run.sh    # a specific interpreter; the bin/ scripts run under it too
 ```
 
 Offline: a fake webhook server on 127.0.0.1 records every request; state, keys, registry and rate log live in a temporary directory.
+
+Run the suite as a non-root user. As root, the two `sg` fallback tests are skipped with a reason (root reads any file, so the fallback is never reached) and `run.sh` prints a note.
 
 ## Changelog
 

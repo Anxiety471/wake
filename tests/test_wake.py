@@ -22,6 +22,10 @@ BIN = os.path.join(ROOT, "bin")
 sys.path.insert(0, BIN)
 import wake_config  # noqa: E402
 
+IS_ROOT = os.getuid() == 0
+ROOT_SKIP = ("running as root: root reads files regardless of mode, so the sg fallback for an unreadable key "
+             "is never reached. Run tests/run.sh as a non-root user to cover it (CI does).")
+
 
 class FakeWebhook:
     """Records every POST; answers with the status set for the bot id (default 200)."""
@@ -93,6 +97,8 @@ class WakeTestCase(unittest.TestCase):
         for d in (self.cfg, self.keys, self.state, self.rate, self.fakebin, self.work):
             os.makedirs(d)
         shutil.copy(os.path.join(ROOT, "bots.example.tsv"), os.path.join(self.cfg, "bots.tsv"))
+        # the bin/ scripts start with `#!/usr/bin/env python3`: make that the interpreter running the tests
+        os.symlink(sys.executable, os.path.join(self.fakebin, "python3"))
         self.env = {
             "PATH": os.pathsep.join([BIN, self.fakebin, "/usr/bin", "/bin"]),
             "HOME": self.tmp,
@@ -204,7 +210,7 @@ class SendTests(WakeTestCase):
 
 
 class KeyTests(WakeTestCase):
-    @unittest.skipIf(os.getuid() == 0, "root can read any file, so the sg fallback is never reached")
+    @unittest.skipIf(IS_ROOT, ROOT_SKIP)
     def test_unreadable_key_falls_back_to_sg_group(self):
         path = self.put_key("bot-engineer-0002", "unused")
         os.chmod(path, 0)
@@ -219,7 +225,7 @@ class KeyTests(WakeTestCase):
         self.assertEqual(self.hook.requests[0]["headers"]["Authorization"], "Bearer sg-key")
         self.assertEqual(slurp(log).splitlines(), ["botkeys", "-c", "cat " + path])
 
-    @unittest.skipIf(os.getuid() == 0, "root can read any file")
+    @unittest.skipIf(IS_ROOT, ROOT_SKIP)
     def test_unreadable_key_and_failing_sg_is_a_clear_error(self):
         os.chmod(self.put_key("bot-engineer-0002"), 0)
         write_exe(os.path.join(self.fakebin, "sg"), "#!/bin/sh\nexit 1\n")
