@@ -14,6 +14,11 @@ import {
   type ThreadSummary,
 } from '@wake/shared';
 import { caller } from './auth.js';
+import {
+  notifyMessage,
+  wakeReportSchema,
+  type DoorbellConfig,
+} from './doorbell.js';
 import { ConfigError } from './options.js';
 import { inboxLimit, UUID_PATTERN } from './paging.js';
 import { resolveRecipient } from './recipients.js';
@@ -26,6 +31,7 @@ export const MAX_THREAD_TTL_HOURS = 720;
 export type ThreadOptions = {
   // null disables the TTL, the same as WAKE_TTL_HOURS=0 for the CLI.
   ttlHours?: number | null;
+  doorbell?: DoorbellConfig | null;
 };
 
 export function parseThreadTtlHours(value: string | undefined): number | null {
@@ -188,12 +194,13 @@ const threadProperties = {
 const postedSchema = {
   type: 'object',
   additionalProperties: false,
-  required: ['threadId', 'messageId', 'seq', 'createdAt'],
+  required: ['threadId', 'messageId', 'seq', 'createdAt', 'wake'],
   properties: {
     threadId: { type: 'string' },
     messageId: { type: 'string' },
     seq: { type: 'integer' },
     createdAt: { type: 'string' },
+    wake: wakeReportSchema,
   },
 } as const;
 
@@ -320,6 +327,7 @@ export function registerThreadRoutes(
     options?.ttlHours === undefined
       ? DEFAULT_THREAD_TTL_HOURS
       : options.ttlHours;
+  const doorbell = options?.doorbell ?? null;
 
   app.post<{
     Body: { to: string; body: string; kind?: ThreadKind };
@@ -388,11 +396,24 @@ export function registerThreadRoutes(
           throw new Error('thread message was not stored');
         }
         await client.query('COMMIT');
+        const wake = await notifyMessage(
+          pool,
+          doorbell,
+          {
+            messageId: posted.id,
+            from: sender.name,
+            body,
+            event: 'request',
+            threadId,
+          },
+          request.log,
+        );
         const payload: CreatedThread = {
           threadId,
           messageId: posted.id,
           seq: posted.thread_seq,
           createdAt: isoTime(posted.created_at) ?? '',
+          wake,
         };
         return reply.code(201).send(payload);
       } catch (error) {
@@ -686,12 +707,25 @@ export function registerThreadRoutes(
         }
         return reply.code(409).send({ error: 'thread already answered' });
       }
+      const wake = await notifyMessage(
+        pool,
+        doorbell,
+        {
+          messageId: posted.id,
+          from: agent.name,
+          body,
+          event: 'reply',
+          threadId: state.id,
+        },
+        request.log,
+      );
       const payload: ThreadReply = {
         threadId: state.id,
         messageId: posted.id,
         seq: posted.thread_seq,
         createdAt: isoTime(posted.created_at) ?? '',
         status: posted.status,
+        wake,
       };
       return reply.code(201).send(payload);
     },

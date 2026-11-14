@@ -310,6 +310,7 @@ test('threadTtlHours null keeps an old thread answerable', async () => {
     seq: 2,
     createdAt: expect.any(String),
     status: 'answered',
+    wake: { enabled: false, deliveries: [] },
   });
 
   const read = await noTtlApp.inject({
