@@ -368,6 +368,13 @@ export function registerThreadRoutes(
         return reply.code(400).send({ error: 'invalid request' });
       }
       const client = await pool.connect();
+      let released = false;
+      const releaseClient = (): void => {
+        if (!released) {
+          released = true;
+          client.release();
+        }
+      };
       try {
         await client.query('BEGIN');
         const created = await client.query<{ id: string }>(
@@ -396,6 +403,11 @@ export function registerThreadRoutes(
           throw new Error('thread message was not stored');
         }
         await client.query('COMMIT');
+        // Release before ringing. notifyMessage reads the receipts over the pool,
+        // so holding this client makes every ask in a full pool wait out the
+        // connect timeout: the ring is skipped and the report says nobody had a
+        // target while the wake is gone.
+        releaseClient();
         const wake = await notifyMessage(
           pool,
           doorbell,
@@ -417,10 +429,14 @@ export function registerThreadRoutes(
         };
         return reply.code(201).send(payload);
       } catch (error) {
-        await client.query('ROLLBACK').catch(() => undefined);
+        // A failure after COMMIT has nothing to roll back, and the client is
+        // already back in the pool.
+        if (!released) {
+          await client.query('ROLLBACK').catch(() => undefined);
+        }
         throw error;
       } finally {
-        client.release();
+        releaseClient();
       }
     },
   );

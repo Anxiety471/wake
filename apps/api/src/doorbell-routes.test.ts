@@ -184,7 +184,7 @@ test('a sent message wakes the recipient through the doorbell', async () => {
   // The message row id is the idempotency key, so a retry cannot run the bot twice.
   expect(request?.headers['idempotency-key']).toBe(sent.id);
   expect(JSON.parse(request?.body ?? '')).toEqual({
-    depth: 1,
+    depth: 0,
     source: 'bot:alice',
     event: 'message',
     level: 'info',
@@ -272,9 +272,10 @@ test('an ask wakes the recipient with the thread ref and the reply hint', async 
     from: 'alice',
     to: 'bob',
   });
-  expect(payload.detail).toContain(
-    `wake --reply ${thread.threadId} "YOUR ANSWER"`,
+  expect(payload.detail).toBe(
+    `why is CI red? [thread ${thread.threadId}] reply: wake --reply ${thread.threadId} "YOUR ANSWER"`,
   );
+  expect(payload.depth).toBe(0);
   expect(requests[0]?.headers['idempotency-key']).toBe(thread.messageId);
 });
 
@@ -290,13 +291,18 @@ test('a reply wakes the asker', async () => {
   });
   expect(requests).toHaveLength(1);
   expect(requests[0]?.path).toBe('/api/v1/bots/cmwalice/webhook');
-  expect(JSON.parse(requests[0]?.body ?? '')).toMatchObject({
+  const payload = JSON.parse(requests[0]?.body ?? '');
+  expect(payload).toMatchObject({
+    depth: 0,
     event: 'reply',
     ref: `thread:${thread.threadId}`,
     from: 'bob',
     to: 'alice',
-    detail: expect.stringContaining(`wake --reply ${thread.threadId}`),
+    // The asker cannot answer its own ask (409), so a reply carries the form
+    // bin/wake sends the asker: `reply on thread <id>: <text>`.
+    detail: `reply on thread ${thread.threadId}: because billing`,
   });
+  expect(payload.detail).not.toContain('wake --reply');
   expect(requests[0]?.headers['idempotency-key']).toBe(answer.messageId);
 });
 
@@ -336,5 +342,46 @@ test('with no doorbell configured a send still answers and rings nothing', async
     expect(requests).toHaveLength(0);
   } finally {
     await plain.close();
+  }
+});
+
+// Regression: POST /threads used to hold its pool client across the ring, so with
+// every connection checked out the receipts query waited out the 2 s connect
+// timeout, the ring was skipped, and the response reported `deliveries: []` as if
+// bob had no target. One connection is the deterministic repro.
+test('an ask rings the doorbell even when the pool has one connection', async () => {
+  const single = buildApp(databaseUrl, { doorbell: config, max: 1 });
+  try {
+    await single.ready();
+    await single.migrationsReady;
+    const registration = await single.inject({
+      method: 'POST',
+      url: '/agents',
+      payload: { name: 'alice' },
+    });
+    const alice: RegisteredAgent = registration.json();
+    await single.inject({
+      method: 'POST',
+      url: '/agents',
+      payload: { name: 'bob' },
+    });
+    requests.length = 0;
+    const response = await single.inject({
+      method: 'POST',
+      url: '/threads',
+      headers: bearer(alice.token),
+      payload: { to: 'bob', body: 'are you there?' },
+    });
+    expect(response.statusCode).toBe(201);
+    const thread: CreatedThread = response.json();
+    expect(thread.wake).toEqual({
+      enabled: true,
+      deliveries: [delivered('bob')],
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.path).toBe('/api/v1/bots/cmwbob/webhook');
+    expect(requests[0]?.headers['idempotency-key']).toBe(thread.messageId);
+  } finally {
+    await single.close();
   }
 });
