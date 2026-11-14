@@ -67,10 +67,19 @@ def in_container():
 
 
 def own_bot(bots):
-    """Which bot is this shell running inside, if any (a bot computer's cwd is .../bots/<id>)."""
-    cwd = os.path.realpath(os.getcwd())
+    """Which bot this shell is running inside: a bot computer's cwd is .../bots/<id>, or the
+    config dir names it in a `self` file (a harness that runs from a neutral cwd, e.g. /tmp)."""
+    cwd = os.path.realpath(os.getcwd()) + "/"
     for b in bots:
-        if f"/bots/{b['id']}" in cwd + "/":
+        if f"/bots/{b['id']}/" in cwd:
+            return b
+    try:
+        with open(os.path.join(CFG["WAKE_CONFIG_DIR"], "self")) as f:
+            me = f.read().strip()
+    except OSError:
+        return None
+    for b in bots:
+        if me and me in (b["alias"], b["id"]):
             return b
     return None
 
@@ -114,6 +123,59 @@ def sync_registry():
         print("sync only runs from a guest with WAKE_HOSTOPS set (edit " + REGISTRY + " here)")
 
 
+def key_state(b):
+    """ok = a readable key file here, locked = present but unreadable, none = not saved on this computer."""
+    path = os.path.join(KEYS, b["id"] + ".key")
+    if not os.path.exists(path):
+        return "none"
+    return "ok" if os.access(path, os.R_OK) else "locked"
+
+
+def update_all(bots, source, ping, force):
+    """--update: sync the registry, pull missing keys when a helper exists, then report key state per bot."""
+    try:
+        sync_registry()
+    except SystemExit as e:
+        print("registry sync failed: " + str(e)[:120])
+    me = own_bot(bots)
+    print(f"{'ALIAS':<11} {'KIND':<8} {'KEY':<8} PING")
+    for b in bots:
+        ks = key_state(b)
+        if ks == "none" and key_helper_available():
+            try:
+                ensure_key(b)
+                ks = key_state(b)
+            except SystemExit as e:
+                ks = "elsewhere" if "made elsewhere" in str(e) else "error"
+        pg = "-"
+        if ping and ks == "ok" and b["kind"] == "open" and not (me and me["id"] == b["id"]):
+            try:
+                body = send(b, source, "update-ping", "ok", "wake update ping, no reply needed", "", force, quiet=True)
+                pg = "ignored" if "ignored" in (body or "") else "sent"
+            except SystemExit as e:
+                pg = str(e)[:40]
+        print(f"{b['alias']:<11} {b['kind']:<8} {ks:<8} {pg}")
+    return 0
+
+
+def message_all(bots, text, source, event, level, ref, force):
+    """--all: one message to every open bot, never to the sender itself and never to a private bot."""
+    sent = failed = 0
+    for b in bots:
+        if b["kind"] != "open" or source == "bot:" + b["alias"]:
+            continue
+        try:
+            send(b, source, event, level, text, ref, force, quiet=True)
+        except SystemExit as e:
+            failed += 1
+            print(f"failed {b['alias']}: {str(e)[:120]}")
+            continue
+        sent += 1
+        print(f"sent {b['alias']}")
+    print(f"{sent} sent, {failed} failed")
+    return 0 if failed == 0 else 1
+
+
 # ---------- threads: one JSON object per line, shared on the host ----------
 
 
@@ -140,11 +202,27 @@ def thread_append(tid, rec):
         sys.exit("cannot write thread " + tid + ": " + (r.stderr or r.stdout).strip()[-200:])
 
 
+def bridge_failed(r):
+    """A failed call the host complained about (gate refused, ssh died), not an empty store: those print nothing."""
+    return r.returncode != 0 and bool((getattr(r, "stderr", "") or "").strip())
+
+
 def thread_read(tid):
+    """One thread's records: [] when the thread does not exist, None when the store itself cannot be read."""
     if "/" in tid or ".." in tid:
         sys.exit("bad thread id")
-    path = q(f"{THREADS}/{tid}.jsonl")
-    r = _host_run(f"cat {path} 2>/dev/null")
+    name = tid + ".jsonl"
+    path = q(f"{THREADS}/{name}")
+    try:
+        r = _host_run(f"cat {path} 2>/dev/null")
+        if bridge_failed(r):
+            return None
+        if r.returncode != 0:
+            listing = _host_run(f"ls {q(THREADS)} 2>/dev/null")
+            if bridge_failed(listing) or name in (listing.stdout or "").split():
+                return None
+    except OSError:
+        return None
     out = r.stdout.strip()
     recs = []
     for ln in out.splitlines():
@@ -156,12 +234,20 @@ def thread_read(tid):
 
 
 def threads_mine(sender):
-    r = _host_run(f"ls {q(THREADS)} 2>/dev/null")
+    """Threads opened by `sender`, newest first; None when the store cannot be listed."""
+    try:
+        r = _host_run(f"ls {q(THREADS)} 2>/dev/null")
+    except OSError:
+        return None
+    if bridge_failed(r):
+        return None
     out = []
     for fn in (r.stdout or "").split():
         if not fn.endswith(".jsonl"):
             continue
         recs = thread_read(fn[:-6])
+        if recs is None:
+            return None
         if recs and recs[0].get("from") == sender:
             out.append((fn[:-6], recs))
     return sorted(out, key=lambda x: x[1][0].get("ts", ""), reverse=True)
@@ -375,6 +461,9 @@ def ask(b, text, wait, level, source, force, no_send=False):
     while time.time() < end:
         time.sleep(3)
         recs = thread_read(tid)
+        if recs is None:
+            print(f"thread store unreachable while waiting; read it later with: wake --thread {tid}")
+            return 3
         answers = [r for r in recs if r.get("kind") == "reply"]
         if answers:
             show(answers, tid)
@@ -385,6 +474,11 @@ def ask(b, text, wait, level, source, force, no_send=False):
 
 def reply(tid, text, source, notify, force):
     recs = thread_read(tid)
+    if recs is None:
+        sys.exit(
+            f"cannot read the thread store at {THREADS}, so {tid} cannot be answered: "
+            f"check WAKE_HOSTOPS (guest) and that the directory is readable."
+        )
     if not recs:
         sys.exit(
             f"no thread {tid}: it was never opened, so there is nothing to answer. "
@@ -462,6 +556,13 @@ p.add_argument("--who", nargs="+", metavar="WORD", help="list bots whose role ma
 p.add_argument(
     "--add", nargs="+", metavar="ROW", help="add a bot row: ALIAS ID NAME KIND(open|private) [ROLE] and sync"
 )
+p.add_argument(
+    "--update",
+    action="store_true",
+    help="sync the registry, then report every bot's key state (add --ping to wake each open bot)",
+)
+p.add_argument("--ping", action="store_true", help="with --update: send a quiet ping to every open bot that has a readable key")
+p.add_argument("--all", metavar="MESSAGE", help="send one message to every open bot (private bots are skipped)")
 a = p.parse_args()
 bots = load()
 if a.source is None:
@@ -478,6 +579,14 @@ if a.add or a.sync:
             f.write("\t".join(a.add) + "\n")
     sync_registry()
     sys.exit(0)
+
+if a.update or a.ping:
+    if a.ping and not a.update:
+        sys.exit("--ping only makes sense with --update")
+    sys.exit(update_all(bots, a.source, a.ping, a.force))
+
+if a.all:
+    sys.exit(message_all(bots, a.all, a.source, a.event, a.level, a.ref, a.force))
 
 if a.list or a.who:
     hits = by_role(a.who, bots) if a.who else bots
@@ -530,10 +639,15 @@ if a.me:
     else:
         print("not inside a bot computer: a human or harness shell, so wakes are sent as " + a.source)
         print("  to be treated as a bot, or as an agent harness, set WAKE_SOURCE=bot:<alias> or skill:<name>")
+        print("  a harness that always runs from the same computer can write its alias to " + os.path.join(CFG["WAKE_CONFIG_DIR"], "self"))
     sys.exit(0)
 
 if a.thread:
     recs = thread_read(a.thread)
+    if recs is None:
+        sys.exit(
+            f"cannot read the thread store at {THREADS}: check WAKE_HOSTOPS (guest) and that the directory is readable."
+        )
     if not recs:
         sys.exit(f"no thread {a.thread}")
     show(recs, a.thread)
@@ -541,6 +655,10 @@ if a.thread:
 
 if a.inbox:
     mine = threads_mine(a.source)
+    if mine is None:
+        sys.exit(
+            f"cannot read the thread store at {THREADS}: check WAKE_HOSTOPS (guest) and that the directory is readable."
+        )
     if not mine:
         print(f"no threads opened by {a.source}")
         sys.exit(0)
