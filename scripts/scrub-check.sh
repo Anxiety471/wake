@@ -1,6 +1,8 @@
 #!/bin/sh
 # Secret scan. Fails if tracked files contain an IP address other than 127.0.0.1, an email address,
 # or a token-like string (API keys, private keys, long bearer tokens, long hex or base64 blobs).
+# Strong patterns (keys, bearer tokens) are checked everywhere; the long-blob heuristic skips URLs, so a
+# documentation link does not fail the build.
 #   scripts/scrub-check.sh             # tracked files
 #   scripts/scrub-check.sh --history   # also every commit message and patch on every branch
 # A hit line that contains any fixed string listed in scripts/scrub-allow.txt is skipped (known fakes only).
@@ -18,7 +20,10 @@ esac
 
 IP='\b([0-9]{1,3}\.){3}[0-9]{1,3}\b'
 EMAIL='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
-TOKEN='(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|-{5}BEGIN[A-Z ]*PRIVATE KEY|Bearer [A-Za-z0-9._-]{20,}|[A-Fa-f0-9]{40,}|[A-Za-z0-9+/]{40,}={0,2})'
+# high-confidence secrets, checked everywhere including commit messages
+STRONG='(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|-{5}BEGIN[A-Z ]*PRIVATE KEY|Bearer [A-Za-z0-9._-]{20,})'
+# long hex or base64 blobs: heuristic, so it skips URLs (a doc link matches it) but never skips a strong hit
+BLOB='([A-Fa-f0-9]{40,}|[A-Za-z0-9+/]{40,}={0,2})'
 PRIVATE=.git/scrub-patterns.txt
 hits_file=$(mktemp)
 allow_file=$(mktemp)
@@ -33,6 +38,11 @@ history_text() {   # every commit message and patch, without hashes or author li
     git log -p --all --format='%s%n%b'
 }
 
+
+history_text_nomerges() {   # same, but not merge commits: their subject quotes two 40-hex commit ids
+    git log -p --all --no-merges --format='%s%n%b'
+}
+
 report() {   # report <label>: stdin = hit lines; runs inside pipelines, so results go to a file
     hits=$(grep -vF -f "$allow_file" || true)
     if [ -n "$hits" ]; then
@@ -42,11 +52,13 @@ report() {   # report <label>: stdin = hit lines; runs inside pipelines, so resu
 
 files -E "$IP" | sed 's/127\.0\.0\.1//g' | grep -E "$IP" | report "IP addresses other than 127.0.0.1 (tracked files)"
 files -E "$EMAIL" | report "email addresses (tracked files)"
-files -E "$TOKEN" | report "token-like strings (tracked files)"
+files -E "$STRONG" | report "token-like strings (tracked files)"
+files -E "$BLOB" | sed -E 's#https?://[^ )>"]+#URL#g' | grep -E "$BLOB" | report "long blobs outside URLs (tracked files)"
 if [ "$history" = 1 ]; then
     history_text | grep -nE "$IP" | sed 's/127\.0\.0\.1//g' | grep -E "$IP" | report "IP addresses other than 127.0.0.1 (history)"
     history_text | grep -nE "$EMAIL" | report "email addresses (history)"
-    history_text | grep -nE "$TOKEN" | report "token-like strings (history)"
+    history_text | grep -nE "$STRONG" | report "token-like strings (history)"
+    history_text_nomerges | grep -vE 'https?://[^ )>"]+' | grep -nE "$BLOB" | report "long blobs outside URLs (history)"
 fi
 
 if [ -f "$PRIVATE" ]; then
