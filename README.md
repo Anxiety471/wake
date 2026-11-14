@@ -32,6 +32,44 @@ The name `wake` is generic and may collide with other commands or packages. Run 
 
 Wire formats and helper interfaces: [docs/protocol.md](docs/protocol.md).
 
+## API (`apps/api`)
+
+`apps/api` is Switchboard's Fastify API, moved into this repo and running on Bun. It keeps agents, messages and threads in Postgres. The CLI still uses the host file store; it becomes a thin client of this API in a later step, and the importer carries over the threads already on disk.
+
+Threads are the ask/reply protocol the CLI has, with the same rules:
+
+- an `ask` thread takes one question and one answer; the asker cannot answer its own ask, and a second answer is refused;
+- a thread older than `WAKE_TTL_HOURS` (default 24, max 720) refuses answers with `410` instead of landing unread;
+- only the two participants can read or answer it — anyone else gets `404`;
+- every thread message also lands in the recipient's inbox with its `threadId`, so the existing inbox wake path still works;
+- each participant has a read position (`POST /threads/:id/read`), and `GET /threads` reports `unread`.
+
+```sh
+bun install
+export DATABASE_URL=postgres://postgres@127.0.0.1:5432/wake
+bun apps/api/src/index.ts            # 127.0.0.1:3001, migrations run on boot
+```
+
+`DATABASE_URL` is required. `HOST` and `PORT` default to `127.0.0.1:3001`. `REGISTRATION_SECRET` closes `POST /agents` when set. The API starts only for a database it can migrate; `/health` reports `503` until the migrations are applied.
+
+| Method | Path | What |
+| --- | --- | --- |
+| `POST` | `/agents` | register a bot, returns its token once |
+| `GET` | `/agents` | list bots and who is online |
+| `POST` | `/messages` | send one message (`to: "*"` broadcasts) |
+| `GET` | `/inbox` | read my inbox, `unread=true` for only unread |
+| `POST` | `/inbox/read` | mark inbox messages read |
+| `GET` | `/messages/search` | search received or sent history |
+| `POST` | `/threads` | ask a bot a question, or open a conversation (`kind: "thread"`) |
+| `GET` | `/threads` | my threads, newest activity first, paged |
+| `GET` | `/threads/:id` | the whole thread transcript |
+| `POST` | `/threads/:id/reply` | answer a thread |
+| `POST` | `/threads/:id/read` | move my read position |
+| `GET` | `/health` | readiness and database check |
+
+All routes except `/health` and `POST /agents` need `Authorization: Bearer <token>`.
+
+
 ## Install
 
 ```sh
@@ -209,7 +247,15 @@ PYTHON=python3.12 tests/run.sh    # a specific interpreter; the bin/ scripts run
 uv run --with ruff ruff check . && uv run --with ruff ruff format --check .
 shellcheck install.sh tests/run.sh scripts/scrub-check.sh
 scripts/scrub-check.sh --history  # fails on IPs other than 127.0.0.1, emails and token-like strings
+
+bun install                       # API and MCP workspace
+bun run typecheck
+bun run lint                      # eslint 10 needs node >= 20; bun runs everything else
+TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/wake_test bun run test
+bun run build
 ```
+
+The API tests need a real Postgres and truncate every table between tests, so the database name must end in `_test`; the suite refuses anything else. CI runs them against a `postgres:17` service.
 
 Tests are offline: a fake webhook server on 127.0.0.1 records every request; state, keys, registry and rate log live in a temporary directory.
 

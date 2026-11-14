@@ -1,0 +1,30 @@
+{
+  "name": "wake",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.4",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "bun": ">=1.2"
+  },
+  "scripts": {
+    "lint": "node ./node_modules/eslint/bin/eslint.js apps packages && prettier --check apps packages",
+    "typecheck": "bun run --filter '@wake/api' --filter '@wake/shared' typecheck",
+    "test": "bun test apps/api",
+    "build": "bun run --filter '@wake/api' build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/bun": "^1.4.4",
+    "@types/node": "22.20.5",
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "pg": "^8.23.1",
+    "prettier": "^3.9.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "^8.71.2"
+  }
+}
