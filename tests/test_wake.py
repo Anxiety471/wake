@@ -549,7 +549,11 @@ class DirectoryTests(WakeTestCase):
         hostops = os.path.join(self.fakebin, "hostops2")
         write_exe(hostops, "#!/bin/sh\nexit 0\n")
         r = self.wake(
-            "--add", "ops9", "bot-ops9-0009", "Ops Bot 9", "open",
+            "--add",
+            "ops9",
+            "bot-ops9-0009",
+            "Ops Bot 9",
+            "open",
             env={"WAKE_HOSTOPS": hostops},
         )
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
