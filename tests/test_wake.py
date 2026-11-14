@@ -432,6 +432,23 @@ class ThreadTests(WakeTestCase):
         self.assertEqual(self.thread(tid)[0]["from"], "bot:container")
         self.assertIn(f"{tid}.jsonl", slurp(log))
 
+    def test_append_never_changes_store_modes(self):
+        log = os.path.join(self.tmp, "hostops.log")
+        hostops = os.path.join(self.fakebin, "hostops")
+        write_exe(
+            hostops,
+            f"""
+            #!/bin/sh
+            printf '%s\\n' "$1" >> {log}
+            cat > /dev/null
+        """,
+        )
+        r = self.wake("--ask", "engineer", "mode probe", "--no-send", env={"WAKE_HOSTOPS": hostops})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        cmds = slurp(log)
+        self.assertIn(".jsonl", cmds)
+        for mode in ("chmod", "1777", "666"):
+            self.assertNotIn(mode, cmds)
 
     def test_unreadable_store_is_not_reported_as_a_missing_thread(self):
         hostops = os.path.join(self.fakebin, "hostops-denied")

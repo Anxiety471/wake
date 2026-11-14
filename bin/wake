@@ -192,14 +192,26 @@ def _host_run(cmd, data=None):
 
 def thread_append(tid, rec):
     line = json.dumps(rec, ensure_ascii=False) + "\n"
-    d, path = q(THREADS), q(f"{THREADS}/{tid}.jsonl")
+    path = q(f"{THREADS}/{tid}.jsonl")
+    # The store is provisioned once on the host (root:wake 2770, setgid) and wake never changes
+    # its mode: re-applying 1777 on every append is what kept the store world-writable.
     cmd = (
-        f"[ -d {d} ] || {{ mkdir -p {d} 2>/dev/null && chmod 1777 {d}; }} || {{ sudo mkdir -p {d} && sudo chmod 1777 {d}; }}; "
-        f"if [ -e {path} ]; then dd of={path} oflag=append conv=notrunc,nocreat status=none; else cat >> {path} && chmod 666 {path}; fi"
+        f"mkdir -p {q(THREADS)} 2>/dev/null || sudo mkdir -p {q(THREADS)}; "
+        f"if [ -e {path} ]; then dd of={path} oflag=append conv=notrunc,nocreat status=none; "
+        f"else cat >> {path}; fi"
     )
-    r = _host_run(cmd, line)
+    try:
+        r = _host_run(cmd, line)
+    except OSError as e:
+        sys.exit(f"cannot write thread {tid}: {e}")
     if r.returncode != 0:
-        sys.exit("cannot write thread " + tid + ": " + (r.stderr or r.stdout).strip()[-200:])
+        sys.exit(
+            "cannot write thread "
+            + tid
+            + ": "
+            + (r.stderr or r.stdout).strip()[-200:]
+            + f" (the store {THREADS} must exist and be writable by this user: root:wake 2770)"
+        )
 
 
 def bridge_failed(r):
