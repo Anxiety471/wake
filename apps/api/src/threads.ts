@@ -747,5 +747,3 @@ export function registerThreadRoutes(
     },
   );
 }
-
-export { MAX_BODY_BYTES as MAX_THREAD_BODY_BYTES };
