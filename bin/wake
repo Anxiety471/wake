@@ -68,10 +68,19 @@ def in_container():
 
 
 def own_bot(bots):
-    """Which bot is this shell running inside, if any (a bot computer's cwd is .../bots/<id>)."""
-    cwd = os.path.realpath(os.getcwd())
+    """Which bot this shell is running inside: a bot computer's cwd is .../bots/<id>, or the
+    config dir names it in a `self` file (a harness that runs from a neutral cwd, e.g. /tmp)."""
+    cwd = os.path.realpath(os.getcwd()) + "/"
     for b in bots:
-        if f"/bots/{b['id']}" in cwd + "/":
+        if f"/bots/{b['id']}/" in cwd:
+            return b
+    try:
+        with open(os.path.join(CFG["WAKE_CONFIG_DIR"], "self")) as f:
+            me = f.read().strip()
+    except OSError:
+        return None
+    for b in bots:
+        if me and me in (b["alias"], b["id"]):
             return b
     return None
 
@@ -99,20 +108,81 @@ def host(cmd):
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
 
-def sync_registry():
+SYNC_REFUSAL = "registry sync is an operator action; run it on the host"
+
+
+def sync_registry(show_rows=True):
+    """Hand the bot list to the host copy -- on the host, not from a guest.
+
+    A guest shell ingests untrusted content (webhook payloads, mail, pages). Giving it
+    `sudo tee` on bots.tsv would hand the routing table every bot trusts to whatever that
+    content says, so a guest prints the rows it would have written and exits non-zero
+    without touching the host. Returns the exit code."""
     rows = open(REGISTRY).read()
     if HOSTOPS and os.path.exists(HOSTOPS) and in_container():
-        dst = q(STATE + "/bots.tsv")
-        group = CFG["WAKE_REGISTRY_GROUP"]
-        cmd = (
-            f"sudo tee {dst} >/dev/null"
-            + (f" && sudo chgrp {q(group)} {dst}" if group else "")
-            + f" && sudo chmod 664 {dst}"
-        )
-        r = subprocess.run([HOSTOPS, cmd], input=rows, capture_output=True, text=True)
-        print("synced to host" if r.returncode == 0 else "sync failed: " + r.stderr[-200:])
-    else:
-        print("sync only runs from a guest with WAKE_HOSTOPS set (edit " + REGISTRY + " here)")
+        if show_rows:
+            sys.stdout.write(rows if rows.endswith("\n") else rows + "\n")
+        print("would write " + STATE + "/bots.tsv")
+        print(SYNC_REFUSAL)
+        return 1
+    print("sync only runs from a guest with WAKE_HOSTOPS set (edit " + REGISTRY + " here)")
+    return 0
+
+
+def key_state(b):
+    """ok = a readable key file here, locked = present but unreadable, none = not saved on this computer."""
+    path = os.path.join(KEYS, b["id"] + ".key")
+    if not os.path.exists(path):
+        return "none"
+    return "ok" if os.access(path, os.R_OK) else "locked"
+
+
+def update_all(bots, source, ping, force):
+    """--update: pull missing keys when a helper exists, then report key state per bot. A guest's
+    registry push is refused (operator action); that makes the exit code 1."""
+    rc = 0
+    try:
+        rc = sync_registry(show_rows=False)
+    except SystemExit as e:
+        print("registry sync failed: " + str(e)[:120])
+        rc = 1
+    me = own_bot(bots)
+    print(f"{'ALIAS':<11} {'KIND':<8} {'KEY':<8} PING")
+    for b in bots:
+        ks = key_state(b)
+        if ks == "none" and key_helper_available():
+            try:
+                ensure_key(b)
+                ks = key_state(b)
+            except SystemExit as e:
+                ks = "elsewhere" if "made elsewhere" in str(e) else "error"
+        pg = "-"
+        if ping and ks == "ok" and b["kind"] == "open" and not (me and me["id"] == b["id"]):
+            try:
+                body = send(b, source, "update-ping", "ok", "wake update ping, no reply needed", "", force, quiet=True)
+                pg = "ignored" if "ignored" in (body or "") else "sent"
+            except SystemExit as e:
+                pg = str(e)[:40]
+        print(f"{b['alias']:<11} {b['kind']:<8} {ks:<8} {pg}")
+    return rc
+
+
+def message_all(bots, text, source, event, level, ref, force):
+    """--all: one message to every open bot, never to the sender itself and never to a private bot."""
+    sent = failed = 0
+    for b in bots:
+        if b["kind"] != "open" or source == "bot:" + b["alias"]:
+            continue
+        try:
+            send(b, source, event, level, text, ref, force, quiet=True)
+        except SystemExit as e:
+            failed += 1
+            print(f"failed {b['alias']}: {str(e)[:120]}")
+            continue
+        sent += 1
+        print(f"sent {b['alias']}")
+    print(f"{sent} sent, {failed} failed")
+    return 0 if failed == 0 else 1
 
 
 # ---------- threads: one JSON object per line, shared on the host ----------
@@ -131,21 +201,50 @@ def _host_run(cmd, data=None):
 
 def thread_append(tid, rec):
     line = json.dumps(rec, ensure_ascii=False) + "\n"
-    d, path = q(THREADS), q(f"{THREADS}/{tid}.jsonl")
+    path = q(f"{THREADS}/{tid}.jsonl")
+    # The thread store is provisioned once on the host (root:wake 3770: setgid + sticky, so
+    # only a file's owner may unlink it) and wake never changes its mode: re-applying 1777
+    # on every append is what kept the store world-writable.
     cmd = (
-        f"[ -d {d} ] || {{ mkdir -p {d} 2>/dev/null && chmod 1777 {d}; }} || {{ sudo mkdir -p {d} && sudo chmod 1777 {d}; }}; "
-        f"if [ -e {path} ]; then dd of={path} oflag=append conv=notrunc,nocreat status=none; else cat >> {path} && chmod 666 {path}; fi"
+        f"mkdir -p {q(THREADS)} 2>/dev/null || sudo mkdir -p {q(THREADS)}; "
+        f"if [ -e {path} ]; then dd of={path} oflag=append conv=notrunc,nocreat status=none; "
+        f"else cat >> {path}; fi"
     )
-    r = _host_run(cmd, line)
+    try:
+        r = _host_run(cmd, line)
+    except OSError as e:
+        sys.exit(f"cannot write thread {tid}: {e}")
     if r.returncode != 0:
-        sys.exit("cannot write thread " + tid + ": " + (r.stderr or r.stdout).strip()[-200:])
+        sys.exit(
+            "cannot write thread "
+            + tid
+            + ": "
+            + (r.stderr or r.stdout).strip()[-200:]
+            + f" (the store {THREADS} must exist and be writable by this user: root:wake 3770, setgid + sticky)"
+        )
+
+
+def bridge_failed(r):
+    """A failed call the host complained about (gate refused, ssh died), not an empty store: those print nothing."""
+    return r.returncode != 0 and bool((getattr(r, "stderr", "") or "").strip())
 
 
 def thread_read(tid):
+    """One thread's records: [] when the thread does not exist, None when the store itself cannot be read."""
     if "/" in tid or ".." in tid:
         sys.exit("bad thread id")
-    path = q(f"{THREADS}/{tid}.jsonl")
-    r = _host_run(f"cat {path} 2>/dev/null")
+    name = tid + ".jsonl"
+    path = q(f"{THREADS}/{name}")
+    try:
+        r = _host_run(f"cat {path} 2>/dev/null")
+        if bridge_failed(r):
+            return None
+        if r.returncode != 0:
+            listing = _host_run(f"ls {q(THREADS)} 2>/dev/null")
+            if bridge_failed(listing) or name in (listing.stdout or "").split():
+                return None
+    except OSError:
+        return None
     out = r.stdout.strip()
     recs = []
     for ln in out.splitlines():
@@ -157,12 +256,20 @@ def thread_read(tid):
 
 
 def threads_mine(sender):
-    r = _host_run(f"ls {q(THREADS)} 2>/dev/null")
+    """Threads opened by `sender`, newest first; None when the store cannot be listed."""
+    try:
+        r = _host_run(f"ls {q(THREADS)} 2>/dev/null")
+    except OSError:
+        return None
+    if bridge_failed(r):
+        return None
     out = []
     for fn in (r.stdout or "").split():
         if not fn.endswith(".jsonl"):
             continue
         recs = thread_read(fn[:-6])
+        if recs is None:
+            return None
         if recs and recs[0].get("from") == sender:
             out.append((fn[:-6], recs))
     return sorted(out, key=lambda x: x[1][0].get("ts", ""), reverse=True)
@@ -185,8 +292,8 @@ def inbox_live():
     live = []
     for fn in (r.stdout or "").split():
         try:
-            rec = json.loads(_host_run(f"cat {q(fn)}").stdout)
-        except Exception:
+            rec = json.loads(_host_run(f"cat {q(fn)} 2>/dev/null").stdout)
+        except (OSError, ValueError):
             continue
         if rec.get("inbox") and rec.get("pid") and _host_run(f"test -d /proc/{int(rec['pid'])}").returncode == 0:
             live.append(rec["inbox"])
@@ -412,6 +519,9 @@ def ask(b, text, wait, level, source, force, no_send=False):
     while time.time() < end:
         time.sleep(3)
         recs = thread_read(tid)
+        if recs is None:
+            print(f"thread store unreachable while waiting; read it later with: wake --thread {tid}")
+            return 3
         answers = [r for r in recs if r.get("kind") == "reply"]
         if answers:
             show(answers, tid)
@@ -422,6 +532,11 @@ def ask(b, text, wait, level, source, force, no_send=False):
 
 def reply(tid, text, source, notify, force):
     recs = thread_read(tid)
+    if recs is None:
+        sys.exit(
+            f"cannot read the thread store at {THREADS}, so {tid} cannot be answered: "
+            f"check WAKE_HOSTOPS (guest) and that the directory is readable."
+        )
     if not recs:
         audit("reply-refused", source, text, tid, rc=4)
         sys.exit(
@@ -516,6 +631,15 @@ p.add_argument("--who", nargs="+", metavar="WORD", help="list bots whose role ma
 p.add_argument(
     "--add", nargs="+", metavar="ROW", help="add a bot row: ALIAS ID NAME KIND(open|private) [ROLE] and sync"
 )
+p.add_argument(
+    "--update",
+    action="store_true",
+    help="sync the registry, then report every bot's key state (add --ping to wake each open bot)",
+)
+p.add_argument(
+    "--ping", action="store_true", help="with --update: send a quiet ping to every open bot that has a readable key"
+)
+p.add_argument("--all", metavar="MESSAGE", help="send one message to every open bot (private bots are skipped)")
 a = p.parse_args()
 bots = load()
 if a.source is None:
@@ -530,8 +654,15 @@ if a.add or a.sync:
             sys.exit("bad kind or alias/id already listed")
         with open(REGISTRY, "a") as f:
             f.write("\t".join(a.add) + "\n")
-    sync_registry()
-    sys.exit(0)
+    sys.exit(sync_registry())
+
+if a.update or a.ping:
+    if a.ping and not a.update:
+        sys.exit("--ping only makes sense with --update")
+    sys.exit(update_all(bots, a.source, a.ping, a.force))
+
+if a.all:
+    sys.exit(message_all(bots, a.all, a.source, a.event, a.level, a.ref, a.force))
 
 if a.list or a.who:
     hits = by_role(a.who, bots) if a.who else bots
@@ -584,10 +715,18 @@ if a.me:
     else:
         print("not inside a bot computer: a human or harness shell, so wakes are sent as " + a.source)
         print("  to be treated as a bot, or as an agent harness, set WAKE_SOURCE=bot:<alias> or skill:<name>")
+        print(
+            "  a harness that always runs from the same computer can write its alias to "
+            + os.path.join(CFG["WAKE_CONFIG_DIR"], "self")
+        )
     sys.exit(0)
 
 if a.thread:
     recs = thread_read(a.thread)
+    if recs is None:
+        sys.exit(
+            f"cannot read the thread store at {THREADS}: check WAKE_HOSTOPS (guest) and that the directory is readable."
+        )
     if not recs:
         sys.exit(f"no thread {a.thread}")
     show(recs, a.thread)
@@ -595,6 +734,10 @@ if a.thread:
 
 if a.inbox:
     mine = threads_mine(a.source)
+    if mine is None:
+        sys.exit(
+            f"cannot read the thread store at {THREADS}: check WAKE_HOSTOPS (guest) and that the directory is readable."
+        )
     if not mine:
         print(f"no threads opened by {a.source}")
         sys.exit(0)

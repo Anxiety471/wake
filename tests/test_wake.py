@@ -433,6 +433,64 @@ class ThreadTests(WakeTestCase):
         self.assertEqual(self.thread(tid)[0]["from"], "bot:container")
         self.assertIn(f"{tid}.jsonl", slurp(log))
 
+    def test_append_never_changes_store_modes(self):
+        log = os.path.join(self.tmp, "hostops.log")
+        hostops = os.path.join(self.fakebin, "hostops")
+        write_exe(
+            hostops,
+            f"""
+            #!/bin/sh
+            printf '%s\\n' "$1" >> {log}
+            cat > /dev/null
+        """,
+        )
+        r = self.wake("--ask", "engineer", "mode probe", "--no-send", env={"WAKE_HOSTOPS": hostops})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        cmds = slurp(log)
+        self.assertIn(".jsonl", cmds)
+        # a thread id is four hex digits, so "1777" or "666" can appear in a name: only chmod matters
+        self.assertNotIn("chmod", cmds)
+        self.assertNotIn("sudo chmod", cmds)
+
+    def test_append_failure_names_the_thread_store_mode(self):
+        hostops = os.path.join(self.fakebin, "hostops-deny-write")
+        write_exe(
+            hostops,
+            """
+            #!/bin/sh
+            cat > /dev/null
+            echo "wake-gate: mkdir: permission denied" >&2
+            exit 1
+        """,
+        )
+        r = self.wake("--ask", "engineer", "mode probe", "--no-send", env={"WAKE_HOSTOPS": hostops})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("3770", r.stderr)
+        self.assertIn("sticky", r.stderr)
+        self.assertNotIn("2770", r.stderr)
+
+    def test_unreadable_store_is_not_reported_as_a_missing_thread(self):
+        hostops = os.path.join(self.fakebin, "hostops-denied")
+        write_exe(
+            hostops,
+            """
+            #!/bin/sh
+            echo "wake-gate: refused (not a wake-store op)" >&2
+            exit 1
+        """,
+        )
+        env = {"WAKE_HOSTOPS": hostops}
+        r = self.wake("--thread", "0101-beef", env=env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("cannot read the thread store", r.stderr)
+        r = self.wake("--reply", "0101-beef", "x", env=dict(env, WAKE_SOURCE="bot:engineer"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("cannot read the thread store", r.stderr)
+        self.assertNotIn("never opened", r.stderr)
+        r = self.wake("--inbox", env=env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("cannot read the thread store", r.stderr)
+
 
 class ReplyGuardTests(WakeTestCase):
     def ask(self, source, bot="engineer", text="why does CI fail", env=None):
@@ -535,6 +593,14 @@ class DirectoryTests(WakeTestCase):
         self.assertIn("this shell runs inside ops", r.stdout)
         self.assertIn("as       bot:ops", r.stdout)
 
+    def test_self_file_names_the_bot_from_any_cwd(self):
+        with open(os.path.join(self.cfg, "self"), "w") as f:
+            f.write("ops\n")
+        r = self.wake("--me")
+        self.assertIn("this shell runs inside ops", r.stdout)
+        self.assertIn("as       bot:ops", r.stdout)
+        self.assertIn("bot:ops", r.stdout)
+
     def test_missing_registry_is_a_clear_error(self):
         r = self.wake("--list", env={"WAKE_REGISTRY": os.path.join(self.tmp, "nope.tsv")})
         self.assertEqual(r.returncode, 1)
@@ -545,7 +611,8 @@ class DirectoryTests(WakeTestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), "wake " + wake_config.VERSION)
 
-    def sync(self, env=None):
+    def guest(self, env=None):
+        """A guest shell: WAKE_HOSTOPS points at a stub that records every command it is given."""
         log = os.path.join(self.tmp, "hostops.log")
         hostops = os.path.join(self.fakebin, "hostops")
         write_exe(
@@ -557,19 +624,94 @@ class DirectoryTests(WakeTestCase):
         """,
         )
         r = self.wake("--sync", env=dict({"WAKE_HOSTOPS": hostops}, **(env or {})))
+        return r, (slurp(log) if os.path.exists(log) else "")
+
+    def test_sync_from_a_guest_is_refused_and_writes_nothing(self):
+        r, sent = self.guest()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("registry sync is an operator action", r.stdout)
+        self.assertEqual(sent, "", "a guest must not touch the host registry")
+
+    def test_sync_prints_the_rows_it_would_have_written(self):
+        r, _sent = self.guest()
+        with open(os.path.join(self.cfg, "bots.tsv")) as f:
+            rows = [line for line in f.read().splitlines() if line.strip()]
+        for row in rows:
+            self.assertIn(row.split("\t")[0], r.stdout)
+
+    def test_sync_ignores_the_group_setting_when_refusing(self):
+        r, sent = self.guest({"WAKE_REGISTRY_GROUP": "bot team"})
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("chgrp", r.stdout + sent)
+
+    def test_add_keeps_the_row_local_and_refuses_the_push(self):
+        hostops = os.path.join(self.fakebin, "hostops2")
+        write_exe(hostops, "#!/bin/sh\nexit 0\n")
+        r = self.wake(
+            "--add",
+            "ops9",
+            "bot-ops9-0009",
+            "Ops Bot 9",
+            "open",
+            env={"WAKE_HOSTOPS": hostops},
+        )
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("registry sync is an operator action", r.stdout)
+        self.assertIn("bot-ops9-0009", slurp(os.path.join(self.cfg, "bots.tsv")))
+
+
+class BulkTests(WakeTestCase):
+    def test_update_reports_key_state_for_every_bot(self):
+        self.put_key("bot-engineer-0002")
+        r = self.wake("--update")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("synced to host", r.stdout)
-        return slurp(log)
+        self.assertIn("ALIAS", r.stdout)
+        self.assertRegex(r.stdout, r"engineer\s+open\s+ok")
+        self.assertRegex(r.stdout, r"coordinator\s+open\s+none")
+        self.assertRegex(r.stdout, r"vault\s+private\s+none")
+        self.assertEqual(self.hook.requests, [])
 
-    def test_sync_leaves_group_alone_by_default(self):
-        cmd = self.sync()
-        self.assertIn("tee", cmd)
-        self.assertIn("chmod 664", cmd)
-        self.assertNotIn("chgrp", cmd)
+    def test_update_ping_wakes_only_bots_with_readable_keys(self):
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-ops-0004")
+        r = self.wake("--update", "--ping", env={"WAKE_SOURCE": "bot:coordinator"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(sorted(q["bot"] for q in self.hook.requests), ["bot-engineer-0002", "bot-ops-0004"])
+        self.assertEqual({q["json"]["event"] for q in self.hook.requests}, {"update-ping"})
+        self.assertRegex(r.stdout, r"engineer\s+open\s+ok\s+sent")
 
-    def test_sync_sets_configured_group(self):
-        cmd = self.sync({"WAKE_REGISTRY_GROUP": "bot team"})
-        self.assertIn("sudo chgrp 'bot team' ", cmd)
+    def test_ping_without_update_is_refused(self):
+        r = self.wake("--ping")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("only makes sense with --update", r.stderr)
+
+    def test_all_messages_open_bots_except_self(self):
+        for bid in (
+            "bot-coordinator-0001",
+            "bot-engineer-0002",
+            "bot-reviewer-0003",
+            "bot-ops-0004",
+            "bot-docs-0005",
+            "bot-research-0006",
+            "bot-notes-0007",
+        ):
+            self.put_key(bid)
+        r = self.wake("--all", "maintenance in 10", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = sorted(q["bot"] for q in self.hook.requests)
+        self.assertNotIn("bot-engineer-0002", got)
+        self.assertNotIn("bot-vault-0008", got)
+        self.assertEqual(len(got), 6)
+        self.assertEqual({q["json"]["detail"].split(" | ")[0] for q in self.hook.requests}, {"maintenance in 10"})
+        self.assertIn("6 sent, 0 failed", r.stdout)
+
+    def test_all_reports_failures(self):
+        self.put_key("bot-ops-0004")
+        self.hook.status["bot-coordinator-0001"] = 500
+        r = self.wake("--all", "hi", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("failed coordinator", r.stdout)
+        self.assertIn("1 sent", r.stdout)
 
 
 class HelperTests(WakeTestCase):
