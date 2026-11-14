@@ -122,8 +122,11 @@ class WakeTestCase(unittest.TestCase):
         self.hook.close()
         for root, _dirs, files in os.walk(self.tmp):
             for n in files:
+                path = os.path.join(root, n)
+                if os.path.islink(path):  # e.g. fakebin/python3: chmod would change the real interpreter
+                    continue
                 try:
-                    os.chmod(os.path.join(root, n), 0o600)
+                    os.chmod(path, 0o600)
                 except OSError:
                     pass
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -488,6 +491,16 @@ class DirectoryTests(WakeTestCase):
 
 
 class HelperTests(WakeTestCase):
+    def test_bin_scripts_run_under_the_test_interpreter(self):
+        # guards the PYTHON=... matrix: `env python3` in bin/ must not fall back to another interpreter
+        r = subprocess.run(
+            ["python3", "-c", "import sys; print(sys.version_info[:2])"],
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.stdout.strip(), str(sys.version_info[:2]))
+
     def test_wake_hook_reports_claude_code_failure(self):
         self.put_key("bot-coordinator-0001")
         payload = json.dumps({"cwd": "/src/myrepo", "error": "boom", "last_assistant_message": "tests failed\nmore"})
