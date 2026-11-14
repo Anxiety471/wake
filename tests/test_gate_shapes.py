@@ -4,7 +4,9 @@
 into a silent no-op: the call fails, wake reads nothing, and an inbox delivery
 disappears. These tests run wake's real builders against a host stub that executes
 them, capture every command, and check each one against the gate allow-list when a
-gate is staged on this computer (`WAKE_GATE`, default the ops-review staging path).
+gate is staged on this computer (`WAKE_GATE`, default the newest pinned
+`rakazo-wake-gate.vN` in the ops-review staging directory, because the bare name
+there is restaged under a running check).
 
 Without a staged gate the allow-list check is skipped (CI has no gate), but the
 shape invariants below still run: the append never changes a mode and every read
@@ -16,11 +18,36 @@ import importlib.util
 import json
 import os
 import re
+import shutil
+import sys
+import tempfile
 import unittest
+from unittest import mock
 
 from test_wake import WakeTestCase, slurp, write_exe  # noqa: E402
 
-GATE_DEFAULT = "/home/rakazo/shared/ops-review/rakazo-wake-gate"
+GATE_STAGE = "/home/rakazo/shared/ops-review"
+
+
+def staged_gate():
+    """The gate to check against: the newest pinned `rakazo-wake-gate.vN` in the staging
+    directory, else the bare name. The bare file is restaged under a running check, so a
+    pinned copy is what the assertions can rely on."""
+    best = None
+    try:
+        names = os.listdir(GATE_STAGE)
+    except OSError:
+        names = []
+    for name in names:
+        m = re.fullmatch(r"rakazo-wake-gate\.v(\d+)", name)
+        if m and (best is None or int(m.group(1)) > best[0]):
+            best = (int(m.group(1)), name)
+    if best:
+        return os.path.join(GATE_STAGE, best[1])
+    return os.path.join(GATE_STAGE, "rakazo-wake-gate")
+
+
+GATE_DEFAULT = staged_gate()
 
 
 def exercise(test):
@@ -100,6 +127,32 @@ class GateAllowListTests(WakeTestCase):
         gate = self.load_gate()
         refused = [c for c in exercise(self) if gate.match(c) is None]
         self.assertEqual(refused, [], "the gate would refuse these wake commands:\n" + "\n".join(refused))
+
+
+class StagedGatePickTests(unittest.TestCase):
+    def test_pinned_gate_wins_over_the_bare_name_and_versions_compare_as_numbers(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        for name in (
+            "rakazo-wake-gate",
+            "rakazo-wake-gate.v2",
+            "rakazo-wake-gate.v10",
+            "rakazo-wake-gate.v9.bak",
+        ):
+            open(os.path.join(tmp, name), "w").close()
+        with mock.patch.object(sys.modules[__name__], "GATE_STAGE", tmp):
+            self.assertEqual(staged_gate(), os.path.join(tmp, "rakazo-wake-gate.v10"))
+
+    def test_bare_name_is_the_fallback_when_nothing_is_pinned(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        open(os.path.join(tmp, "rakazo-wake-gate"), "w").close()
+        with mock.patch.object(sys.modules[__name__], "GATE_STAGE", tmp):
+            self.assertEqual(staged_gate(), os.path.join(tmp, "rakazo-wake-gate"))
+
+    def test_missing_staging_directory_does_not_raise(self):
+        with mock.patch.object(sys.modules[__name__], "GATE_STAGE", os.path.join(tempfile.mkdtemp(), "gone")):
+            self.assertTrue(staged_gate().endswith("rakazo-wake-gate"))
 
 
 if __name__ == "__main__":
