@@ -36,13 +36,17 @@ Wire formats and helper interfaces: [docs/protocol.md](docs/protocol.md).
 
 `apps/api` is Switchboard's Fastify API, moved into this repo and running on Bun. It keeps agents, messages and threads in Postgres. The CLI still uses the host file store; it becomes a thin client of this API in a later step, and the importer carries over the threads already on disk.
 
-Threads are the ask/reply protocol the CLI has, with the same rules:
+The API's thread rules are the ones that ship; the CLI follows them when it becomes a client.
 
-- an `ask` thread takes one question and one answer; the asker cannot answer its own ask, and a second answer is refused;
-- a thread older than `WAKE_TTL_HOURS` (default 24, max 720) refuses answers with `410` instead of landing unread;
+- an `ask` takes one question and one answer: the asker never posts to its own ask, and the recipient answers once. Both are `409`;
+- a thread older than `WAKE_TTL_HOURS` (`0` or whole hours `1..720`, default 24) refuses answers with `410` instead of landing unread. The CLI's unbounded float narrows to this when the CLI moves over;
 - only the two participants can read or answer it — anyone else gets `404`;
 - every thread message also lands in the recipient's inbox with its `threadId`, so the existing inbox wake path still works;
-- each participant has a read position (`POST /threads/:id/read`), and `GET /threads` reports `unread`.
+- each participant has a read position (`POST /threads/:id/read`); marking a thread message read in `POST /inbox/read` moves it too, and `GET /threads` reports `unread`;
+- `GET /threads` pages by creation time, newest first: creation cannot move under a cursor, while `updatedAt` would (a thread answered between pages would jump above the cursor). `updatedAt` stays in the payload for display;
+- a `kind: "thread"` conversation takes messages both ways until it closes or expires; only `ask` is one-round.
+
+Two places where the CLI is looser today, and the API wins at cutover: the CLI lets the asker add a clarification to its own open ask, and lets the recipient send more than one reply. Neither has a route, and `--force` has no API equivalent; a bot that needs a second round opens a new `--ask` or sends a plain message.
 
 ```sh
 bun install
@@ -61,7 +65,7 @@ bun apps/api/src/index.ts            # 127.0.0.1:3001, migrations run on boot
 | `POST` | `/inbox/read` | mark inbox messages read |
 | `GET` | `/messages/search` | search received or sent history |
 | `POST` | `/threads` | ask a bot a question, or open a conversation (`kind: "thread"`) |
-| `GET` | `/threads` | my threads, newest activity first, paged |
+| `GET` | `/threads` | my threads, newest creation first, paged |
 | `GET` | `/threads/:id` | the whole thread transcript |
 | `POST` | `/threads/:id/reply` | answer a thread |
 | `POST` | `/threads/:id/read` | move my read position |

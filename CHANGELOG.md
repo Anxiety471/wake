@@ -11,11 +11,16 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   Switchboard with its tests and run on Bun. Threads: `POST /threads`, `GET /threads`,
   `GET /threads/:id`, `POST /threads/:id/reply`, `POST /threads/:id/read`, with migration
   `009_threads.sql` (`threads`, `thread_participants`, `messages.thread_id` / `messages.thread_seq`).
-  The rules match the CLI: one answer per ask (the asker cannot answer its own ask), `WAKE_TTL_HOURS`
-  (default 24) refuses late answers with `410`, only participants can read or answer (`404`
-  otherwise), and every thread message also lands in the recipient's inbox carrying its `threadId`.
-  Inbox and search payloads gain that `threadId`. 81 tests against a real Postgres; new CI job
-  `api (bun)` with a `postgres:17` service.
+  One answer per ask: the asker never posts to its own ask and the recipient answers once (both
+  `409`), `WAKE_TTL_HOURS` (`0` or whole hours `1..720`, default 24) refuses late answers with `410`,
+  only participants can read or answer (`404` otherwise), and every thread message also lands in the
+  recipient's inbox carrying its `threadId`. Inbox and search payloads gain that `threadId`. This is
+  stricter than the CLI in two places, which README states: the CLI still allows a clarification from
+  the asker on its own open ask and a second reply from the recipient, and `--force` has no route.
+  `GET /threads` pages by creation, not by the mutable `updated_at`, so a thread answered between
+  pages cannot jump above the cursor; `POST /inbox/read` also moves the thread read position, so the
+  inbox and the thread agree on `unread`. 85 tests against a real Postgres; new CI job `api (bun)`
+  with a `postgres:17` service.
 - `wake --update` reports every bot's key state in one table (and mints missing keys when a key helper is configured), `--update --ping` sends a quiet ping to each open bot that can be woken, and `--all "<message>"` sends one message to every open bot, skipping private bots and the sender itself.
 - `own_bot()` falls back to `<config>/self` (an alias or bot id), so a harness that runs from a neutral working directory is identified as its bot instead of `bot:container`.
 - A thread read that fails because the host bridge is unreachable now says so, instead of reporting the thread as never opened.
@@ -23,6 +28,16 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 - `WAKE_TTL_HOURS` (default `24`): a thread older than this refuses answers, and says the age, because the asker has moved on and the answer would land unread. `0` disables it.
 - One round per thread: once a thread has an answer, the asker cannot answer back on the same thread, so A to B to A cannot ping-pong. Ask again with `--ask` if there is more to say. `--force` overrides it.
 - An audit line per ask, reply and refusal in `$WAKE_RATE_DIR/wake-audit-<uid>.log`, so a refused or failed answer is visible instead of looking like a delivered one.
+
+### Fixed
+
+- A reply that lost the race raised a `23502` (`last_read_seq` was set from an empty `inserted`
+  CTE), so `POST /threads/:id/reply` answered `500` where it documents `409`. The read position is
+  now kept when nothing was inserted, and a row-locked test proves one `201` and one `409` — never a
+  `500`.
+- The history secret scan drops `sha512` integrity lines instead of whole lockfile patches, so a
+  token committed to a lockfile and later removed is still found. Proven: a repo whose history holds
+  a `sk-…` token in `bun.lock` is clean under the old filter and fails under this one.
 
 ### Changed
 
