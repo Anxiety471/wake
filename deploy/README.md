@@ -78,6 +78,12 @@ a 32-character floor on `DASHBOARD_SECRET` and none on `REGISTRATION_SECRET`
 `REGISTRATION_SECRET` does not disable registration — it makes `POST /agents` open to
 anyone. §5 has the check that proves the placeholders are gone.
 
+Write every value unquoted. systemd strips one layer of matching quotes from an
+`EnvironmentFile`, so `REGISTRATION_SECRET="..."` still works for the API, while
+anything that reads the line literally sees the quotes and answers `401` with no
+hint at the cause; `mcp-identity.py` strips that layer since 2026-11-15, and the
+file is simpler without it.
+
 ## 3. Build and install
 
 ```sh
@@ -88,7 +94,7 @@ sudo install -o root -g wake -m 644 /tmp/wake/index.mjs /opt/wake/index.mjs
 sudo rm -f /opt/wake/migrations/*.sql
 sudo install -o root -g wake -m 644 apps/api/src/migrations/*.sql /opt/wake/migrations/
 sudo install -m 755 "$(command -v node)" /opt/wake/node
-sudo install -m 755 deploy/ops/*.py /opt/wake/ops/
+sudo install -o root -g wake -m 755 deploy/ops/*.py /opt/wake/ops/
 ```
 
 The bundle carries fastify and pg, so there is no `node_modules` on the host.
@@ -142,7 +148,9 @@ app refuses one.
 Not published as of 2026-11-15 11:55 PHT. It was first published at 11:19 and taken
 down at 11:37 on Joshua's order, with `WAKE_MCP_ENABLED=true` in the env file, one
 public identity, and the location below removed again; the section is the re-publish
-path, not a description of what is live. Run §6.4 to take it down again.
+path, not a description of what is live. Run §6.3 to take it down again. The
+identity row survives the teardown, so re-publishing starts at `rotate` (§6.1),
+not `create`.
 
 The API has no DNS name of its own yet, so `/mcp` rides the host that already has a
 certificate: a location in `/etc/nginx/sites-available/wake-mcp`. Two backups sit
@@ -161,7 +169,7 @@ replaces.
         proxy_set_header Connection "";
         proxy_buffering off;
         proxy_read_timeout 120s;
-        client_max_body_size 2m;
+        client_max_body_size 64k;
     }
 ```
 
@@ -183,20 +191,27 @@ alone, not `$proxy_add_x_forwarded_for` (which appends): the app takes the first
 address in that header as the client once `trustProxy` is on, so an appended value
 lets a caller write its own `mcp_audit.remote`.
 
+`client_max_body_size 64k` bounds what nginx will read; it is not a copy of the
+app's limit. The app refuses anything over 32 KiB (`BODY_LIMIT` in `app.ts`) and no
+tool call comes near that, while nginx buffers the request body before it proxies,
+so an unauthenticated 2 MiB body would be spooled to `client_body_temp_path` in
+full before the app could answer `401`. At 64k the app's own `413` still answers a
+borderline body and the spool stays trivial.
+
 ```sh
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-### The public token
+### 6.1 The public token
 
 One identity, `mcp`, whose bearer token is an ordinary agent token (hashed,
 revocable, rotatable). It lives in `/etc/wake/mcp-token` (`root:root 600`) and is
 never printed. `deploy/ops/mcp-identity.py` writes it there.
 
 ```sh
-sudo /opt/wake/ops/mcp-identity.py create   # 201 and the token file
-sudo /opt/wake/ops/mcp-identity.py rotate   # 200, old token dies immediately
-sudo /opt/wake/ops/mcp-identity.py revoke   # 200 {"tokenRevoked":true}, then 404
+sudo /opt/wake/ops/mcp-identity.py create   # 201 and the token file; 409 if it exists
+sudo /opt/wake/ops/mcp-identity.py rotate   # 200, old token dies at once, revives a revoked one
+sudo /opt/wake/ops/mcp-identity.py revoke   # 200 {"tokenRevoked":true}, repeatable, no 404
 sudo /opt/wake/ops/mcp-identity.py show     # non-secret fields only
 ```
 
@@ -205,7 +220,14 @@ Fastify rejects an empty JSON body with `400 {"error":"invalid request"}`. Until
 2026-11-15 it sent the header unconditionally, so `revoke` never worked and `rotate`
 (which kills the old token anyway) was the only way to retire a leaked one.
 
-### Verify it
+Only `create` on a database with no `mcp` identity: the insert is `ON CONFLICT DO
+NOTHING`, so a second `create` — after a revoke, say — answers `409 {"error":"name
+already registered"}` and the script exits 1. `revoke` sets `token_revoked` and
+leaves the row, so a second `revoke` is another `200`, and the way back is
+`rotate`, which clears the flag and issues a new token. The `404` that proves a
+teardown is §6.3's `POST /mcp`, not revoke's.
+
+### 6.2 Verify it
 
 ```sh
 sudo /opt/wake/ops/mcp-verify.py https://bots.example.com/mcp
@@ -218,7 +240,7 @@ It exits non-zero and prints the status plus the first 200 bytes of the body whe
 step is not a 200, refuses to follow a redirect (urllib would re-send the bearer to
 the new host), and refuses plain `http` to anything but this machine.
 
-### Unpublish and prove it
+### 6.3 Unpublish and prove it
 
 ```sh
 sudo cp /etc/nginx/sites-available/wake-mcp.bak-2026-11-15 /etc/nginx/sites-available/wake-mcp
@@ -242,7 +264,7 @@ byte for byte, for `GET /`, `GET /mcp`, `GET /mcp/zzz` and `GET /mcp/identity`. 
 answers `POST`: that is the one request that distinguishes published from
 unpublished.
 
-### Two things to know
+### 6.4 Two things to know
 
 - Cloudflare fronts that hostname and refuses the literal `Python-urllib`
   User-Agent with `error code: 1010`, before nginx is reached. Any named
@@ -264,6 +286,8 @@ replaced under a running process:
 
 ```sh
 git pull
+sudo install -d -o root -g root -m 700 /var/backups/wake
+sudo -u postgres pg_dump -Fc wake > "/var/backups/wake/wake-$(date +%F-%H%M).dump"
 sudo systemctl stop wake-api
 # §3, unchanged: the rm -f there is what drops a migration that no longer exists
 sudo install -m 644 deploy/wake-api.service /etc/systemd/system/wake-api.service
@@ -273,7 +297,9 @@ sudo systemctl start wake-api
 ```
 
 Migrations run at boot and only forward: a restart applies what is new, and going
-back to an older bundle needs a database restore, not another restart.
+back to an older bundle needs a database restore, not another restart. That is
+what the `pg_dump` above is for: `pg_restore -c -d wake <file>` with the service
+stopped restores the dump taken before the redeploy.
 
 ## Cutover from the CLI store
 
