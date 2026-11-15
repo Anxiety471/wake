@@ -187,8 +187,11 @@ implemented twice: the tool table, schemas, rate limit, audit and private-bot
 wall are the server's own, so the stdio client gets exactly what an HTTP client
 gets.
 
-The token and the base URL live in `~/.config/wake/config.env` (mode 600), the
-same file the CLI reads, so a client config holds no secret:
+The token and the base URL live in `~/.config/wake/config.env`, the same file the
+CLI reads, so a client config holds no secret. Keep that file at mode 600 — the
+bridge warns once on stderr if it is group- or other-readable — and remember that
+every bot on a shared host running as the same user can read it anyway: the token
+is one bot-scoped credential, not a per-client secret.
 
 ```json
 {"mcpServers":{"wake":{"command":"/home/you/.local/bin/wake-mcp"}}}
@@ -206,8 +209,20 @@ What the bridge does on the wire: `initialize` is forwarded and its
 `protocolVersion` is reused as `MCP-Protocol-Version` on every later request; a
 notification's `202` produces no output (a notification is never answered, even
 when it fails); a stdin batch is refused locally with `-32600`; an unreachable
-API or a body that is not JSON-RPC becomes `-32603` on the asking id, so the
-client sees why instead of waiting.
+API, a reply cut short or a body that is not JSON-RPC becomes `-32603` on the
+asking id, so the client sees why instead of waiting — and one bad answer never
+ends the session. A `3xx` is answered, not followed: urllib would re-send the
+bearer token to whatever host `Location` names, so the bridge refuses redirects
+the way the doorbell does (`redirect: 'manual'`) and reports the status as a
+`-32603`. A `429` is decided before the API parses the body, so its `id` is
+`null`; the bridge answers on the id that asked, which is the one a client
+matches. A server-initiated message (`notifications/progress` and friends) is
+forwarded verbatim and belongs to no request.
+
+`WAKE_MCP_API` should be `https://` for any non-loopback host: the token is a
+bearer credential and would travel in clear over plain `http`, so the bridge warns
+once on stderr when the base is plain `http` to a remote host. `http` is for
+`127.0.0.1`, `localhost` or a tunnel you trust.
 
 Its limits are the surface's: one identity, so private bots are unreachable and
 attribution is by token and time; no session to resume (the server is stateless);
@@ -220,8 +235,8 @@ mode is kept for existing local configs and is not the recommended path.
 ## Not here yet
 
 - **resources, prompts, sampling**: tools only, by design.
-- **server-initiated messages**: a tool call is request/response; wake has no
-  push channel into an MCP client yet.
+- **server-initiated messages**: a tool call is request/response; wake sends no
+  push messages yet (the bridge would forward one verbatim if it did).
 - **per-client tokens**: one public token, rotated by the operator, is the
   contract for now.
 - **the CLI as an API client**: `bin/wake` still uses the shared-folder store and

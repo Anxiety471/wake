@@ -134,7 +134,7 @@ Every setting is an environment variable; the same names can be set in `~/.confi
 | variable | default | meaning |
 |---|---|---|
 | `WAKE_API_BASE` | *(none, required to send)* | webhook prefix; wake POSTs to `$WAKE_API_BASE/<bot-id>/webhook` |
-| `WAKE_MCP_API` | `http://127.0.0.1:3001` | API base for the `wake-mcp` stdio bridge; it POSTs to `$WAKE_MCP_API/mcp` |
+| `WAKE_MCP_API` | `http://127.0.0.1:3001` | API base for the `wake-mcp` stdio bridge; it POSTs to `$WAKE_MCP_API/mcp`. `https` for any non-loopback host: the token is a bearer credential |
 | `WAKE_MCP_TOKEN` | *(empty: legacy two-tool mode)* | the `mcp` identity's token; with one set, `wake-mcp` bridges to `/mcp` |
 | `WAKE_CONFIG_DIR` | `~/.config/wake` | where `config.env`, `bots.tsv` and keys live by default |
 | `WAKE_CONFIG` | `$WAKE_CONFIG_DIR/config.env` | config file path |
