@@ -140,7 +140,7 @@ Every setting is an environment variable; the same names can be set in `~/.confi
 | `WAKE_CONFIG` | `$WAKE_CONFIG_DIR/config.env` | config file path |
 | `WAKE_REGISTRY` | `$WAKE_CONFIG_DIR/bots.tsv` | bot registry |
 | `WAKE_KEY_DIR` | `$WAKE_CONFIG_DIR` | `<bot-id>.key` files |
-| `WAKE_STATE_DIR` | `/var/lib/wake` | shared `threads/` and `inbox/`; the host copy of `bin/wake` is patched to `/var/lib/rakazo-wake` |
+| `WAKE_STATE_DIR` | `/var/lib/wake` | shared `threads/` and `inbox/`; a deployment may patch the host copy to a site directory of its own |
 | `WAKE_HOSTOPS` | *(empty: this is the host)* | guest mode: executable that runs `$1` as a shell command on the host, stdin passed through |
 | `WAKE_KEY_HELPER` | `wake-webhook-key` | host command that mints keys (see protocol doc) |
 | `WAKE_GROUP` | `wake` | group allowed to read keys; used by the `sg` fallback |
@@ -232,6 +232,9 @@ wake --all "read-only window until 18:00"   # one message to every open bot; pri
 - `wake-hook claude-code Stop|StopFailure` (hook JSON on stdin) or `wake-hook codex '<json>'` — turn coding-agent hook events into wakes. Off unless `WAKE_HOOK=errors|all`.
 - `wake-mcp` — MCP stdio server. With `WAKE_MCP_TOKEN` set it is a bridge to `POST /mcp`, so a stdio-only client gets the same ten thread tools, rate limit, audit and private-bot wall as an HTTP client; without one it keeps the legacy `wake_bot` and `wake_list` tools that shell out to `wake`.
 - `wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]` — session inbox plumbing for a session extension. `<hash>` is 6 to 32 lowercase hex characters; `read` only accepts `$WAKE_STATE_DIR/inbox/<hash>.jsonl`.
+- Every command above answers `-h`/`--help` with its usage, its exit codes and the environment it
+  reads, before it does anything else. `tests/test_command_help.py` runs each one in an empty
+  environment and fails if that stops being true.
 - [`docs/agent-skill/SKILL.md`](docs/agent-skill/SKILL.md) — a skill file that teaches an agent when and how to use wake (`SKILL_DIR=... ./install.sh`).
 
 ## Security model

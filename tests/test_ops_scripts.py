@@ -159,7 +159,7 @@ class OpsFilesTestCase(unittest.TestCase):
                     )
 
     def test_the_hostname_guard_is_not_a_no_op(self):
-        for sample in ("bots.bocchi.trade", "vps01.contabo.com", "wake.internal", "h.some-hospital.org"):
+        for sample in ("bots.example.com", "vps01.example.com", "wake.internal", "h.some-hospital.example.org"):
             with self.subTest(sample=sample):
                 self.assertRegex(sample, HOSTNAME)
 
