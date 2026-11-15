@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+# desc: check every command a wake copy builds against a gate's matcher. Usage: wake-shape-check FILE [GATE]
+"""Lift the five command builders out of a wake copy, run them against stubs, and
+print every command with the gate's verdict.
+
+A gate that refuses a shape turns the call into a silent no-op: wake reads nothing
+back and the message is gone. So a new build of `wake` is checked against the gate
+before it is installed.
+
+The gate itself is executed in this process, with your privileges: its module-level
+code runs, so run this on a gate you trust. It is compiled and executed, never
+imported, so nothing is written beside it. What is contained is the wake
+copy - `subprocess` and `_host_run` are replaced, and the state paths point at a
+scratch directory - so no command it builds reaches a host, a network or your state.
+"""
+
+import ast
+import hashlib
+import json
+import os
+import re
+import secrets
+import shlex
+import socket
+import sys
+import time
+import types
+
+BUILDERS = ("thread_append", "thread_read", "threads_mine", "inbox_live", "inbox_push")
+
+USAGE = """usage: wake-shape-check FILE [GATE]
+
+Lift the five command builders out of FILE, run them against stubs, and print
+every command with the gate's verdict. GATE defaults to $WAKE_GATE.
+
+exit: 0 every command allowed, 1 a command refused or a builder failed, 2 bad input
+"""
+
+
+class Result:
+    returncode = 0
+    stdout = ""
+    stderr = ""
+
+
+def load_gate(path):
+    module = types.ModuleType("wake_gate")
+    module.__file__ = path
+    with open(path, encoding="utf-8") as f:
+        exec(compile(f.read(), path, "exec"), module.__dict__)  # noqa: S102 - the operator's gate
+    return module
+
+
+def lift(path):
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read(), path)
+    wanted = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in BUILDERS]
+    return ast.Module(body=wanted, type_ignores=[])
+
+
+def capture(commands):
+    """Stand in for subprocess.run: record the shell command, run nothing."""
+
+    def run(*args, **kwargs):
+        argv = args[0] if args else kwargs.get("args")
+        if isinstance(argv, (list, tuple)) and argv:
+            argv = [str(a) for a in argv]
+            if len(argv) == 2 and ("/" in argv[0] or argv[0].endswith(".sh")):
+                # a host runner: `<runner> '<shell command>'`
+                commands.append(argv[1])
+            else:
+                commands.append(" ".join(argv))
+        elif argv is not None:
+            commands.append(str(argv))
+        return Result()
+
+    return run
+
+
+def namespace(commands, state):
+    """The globals the lifted builders may reach for, all of them inert."""
+    runner = capture(commands)
+
+    def host_run(cmd, data=None):
+        commands.append(cmd)
+        return Result()
+
+    config = types.ModuleType("wake_config")
+    config.load = lambda: {
+        "WAKE_API_BASE": "https://bots.example.com/api/v1/bots",
+        "WAKE_REGISTRY": os.path.join(state, "bots.tsv"),
+        "WAKE_KEY_DIR": os.path.join(state, "keys"),
+        "WAKE_HOSTOPS": "",
+        "WAKE_STATE_DIR": state,
+        "WAKE_KEY_HELPER": "",
+        "WAKE_GROUP": "",
+        "WAKE_BOT": "probe",
+    }
+    sys.modules["wake_config"] = config
+
+    class Sub:
+        run = staticmethod(runner)
+
+    return {
+        "__name__": "wake_shape_target",
+        "STATE": state,
+        "THREADS": os.path.join(state, "threads"),
+        "INBOX": os.path.join(state, "inbox"),
+        "ACTIVE": os.path.join(state, "inbox", "active"),
+        "HOSTOPS": "",
+        "REGISTRY": os.path.join(state, "bots.tsv"),
+        "KEY_DIR": os.path.join(state, "keys"),
+        "CFG": {"WAKE_HOSTOPS": "", "WAKE_STATE_DIR": state},
+        "q": shlex.quote,
+        "_host_run": host_run,
+        "in_container": lambda: False,
+        "bridge_failed": lambda r: r.returncode != 0 and bool((getattr(r, "stderr", "") or "").strip()),
+        "subprocess": Sub(),
+        "json": json,
+        "os": os,
+        "sys": sys,
+        "re": re,
+        "shlex": shlex,
+        "hashlib": hashlib,
+        "socket": socket,
+        "time": time,
+        "secrets": secrets,
+    }
+
+
+def main(argv):
+    if not argv:
+        print(USAGE, end="", file=sys.stderr)
+        return 2
+    if argv[0] in ("-h", "--help"):
+        print(USAGE, end="")
+        return 0
+    path = argv[0]
+    gate_path = argv[1] if len(argv) > 1 else os.environ.get("WAKE_GATE", "")
+    if not os.path.isfile(path):
+        print(f"wake-shape-check: no such file: {path}", file=sys.stderr)
+        return 2
+    if not gate_path:
+        print("wake-shape-check: no gate: pass GATE or set WAKE_GATE", file=sys.stderr)
+        return 2
+    if not os.path.isfile(gate_path):
+        print(f"wake-shape-check: no gate at {gate_path}", file=sys.stderr)
+        return 2
+    try:
+        gate = load_gate(gate_path)
+    except Exception as exc:  # noqa: BLE001 - a gate that will not import is the caller's input
+        print(f"wake-shape-check: cannot load the gate: {exc}", file=sys.stderr)
+        return 2
+    if not hasattr(gate, "match"):
+        print("wake-shape-check: that gate has no match() to check against", file=sys.stderr)
+        return 2
+
+    state = os.path.join(os.path.dirname(os.path.abspath(path)), ".shape-check-state")
+    commands = []
+    scope = namespace(commands, state)
+    try:
+        exec(compile(lift(path), path, "exec"), scope)  # noqa: S102 - the file under test, with stubs
+    except SyntaxError as exc:
+        print(f"wake-shape-check: cannot read {path}: {exc}", file=sys.stderr)
+        return 2
+
+    missing = [name for name in BUILDERS if name not in scope]
+    calls = {
+        "thread_append": ("11111111-2222-3333", {"from": "probe", "event": "test", "detail": "x"}),
+        "thread_read": ("11111111-2222-3333",),
+        "threads_mine": ("probe",),
+        "inbox_live": (),
+        "inbox_push": (os.path.join(state, "inbox", "abc123"), {"from": "probe"}),
+    }
+    broken = []
+    for name in BUILDERS:
+        if name in missing:
+            continue
+        try:
+            scope[name](*calls[name])
+        except Exception as exc:  # noqa: BLE001 - a builder that dies on stubs is a finding
+            broken.append((name, f"{type(exc).__name__}: {exc}"))
+
+    allowed = refused = 0
+    for command in commands:
+        hit = gate.match(command)
+        if hit:
+            allowed += 1
+            print(f"ALLOW  {hit[0]}  |  {command[:160]}")
+        else:
+            refused += 1
+            print(f"REFUSE -  |  {command[:160]}")
+    print(f"--- {len(commands)} commands, {allowed} allowed, {refused} refused")
+    for name in missing:
+        print(f"    no {name}() in {os.path.basename(path)}", file=sys.stderr)
+    for name, why in broken:
+        print(f"    {name}() raised {why}", file=sys.stderr)
+    if not commands:
+        print("wake-shape-check: that file built no commands, so nothing was checked", file=sys.stderr)
+        return 1
+    return 1 if refused or broken else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

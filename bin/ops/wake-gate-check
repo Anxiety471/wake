@@ -1,0 +1,103 @@
+#!/bin/bash
+# desc: review a gate artifact before it is installed: hash, size, its selftest, an optional harness, an optional e2e. Usage: wake-gate-check GATE [--selftest F] [--harness F] [--e2e F --repo D]
+set -u
+
+usage() {
+    cat <<'TXT'
+usage: wake-gate-check GATE [--selftest F] [--harness F] [--e2e F --repo D]
+
+A gate is the host-side matcher that decides which shell commands wake may send. It
+is reviewed before it is installed, because a gate that refuses a shape turns a real
+call into a silent no-op. Every step runs only when its file is set.
+
+  --selftest F  a checker that takes the gate path and exits 0 when the artifact is good
+  --harness F   an adversarial harness that takes the gate path and tries to get through it
+  --e2e F       a unittest module that drives a real flow through the gate as a process
+  --repo D      the checkout the e2e module is copied into (needs D/tests); copied, never edited
+
+Env: WAKE_GATE_SELFTEST, WAKE_GATE_HARNESS, WAKE_GATE_E2E, WAKE_REPO.
+Exit: 0 every configured step passed, 1 a step failed, 2 bad input.
+TXT
+}
+
+[ $# -gt 0 ] || { usage >&2; exit 2; }
+case "$1" in
+    -h | --help) usage; exit 0 ;;
+esac
+
+GATE=$1
+shift
+[ -f "$GATE" ] || { echo "no gate at $GATE" >&2; exit 2; }
+GATE=$(cd "$(dirname "$GATE")" && pwd)/$(basename "$GATE")
+
+SELFTEST=${WAKE_GATE_SELFTEST:-}
+HARNESS=${WAKE_GATE_HARNESS:-}
+E2E=${WAKE_GATE_E2E:-}
+REPO=${WAKE_REPO:-}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --selftest | --harness | --e2e | --repo)
+            [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
+            case "$1" in
+                --selftest) SELFTEST=$2 ;;
+                --harness) HARNESS=$2 ;;
+                --e2e) E2E=$2 ;;
+                --repo) REPO=$2 ;;
+            esac
+            shift 2
+            ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+fail=0
+
+report() {
+    local name=$1
+    shift
+    local out rc
+    echo "== $name"
+    out=$("$@" 2>&1)
+    rc=$?
+    printf '%s\n' "$out" | tail -5
+    if [ $rc -ne 0 ]; then
+        fail=1
+        echo "  FAILED: $name exited $rc" >&2
+    fi
+}
+
+echo "== artifact"
+sha256sum "$GATE" | awk '{print $1}'
+printf '%s bytes\n' "$(wc -c <"$GATE")"
+
+if [ -n "$SELFTEST" ]; then
+    report "selftest: $SELFTEST" python3 "$SELFTEST" "$GATE"
+fi
+if [ -n "$HARNESS" ]; then
+    report "harness: $HARNESS" python3 "$HARNESS" "$GATE"
+fi
+if [ -n "$E2E" ]; then
+    echo "== e2e: $E2E"
+    if [ ! -f "$E2E" ] || [ ! -d "$REPO" ]; then
+        echo "  skipped: needs --e2e and --repo (a checkout with tests/)"
+    else
+        W=$(mktemp -d) || { echo "cannot make a work directory" >&2; exit 2; }
+        trap 'rm -rf "$W"' EXIT INT TERM
+        if cp -a "$REPO"/. "$W"/ 2>/dev/null && [ -d "$W/tests" ]; then
+            MOD=$(basename "$E2E" .py)
+            cp "$E2E" "$W/tests/$MOD.py"
+            # shellcheck disable=SC2016  # the script is quoted for the child shell on purpose
+            report "e2e run ($MOD)" sh -c 'cd "$1/tests" && WAKE_GATE="$2" python3 -m unittest "$3"' _ "$W" "$GATE" "$MOD"
+        else
+            echo "  skipped: cannot copy $REPO, or it has no tests/ directory"
+            fail=1
+        fi
+    fi
+fi
+
+if [ $fail -ne 0 ]; then
+    echo "FAILED: a configured step did not pass" >&2
+    exit 1
+fi
+echo "OK: every configured step passed"

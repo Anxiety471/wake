@@ -248,6 +248,7 @@ class BridgeTest(unittest.TestCase):
             "WAKE_CONFIG_DIR": self.tmp,
             "WAKE_CONFIG": config or os.path.join(self.tmp, "missing.env"),
             "WAKE_MCP_API": api or f"http://127.0.0.1:{self.fake.port}",
+            "PYTHONDONTWRITEBYTECODE": "1",  # the bridge imports wake_config.py: keep bin/ clean
         }
         if token is not None:
             environ["WAKE_MCP_TOKEN"] = token

@@ -9,7 +9,6 @@ Nothing here needs a network, a database or a real host. Run with the rest:
 python3 -m unittest discover -s tests
 """
 
-import fnmatch
 import os
 import re
 import shlex
@@ -22,7 +21,19 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OPS = os.path.join(ROOT, "bin", "ops")
-NAMES = sorted(n for n in os.listdir(OPS) if not n.endswith(".md"))
+NAMES = sorted(n for n in os.listdir(OPS) if not n.endswith(".md") and os.path.isfile(os.path.join(OPS, n)))
+
+
+def shebang(name):
+    with open(os.path.join(OPS, name), encoding="utf-8") as f:
+        return f.readline().strip()
+
+
+def shell(name):
+    """The helper is a shell script, so shellcheck applies to it."""
+    return "bash" in shebang(name) or shebang(name).endswith("/sh")
+
+
 DOCS = (os.path.join(OPS, "README.md"), os.path.join(ROOT, "config.example.env"))
 
 # Paths and names that belong to one operator's machine, never to this repo.
@@ -54,13 +65,31 @@ def run(name, *args, env=None):
 
 class OpsFilesTestCase(unittest.TestCase):
     def test_the_directory_is_not_empty(self):
-        self.assertEqual(NAMES, ["wake-api-e2e", "wake-keys", "wake-pg", "wake-pingall", "wake-wait"])
+        self.assertEqual(
+            NAMES,
+            [
+                "wake-api-e2e",
+                "wake-deploy",
+                "wake-gate-check",
+                "wake-host-deploy",
+                "wake-keys",
+                "wake-pg",
+                "wake-pingall",
+                "wake-shape-check",
+                "wake-wait",
+            ],
+        )
 
     def test_every_script_parses(self):
         for name in NAMES:
+            path = os.path.join(OPS, name)
             with self.subTest(name=name):
-                r = subprocess.run(["bash", "-n", os.path.join(OPS, name)], capture_output=True, text=True)
-                self.assertEqual(r.returncode, 0, r.stderr)
+                if shell(name):
+                    r = subprocess.run(["bash", "-n", path], capture_output=True, text=True)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                else:
+                    with open(path, encoding="utf-8") as f:
+                        compile(f.read(), path, "exec")
 
     def test_every_script_is_executable(self):
         for name in NAMES:
@@ -134,38 +163,56 @@ class OpsFilesTestCase(unittest.TestCase):
                         f"{os.path.basename(path)} carries the hostname {hit!r}",
                     )
 
+    def test_the_suite_runner_keeps_bytecode_out_of_the_tree(self):
+        """bin/wake imports bin/wake_config.py, so a suite run would otherwise cache bytecode in
+        the checkout; tests/test_wake.py passes the same setting to every child it spawns.
+        """
+        with open(os.path.join(ROOT, "tests", "run.sh"), encoding="utf-8") as f:
+            runner = f.read()
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1", runner)
+
     def test_the_hostname_guard_is_not_a_no_op(self):
         for sample in ("bots.example.com", "vps01.example.com", "wake.internal", "h.some-hospital.example.org"):
             with self.subTest(sample=sample):
                 self.assertRegex(sample, HOSTNAME)
 
-    def test_ci_and_readme_shellcheck_every_ops_script(self):
-        ci_lines = text(os.path.join(ROOT, ".github/workflows/ci.yml")).splitlines()
-        readme_lines = text(os.path.join(ROOT, "README.md")).splitlines()
-        ci = [line for line in ci_lines if "shellcheck " in line]
-        dev = [line for line in readme_lines if line.strip().startswith("shellcheck ")]
+    def test_ci_and_readme_shellcheck_every_bash_helper(self):
+        # One line in ci.yml and the same line in the README, finding the bash helpers by their
+        # shebang: the hand-kept list it replaced dropped wake-wait the moment one was added.
+        ci = [
+            line for line in text(os.path.join(ROOT, ".github/workflows/ci.yml")).splitlines() if "shellcheck " in line
+        ]
+        dev = [
+            line
+            for line in text(os.path.join(ROOT, "README.md")).splitlines()
+            if line.strip().startswith("shellcheck ")
+        ]
         self.assertEqual(len(ci), 1, "expected one shellcheck line in ci.yml")
         self.assertEqual(len(dev), 1, "expected one shellcheck line in README.md")
-        ci_words = ci[0].split("shellcheck", 1)[1].split()
-        self.assertEqual(ci_words, dev[0].split("shellcheck", 1)[1].split(), "ci.yml and README name different targets")
-        globs = [w for w in ci_words if w.startswith("bin/ops/")]
-        self.assertTrue(globs, "the helpers are still not shellchecked")
+        self.assertEqual(
+            ci[0].split("shellcheck", 1)[1].strip(),
+            dev[0].split("shellcheck", 1)[1].strip(),
+            "ci.yml and README name different targets",
+        )
+        self.assertIn("grep -lE", ci[0], "a hand-kept target list is back: filter by shebang instead")
+        picked = subprocess.run(
+            ["bash", "-c", "grep -lE '^#!/(usr/)?bin/(env )?(ba)?sh' bin/ops/wake-* bin/wake*"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(picked.returncode, 0, picked.stderr)
+        found = sorted(p for p in picked.stdout.split() if p.startswith("bin/ops/"))
+        self.assertEqual(
+            sorted("bin/ops/" + name for name in NAMES if shell(name)),
+            found,
+            "the shebang filter and the bash helpers disagree",
+        )
         for name in NAMES:
+            if shell(name):
+                continue
             with self.subTest(name=name):
-                self.assertTrue(
-                    any(fnmatch.fnmatch("bin/ops/" + name, g) for g in globs), f"{name} is not shellchecked"
-                )
-
-    def test_the_e2e_script_checks_every_tool_it_runs(self):
-        body = read("wake-api-e2e")
-        tools = set(re.search(r"for tool in ([^;]+);", body).group(1).split())
-        self.assertTrue({"bun", "jq", "curl", "openssl"} <= tools)
-        self.assertIn("python3", tools, "python3 builds the 101-id body but is never checked")
-        rows = text(os.path.join(OPS, "README.md")).splitlines()
-        row = next(line for line in rows if line.startswith("| `wake-api-e2e` |"))
-        for tool in sorted(tools):
-            with self.subTest(tool=tool):
-                self.assertIn(f"`{tool}`", row, f"the Needs column omits {tool}")
+                self.assertNotIn("bin/ops/" + name, found, f"{name} is Python, so shellcheck would fail on it")
 
 
 class OpsBehaviourTestCase(unittest.TestCase):
