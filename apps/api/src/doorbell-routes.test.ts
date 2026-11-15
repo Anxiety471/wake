@@ -208,6 +208,7 @@ test('a sent message wakes the recipient through the doorbell', async () => {
     time: expect.any(String),
     messageId: sent.id,
     threadId: null,
+    replyToken: null,
     from: 'alice',
     to: 'bob',
   });
@@ -327,6 +328,115 @@ test('a reply wakes the asker', async () => {
   });
   expect(payload.detail).not.toContain('wake --reply');
   expect(requests[0]?.headers['idempotency-key']).toBe(answer.messageId);
+});
+
+// #93: the bot a doorbell wakes holds no agent token. The API mints one reply
+// token when it opens the thread, keeps only the sha256, and ships the plaintext
+// once in that bot's payload; the reply route accepts it for that thread, once.
+async function askWithToken(
+  token: string,
+  to: string,
+  body: string,
+): Promise<{ thread: CreatedThread; replyToken: string; detail: string }> {
+  const before = requests.length;
+  const thread = await ask(token, to, body);
+  const payload = JSON.parse(requests[before]?.body ?? '{}');
+  return {
+    thread,
+    replyToken: String(payload.replyToken ?? ''),
+    detail: String(payload.detail ?? ''),
+  };
+}
+
+function replyWithToken(threadId: string, replyToken: string, body: string) {
+  return app.inject({
+    method: 'POST',
+    url: `/threads/${threadId}/reply`,
+    headers: { 'x-wake-reply-token': replyToken },
+    payload: { body },
+  });
+}
+
+test('the payload reply token answers its ask once, with no agent token', async () => {
+  const alice = await register('alice');
+  await register('bob');
+  const { thread, replyToken, detail } = await askWithToken(
+    alice.token,
+    'bob',
+    'are you there?',
+  );
+  expect(replyToken.length).toBeGreaterThan(20);
+  // Top level, never in the text a routine logs.
+  expect(detail).not.toContain(replyToken);
+
+  const answered = await replyWithToken(thread.threadId, replyToken, 'yes');
+  expect(answered.statusCode).toBe(201);
+  const body: ThreadReply = answered.json();
+  expect(body.seq).toBe(2);
+  expect(body.status).toBe('answered');
+
+  // The asker can read the answer in its own thread; the token was a credential,
+  // not a second store.
+  const read = await app.inject({
+    method: 'GET',
+    url: `/threads/${thread.threadId}`,
+    headers: bearer(alice.token),
+  });
+  expect(read.statusCode).toBe(200);
+});
+
+test('a reply token answers once: a replay meets the answered thread', async () => {
+  const alice = await register('alice');
+  await register('bob');
+  const { thread, replyToken } = await askWithToken(
+    alice.token,
+    'bob',
+    'once?',
+  );
+  expect(
+    (await replyWithToken(thread.threadId, replyToken, 'first')).statusCode,
+  ).toBe(201);
+  const replay = await replyWithToken(thread.threadId, replyToken, 'second');
+  expect(replay.statusCode).toBe(409);
+  expect(replay.json().error).toBe('thread already answered');
+});
+
+test('a reply token is refused for a different thread', async () => {
+  const alice = await register('alice');
+  await register('bob');
+  const first = await askWithToken(alice.token, 'bob', 'one?');
+  const second = await askWithToken(alice.token, 'bob', 'two?');
+  const wrong = await replyWithToken(
+    second.thread.threadId,
+    first.replyToken,
+    'not yours',
+  );
+  expect(wrong.statusCode).toBe(401);
+  expect(wrong.json().error).toBe('invalid reply token');
+  // The thread it was minted for is untouched and still answerable.
+  expect(
+    (await replyWithToken(first.thread.threadId, first.replyToken, 'mine'))
+      .statusCode,
+  ).toBe(201);
+});
+
+test('a reply token past its expiry is refused', async () => {
+  const alice = await register('alice');
+  await register('bob');
+  const { thread, replyToken } = await askWithToken(
+    alice.token,
+    'bob',
+    'still there?',
+  );
+  await admin.query(
+    `UPDATE threads
+        SET reply_token_expires_at = clock_timestamp() - interval '1 minute'
+      WHERE id = $1::uuid`,
+    [thread.threadId],
+  );
+  const late = await replyWithToken(thread.threadId, replyToken, 'late');
+  expect(late.statusCode).toBe(401);
+  expect(late.json().error).toBe('reply token expired');
 });
 
 test('a recipient with no doorbell target is not rung and not reported', async () => {

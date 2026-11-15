@@ -13,7 +13,7 @@ import {
   type ThreadStatus,
   type ThreadSummary,
 } from '@wake/shared';
-import { caller } from './auth.js';
+import { caller, type AuthenticatedAgent } from './auth.js';
 import {
   notifyMessage,
   wakeReportSchema,
@@ -23,6 +23,7 @@ import { ConfigError } from './options.js';
 import { inboxLimit, UUID_PATTERN } from './paging.js';
 import { resolveRecipient } from './recipients.js';
 import { isoTime } from './time.js';
+import { generateToken, hashToken } from './token.js';
 
 const MAX_BODY_BYTES = 8192;
 export const DEFAULT_THREAD_TTL_HOURS = 24;
@@ -249,6 +250,115 @@ function refused(
   return null;
 }
 
+function replyTokenHeader(
+  value: string | string[] | undefined,
+): string | undefined {
+  const token = Array.isArray(value) ? value[0] : value;
+  return token === undefined || token === '' ? undefined : token;
+}
+
+type TokenThreadRow = ThreadStateRow & {
+  reply_token_hash: Buffer | null;
+  token_expired: boolean;
+  recipient_id: string | null;
+  recipient_name: string | null;
+  recipient_kind: string | null;
+};
+
+async function replyTokenThread(
+  pool: Pool,
+  threadId: string,
+  ttlHours: number | null,
+): Promise<TokenThreadRow | null> {
+  const result = await pool.query<TokenThreadRow>(
+    `SELECT t.id,
+            t.kind,
+            t.status,
+            t.created_by,
+            t.last_seq,
+            t.reply_token_hash,
+            (
+              t.reply_token_expires_at IS NOT NULL
+              AND t.reply_token_expires_at <= clock_timestamp()
+            ) AS token_expired,
+            (
+              $2::integer IS NOT NULL
+              AND t.updated_at < clock_timestamp() - make_interval(hours => $2)
+            ) AS expired,
+            r.id AS recipient_id,
+            r.name AS recipient_name,
+            r.kind AS recipient_kind
+       FROM threads t
+       LEFT JOIN LATERAL (
+         SELECT a.id, a.name, a.kind
+           FROM thread_participants tp
+           JOIN agents a ON a.id = tp.agent_id
+          WHERE tp.thread_id = t.id
+            AND tp.agent_id <> t.created_by
+          ORDER BY tp.joined_at ASC
+          LIMIT 1
+       ) r ON true
+      WHERE t.id = $1::uuid`,
+    [threadId, ttlHours],
+  );
+  return result.rows[0] ?? null;
+}
+
+// Spend the token first, then explain a refusal from the thread it names: a
+// replay after the answer was stored reaches the same 409 the bearer path gives,
+// a token minted for another thread is simply invalid, and an expired one says
+// so. Burning before the insert is what makes it single use, races included.
+async function consumeReplyToken(
+  pool: Pool,
+  threadId: string,
+  token: string,
+  ttlHours: number | null,
+): Promise<
+  | { ok: true; agent: AuthenticatedAgent }
+  | { ok: false; status: number; error: string }
+> {
+  const burned = await pool.query(
+    `UPDATE threads
+        SET reply_token_hash = NULL,
+            reply_token_expires_at = NULL
+      WHERE id = $1::uuid
+        AND reply_token_hash = $2
+        AND (
+          reply_token_expires_at IS NULL
+          OR reply_token_expires_at > clock_timestamp()
+        )
+      RETURNING id`,
+    [threadId, hashToken(token)],
+  );
+  const row = await replyTokenThread(pool, threadId, ttlHours);
+  if (row === null) {
+    return { ok: false, status: 404, error: 'not found' };
+  }
+  if (burned.rowCount !== 1) {
+    if (row.token_expired) {
+      return { ok: false, status: 401, error: 'reply token expired' };
+    }
+    if (row.recipient_id !== null) {
+      const denial = refused(row, row.recipient_id);
+      if (denial !== null) {
+        return { ok: false, status: denial.status, error: denial.error };
+      }
+    }
+    return { ok: false, status: 401, error: 'invalid reply token' };
+  }
+  if (row.recipient_id === null) {
+    return { ok: false, status: 404, error: 'not found' };
+  }
+  return {
+    ok: true,
+    agent: {
+      id: row.recipient_id,
+      name: row.recipient_name ?? '',
+      kind: row.recipient_kind === 'mcp' ? 'mcp' : 'bot',
+    },
+  };
+}
+
 async function postMessage(
   query: Pick<Pool, 'query'> | Pick<PoolClient, 'query'>,
   input: {
@@ -377,11 +487,19 @@ export function registerThreadRoutes(
       };
       try {
         await client.query('BEGIN');
+        // The bot this asks may hold no agent token (#93), so the thread carries
+        // one reply token instead: only its sha256 is stored, and the plaintext
+        // travels once, inside this recipient's doorbell payload.
+        const replyToken = generateToken();
         const created = await client.query<{ id: string }>(
-          `INSERT INTO threads (kind, created_by)
-           VALUES ($1, $2)
+          `INSERT INTO threads (kind, created_by, reply_token_hash, reply_token_expires_at)
+           VALUES ($1, $2, $3,
+                   CASE
+                     WHEN $4::integer IS NULL THEN NULL
+                     ELSE clock_timestamp() + make_interval(hours => $4)
+                   END)
            RETURNING id`,
-          [kind, sender.id],
+          [kind, sender.id, hashToken(replyToken), ttlHours],
         );
         const threadId = created.rows[0]?.id;
         if (threadId === undefined) {
@@ -417,6 +535,7 @@ export function registerThreadRoutes(
             body,
             event: 'request',
             threadId,
+            replyToken,
           },
           request.log,
         );
@@ -672,13 +791,36 @@ export function registerThreadRoutes(
       },
     },
     async (request, reply) => {
-      const agent = caller(request);
       const body = request.body.body;
       if (
         body.includes('\0') ||
         Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES
       ) {
         return reply.code(400).send({ error: 'invalid request' });
+      }
+      // A bot woken by a doorbell holds no agent token; its payload carries a
+      // reply token for this one thread (#93). The rest of the route is the same
+      // for both callers, and the token is spent before the message is stored.
+      const replyToken = replyTokenHeader(
+        request.headers['x-wake-reply-token'],
+      );
+      let agent: AuthenticatedAgent;
+      if (request.agent !== null) {
+        agent = caller(request);
+      } else {
+        if (replyToken === undefined) {
+          return reply.code(401).send({ error: 'unauthorized' });
+        }
+        const exchanged = await consumeReplyToken(
+          pool,
+          request.params.id,
+          replyToken,
+          ttlHours,
+        );
+        if (!exchanged.ok) {
+          return reply.code(exchanged.status).send({ error: exchanged.error });
+        }
+        agent = exchanged.agent;
       }
       const state = await loadThreadState(
         pool,

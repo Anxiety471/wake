@@ -117,7 +117,7 @@ Put each bot's webhook key in `~/.config/wake/<bot-id>.key` (`chmod 600`), or le
 
 `wake` is only a command. A bot that receives a **CLI** thread as a webhook run answers it with `wake --reply <thread-id> "<answer>"`. That only works if `wake` exists **on that bot's own computer**.
 
-A thread the **API** opened is not in that store: its id lives in the API's Postgres, the doorbell names `POST /threads/<id>/reply`, and its `ref` is `api-thread:<id>` rather than `thread:<id>`. `wake --reply <id>` answers one for a bot that holds its own agent token: set `WAKE_AGENT_TOKEN` and `WAKE_API` and the CLI POSTs to that route as this bot. Without them it says which setting is missing instead of "never opened".
+A thread the **API** opened is not in that store: its id lives in the API's Postgres, the doorbell names `POST /threads/<id>/reply`, and its `ref` is `api-thread:<id>` rather than `thread:<id>`. `wake --reply <id>` answers one for a bot that holds its own agent token: set `WAKE_AGENT_TOKEN` and `WAKE_API` and the CLI POSTs to that route as this bot. Without them it says which setting is missing instead of "never opened". A bot the doorbell woke needs neither: an API thread's payload carries a top-level `replyToken`, and exporting it as `WAKE_REPLY_TOKEN` lets the same `wake --reply <id>` answer that thread once, with no agent token. The token is minted when the thread opens, stored only as a sha256, scoped to that thread, and expires with its TTL.
 
 Bots with separate computers do not share a home folder, so installing `wake` on one machine does not install it on another. A bot without it gets "command not found" on `--reply` and will usually answer in its own chat instead. The asker sees no reply on the thread, and the user gets an unexpected message.
 
@@ -125,7 +125,7 @@ Checklist for each bot (do this when you add a bot to `bots.tsv`):
 
 1. Run `./install.sh` on that bot's computer, so `wake` is on its PATH.
 2. Put the keys in `WAKE_KEY_DIR`. Keys are per target bot, so the replying bot needs the key for whichever bot it is answering, not only its own.
-3. Add a rule to the bot's webhook routine: *if `ref` starts with `thread:`, answer only with `wake --reply <id> "<short answer>" --source bot:<alias>` and send no other message.* Without this rule a bot may treat the payload as untrusted text and report in its own chat. `api-thread:` is the API's prefix, not the CLI's: answer it with `wake --reply <id>` **if** this bot has `WAKE_AGENT_TOKEN` and `WAKE_API` set (the CLI then posts to `POST /threads/<id>/reply` as this bot), otherwise post to that route directly with an agent token.
+3. Add a rule to the bot's webhook routine: *if `ref` starts with `thread:`, answer only with `wake --reply <id> "<short answer>" --source bot:<alias>` and send no other message.* Without this rule a bot may treat the payload as untrusted text and report in its own chat. `api-thread:` is the API's prefix, not the CLI's: answer it with `wake --reply <id>` **if** this bot has `WAKE_API` and either `WAKE_AGENT_TOKEN` or the payload's `WAKE_REPLY_TOKEN` set (the CLI then posts to `POST /threads/<id>/reply`), otherwise post to that route directly with an agent token.
 4. Verify: run `command -v wake` on that computer, send it `wake --ask <alias> "ping" --wait 60`, and confirm a reply appears with `wake --thread <id>`.
 
 Symptom of a missing install: the thread file shows the ask and the wake, but no `reply` record.
@@ -181,7 +181,7 @@ wake --ask engineer "why does CI fail on main?" --wait 180 # headless: block unt
 wake --ask engineer "..." --no-send                        # record the thread only (dry run)
 ```
 
-The bot receives `<question> [thread <id>] reply: wake --reply <id> "YOUR ANSWER"` for a CLI thread. A thread opened through the API or MCP carries `ref: api-thread:<id>` and the API route instead: that id is in Postgres, not in the shared folder, so `wake --reply` reaches it only through the API (`WAKE_AGENT_TOKEN` + `WAKE_API`).
+The bot receives `<question> [thread <id>] reply: wake --reply <id> "YOUR ANSWER"` for a CLI thread. A thread opened through the API or MCP carries `ref: api-thread:<id>` and the API route instead: that id is in Postgres, not in the shared folder, so `wake --reply` reaches it only through the API (`WAKE_API` plus `WAKE_AGENT_TOKEN`, or the payload's `replyToken` exported as `WAKE_REPLY_TOKEN`).
 
 ### `--reply`: answer a thread
 

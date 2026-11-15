@@ -7,6 +7,19 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **A thread carries a reply token, so the bot a doorbell woke can answer it.** The woken bot held
+  no agent token, so an API-born thread advertised a route it could not use, and only the shared
+  `mcp` identity existed - which the route refuses with `409`, because it is the asker of every
+  thread it opened. `POST /threads` now mints one token per thread, stores only its sha256 and an
+  expiry (the thread's TTL) on the row (migration `013_thread_reply_token.sql`), and ships the
+  plaintext once in the recipient's doorbell payload as a top-level `replyToken`, outside `detail`.
+  `POST /threads/:id/reply` accepts it in `X-Wake-Reply-Token` instead of a bearer: scoped to that
+  thread, spent before the message is stored so a race cannot answer twice, refused on replay with
+  the existing `409 thread already answered`, for another thread's token, and after expiry.
+  `bin/wake --reply` sends it when `WAKE_AGENT_TOKEN` is absent and `WAKE_REPLY_TOKEN` is set, and
+  names the missing setting when neither is. No agent token, no shared file, no new client
+  ([#93](https://github.com/Anxiety471/wake/issues/93)).
+
 - **`.editorconfig` is guarded, and the binary sniff reads both ends.** The final-newline sweep
   trusted a file nothing read: deleting `insert_final_newline = true` left the suite green while
   the editor request told the next contributor something it no longer said. `EditorConfigTest`
