@@ -7,6 +7,20 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **The other four operator helpers, generalised.** `wake-gate-check` reviews a gate artifact
+  (hash, size, its selftest, an adversarial harness, an e2e run in a copied checkout) and
+  `wake-shape-check` checks every command a wake copy builds against that gate's matcher, so a
+  shape the gate would refuse is caught before it turns a call into a silent no-op.
+  `wake-deploy` installs a checkout's scripts — core files, `wake_config.py`, every helper — into
+  a prefix locally or on an `ssh:DEST` host as one tar stream and verifies the copy there;
+  `wake-host-deploy` puts the API on a host as a native systemd service in idempotent steps
+  (`db`, `user`, `build`, `install`, `env`, `unit`, `status`, `log`), with `WAKE_DB_PASSWORD` and
+  `WAKE_REGISTRATION_SECRET` read from the environment and written through stdin so they never
+  reach a command line or the output. Every host-specific value is a `WAKE_*` variable now, and
+  `tests/test_ops_deploy.py` drives all four with a stubbed `ssh`, host runner and builder.
+- **`bin/ops` shellcheck covers the shell helpers only.** `ci.yml` and the README name the five
+  bash helpers instead of a glob, and `tests/test_ops_scripts.py` fails if a Python helper is
+  handed to shellcheck or a shell helper is left out.
 - **Operator helpers in `bin/ops`.** `wake-pg` runs a throwaway local Postgres for the API tests;
   `wake-api-e2e` starts the real API on a scratch database and proves the public surface over HTTP
   (`/mcp` initialize, ten tools, `wake_ask` and `wake_read_thread`, the inbox, deliveries,
