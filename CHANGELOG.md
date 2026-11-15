@@ -7,6 +7,10 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **`tests/test_gate_shapes.py` no longer carries one machine's staging directory.**
+  The directory is `WAKE_GATE_STAGE` now (default: unset, so the allow-list tests skip),
+  `WAKE_GATE` still names one artifact, and a test pins the empty case. Where a gate is
+  staged is a property of a machine, never of the repository.
 - **Three agent skills under `skills/`.** `wake-ops` covers the operator helpers (a scratch
   database, the HTTP end-to-end run, keys, a fleet ping, the two installers and a gate
   review); `wake-mcp` covers the stdio bridge, the public `/mcp` endpoint and its single
