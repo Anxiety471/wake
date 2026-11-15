@@ -16,6 +16,10 @@ CFG = wake_config.load()
 TOKEN = (CFG.get("WAKE_MCP_TOKEN") or "").strip()
 API = ((CFG.get("WAKE_MCP_API") or "").strip() or "http://127.0.0.1:3001").rstrip("/")
 TIMEOUT = 60.0
+# The interpreter's default agent (Python-urllib/*) is refused by Cloudflare with
+# 403 error 1010, so the public /mcp was unreachable from here while curl reached
+# it. The CLI names itself the same way: wake-cli/<version> in bin/wake.
+USER_AGENT = "wake-mcp/" + wake_config.VERSION
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -94,6 +98,7 @@ def post(message, version):
         "authorization": "Bearer " + TOKEN,
         "content-type": "application/json",
         "accept": "application/json, text/event-stream",
+        "user-agent": USER_AGENT,
     }
     if version:
         headers["mcp-protocol-version"] = version

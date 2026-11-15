@@ -44,6 +44,15 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **`bin/wake-mcp` was refused by Cloudflare (403, error 1010).** The bridge builds its
+  headers explicitly and sent urllib's default agent, `Python-urllib/*`, which the bot rule
+  on the public host blocks before authentication: the same request with `curl` answered
+  `401`, and with `curl -A 'Python-urllib/3.13'` it answered `403`. It sends
+  `wake-mcp/<version>` now, the way the CLI sends `wake-cli/<version>`, so a stdio client
+  that points at the public URL works instead of failing with what looks like an auth
+  error. A test against the fake API fails if the agent goes back to the interpreter's
+  ([#72](https://github.com/Anxiety471/wake/issues/72)). `docs/mcp.md` also records that
+  `GET`/`DELETE /mcp` answer `401` before `405` when the request carries no token.
 - **The threads e2e runs in CI, and the publish checklist cannot name a stale commit.**
   `scripts/e2e-threads.ts` had never run in CI, so a pull request could change the API's boot
   rule and still show every check green; the `api (bun)` job now gives it a database of its own
