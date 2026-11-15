@@ -8,7 +8,8 @@ USAGE="usage: $PROG <thread-id> [--timeout SECONDS] [--interval N] [--from BOT]
   Blocks until <thread-id> has a reply that was not there when it started, prints that reply
   (from its line to the end of the thread, so a multi-line answer is not cut) and exits 0.
   With --from BOT, a reply from that bot counts even if it predates the wait, and a reply
-  from anyone else never does. It never sends anything and never opens a thread.
+  from anyone else never does. It never sends anything and never opens a thread. A --from, or
+  a WAKE_WAIT_FROM, with no bot name in it is refused instead of meaning any new reply.
 
   exit 0  answered
        2  no answer within the timeout
@@ -74,6 +75,12 @@ esac
 case $TIMEOUT in '' | *[!0-9]*) die "the timeout must be a number of seconds, not '$TIMEOUT'" ;; esac
 case $INTERVAL in '' | *[!0-9]* | 0) die "the interval must be a positive number of seconds, not '$INTERVAL'" ;; esac
 case $QUIET in 0 | 1) ;; *) die "WAKE_WAIT_QUIET must be 0 or 1, not '$QUIET'" ;; esac
+# The flags check their own value; the variable is the third way in. Unset stays the ordinary
+# case, and a value with no bot name in it is refused rather than waited out.
+case $FROM in
+    '' | *[![:space:]]*) ;;
+    *) die "WAKE_WAIT_FROM has no bot name in it; set a bot alias, or unset it to wait for any reply" ;;
+esac
 
 command -v wake >/dev/null || die "wake not found on PATH; run ./install.sh first"
 
