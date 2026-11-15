@@ -19,6 +19,14 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 - **Site names, an owner's domain and a personal path are out of the tree.** They were
   documentation only; no code path changed.
 
+### Fixed
+
+- **`wake-wait` refuses `--from` with no bot name.** `--from=`, `--from ""` and a blank
+  `--from "   "` used to run the "any new reply" rule without saying so, and a three-space alias
+  waited the whole timeout for a bot that cannot exist. Both flag forms now exit 1 with
+  `--from needs a bot alias` before the thread is read; an empty `WAKE_WAIT_FROM` stays the
+  ordinary unset case.
+
 ### Added
 
 - **`tests/test_gate_shapes.py` no longer carries one machine's staging directory.**

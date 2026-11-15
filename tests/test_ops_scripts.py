@@ -461,6 +461,26 @@ class WakeWaitTestCase(unittest.TestCase):
         self.assertEqual(r.stdout, reply + "\n")
         self.assertEqual(r.stderr, "")
 
+    def test_an_empty_from_is_refused_instead_of_switching_the_rule(self):
+        # An empty alias used to mean "any new reply" silently, and a blank one waited the whole
+        # timeout for a bot whose name is three spaces. The flags are the only place this is
+        # refused; an empty WAKE_WAIT_FROM is the ordinary unset case and stays legal.
+        for form in (["--from="], ["--from", ""], ["--from=   "], ["--from", "   "]):
+            with self.subTest(form=form):
+                self.stub_rounds([["[2026-11-15T12:00] human:tester (ask): what is the eta"]])
+                r = self.wait("t-1", *form, "--timeout", "1")
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn("--from needs a bot alias", r.stderr)
+                self.assertEqual(self.called(), [], "a refused --from still went to the thread store")
+
+    def test_an_empty_from_in_the_environment_is_the_unset_case(self):
+        ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
+        reply = "[2026-11-15T12:01] bot-engineer (reply): tomorrow"
+        self.stub_rounds([[ask], [ask, reply]])
+        r = self.wait("t-1", "--timeout", "5", "--interval", "1", env={"WAKE_WAIT_FROM": "", "WAKE_WAIT_QUIET": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, reply + "\n")
+
     def test_the_default_timeout_is_180s_and_the_variable_sets_it(self):
         # Proved without waiting: a --from answer that is already there returns at once, so the
         # progress line is the only thing under test.

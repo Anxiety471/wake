@@ -49,9 +49,14 @@ while [ "$#" -gt 0 ]; do
         --from)
             [ "$#" -ge 2 ] || die "--from needs a bot alias"
             FROM=$2
+            case $FROM in *[![:space:]]*) ;; *) die "--from needs a bot alias" ;; esac
             shift 2
             ;;
-        --from=*) FROM=${1#*=}; shift ;;
+        --from=*)
+            FROM=${1#*=}
+            case $FROM in *[![:space:]]*) ;; *) die "--from needs a bot alias" ;; esac
+            shift
+            ;;
         -*) die "unknown option $1" ;;
         *)
             [ -z "$ID" ] || die "one thread id at a time; got $ID and $1 -- usage: $PROG <thread-id> [--timeout SECONDS] [--interval N] [--from BOT]"
