@@ -581,5 +581,110 @@ class NoBytecodeInTheTreeTests(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(gate_dir)), ["gate.py"], "loading the gate wrote beside it")
 
 
+BUILDER_STUB = """#!/bin/sh
+for a in "$@"; do
+  case "$a" in --outfile=*) out="${a#--outfile=}" ;; esac
+done
+printf 'export const built = 1\\n' > "$out"
+"""
+
+
+class BuildRefTestCase(unittest.TestCase):
+    """`build` shipped whatever the shared clone had checked out, and never said which ref.
+
+    Measured for #75: the clone sat on an unmerged pull request's tree and `install` would
+    have put that tree on the host without recording it. These tests drive the real `git` in
+    a throwaway repository, because the guard is about what the checkout actually is.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="buildref-")
+        self.log = os.path.join(self.dir, "host.log")
+        self.hostops = write(
+            os.path.join(self.dir, "hostops"),
+            "#!/bin/sh\n{\n  printf 'CMD: %s\\n' \"$1\"\n  cat\n  printf '\\n--\\n'\n} >> \"$STUB_LOG\"\n",
+            executable=True,
+        )
+        self.builder = write(os.path.join(self.dir, "builder"), BUILDER_STUB, executable=True)
+        self.repo = os.path.join(self.dir, "repo")
+        os.makedirs(os.path.join(self.repo, "apps", "api", "src"))
+        write(os.path.join(self.repo, "apps", "api", "src", "index.ts"), "serve();\n")
+        self.git("-c", "init.defaultBranch=main", "init", "-q")
+        self.git("add", "-A")
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "one")
+        self.main = self.git("rev-parse", "HEAD")
+        # The remote-tracking ref a real clone has; `git fetch` has no remote here, which the
+        # build reports and then compares against this one.
+        self.git("update-ref", "refs/remotes/origin/main", self.main)
+        self.env = {
+            "WAKE_HOSTOPS": self.hostops,
+            "STUB_LOG": self.log,
+            "WAKE_REPO": self.repo,
+            "WAKE_BUILDER": self.builder,
+            "WAKE_DEPLOY_STATE": os.path.join(self.dir, "state"),
+        }
+
+    def git(self, *args):
+        r = subprocess.run(["git", "-C", self.repo, *args], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def commit(self, body, message):
+        write(os.path.join(self.repo, "apps", "api", "src", "index.ts"), body)
+        self.git("add", "-A")
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD")
+
+    def test_a_dirty_checkout_is_refused_and_names_the_file(self):
+        # The built bytes would be a commit plus edits nobody can name afterwards.
+        write(os.path.join(self.repo, "apps", "api", "src", "index.ts"), "serve(); // edited\n")
+        r = run("wake-host-deploy", "build", env=self.env)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("has uncommitted changes", r.stderr)
+        self.assertIn("apps/api/src/index.ts", r.stderr)
+        self.assertNotIn("size:", r.stdout, "the builder ran on a tree that is not a commit")
+
+    def test_a_head_that_is_not_origin_main_is_refused_with_both_ids(self):
+        self.git("checkout", "-q", "-b", "feature")
+        head = self.commit("serve(); // feature\n", "feature")
+        r = run("wake-host-deploy", "build", env=self.env)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(head[:12], r.stderr, "the refusal must name the commit it found")
+        self.assertIn(self.main[:12], r.stderr, "the refusal must name origin/main")
+
+    def test_the_override_builds_another_commit_and_says_so(self):
+        self.git("checkout", "-q", "-b", "hotfix")
+        head = self.commit("serve(); // hotfix\n", "hotfix")
+        r = run("wake-host-deploy", "build", env=dict(self.env, WAKE_ALLOW_ANY_REF="1"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(head, r.stdout, "the artifact must carry the commit it was built from")
+        self.assertIn("WAKE_ALLOW_ANY_REF", r.stderr, "an overridden build must say what it did")
+
+    def test_main_is_built_and_the_commit_reaches_install_and_status(self):
+        r = run("wake-host-deploy", "build", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("commit: " + self.main, r.stdout)
+        env = dict(self.env, WAKE_NODE="/usr/bin/node")
+        r = run("wake-host-deploy", "install", env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("install: commit " + self.main, r.stdout)
+        r = run("wake-host-deploy", "status", env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("build commit: " + self.main, r.stdout)
+
+    def test_a_checkout_that_is_not_git_is_refused_unless_overridden(self):
+        # A tarball or a copied tree has no ref at all, so the build cannot be named.
+        plain = os.path.join(self.dir, "plain")
+        os.makedirs(os.path.join(plain, "apps", "api", "src"))
+        write(os.path.join(plain, "apps", "api", "src", "index.ts"), "serve();\n")
+        env = dict(self.env, WAKE_REPO=plain)
+        r = run("wake-host-deploy", "build", env=env)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not a git checkout", r.stderr)
+        self.assertIn("WAKE_ALLOW_ANY_REF", r.stderr, "the refusal must name the way out")
+        r = run("wake-host-deploy", "build", env=dict(env, WAKE_ALLOW_ANY_REF="1"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -86,6 +86,16 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   and the route answers `409 the asker cannot answer its own ask` (`threads.ts`). Deploying a
   per-bot token to the fleet is [#93](https://github.com/Anxiety471/wake/issues/93); the false
   instruction fixed here is [#96](https://github.com/Anxiety471/wake/issues/96).
+- **`wake-host-deploy` can no longer ship a tree it cannot name.** `build` ran `bun build`
+  inside `WAKE_REPO` and read nothing about the checkout, so a stale branch, a half-rebased
+  worktree or a bot's verification clone all shipped as `main`: on 2026-11-16 00:44 PHT the
+  shared clone stood on an unmerged pull request's tree and `install` would have put it on
+  the host with no record of it. `build` now refuses uncommitted changes (naming the files)
+  and a `HEAD` that is not `origin/main`'s commit (naming both ids), prints the commit it
+  built and records it beside the artifact, so `install` says which one it shipped and
+  `status` prints it. `WAKE_ALLOW_ANY_REF=1` is the deliberate hotfix: it builds the
+  checked-out commit and says so on stderr
+  ([#75](https://github.com/Anxiety471/wake/issues/75)).
 
 - **A reserved test address is not a secret, and one branch's fixture failed every branch's scan.**
   `scripts/scrub-check.sh` flagged `user.email=simulation@example.invalid` in

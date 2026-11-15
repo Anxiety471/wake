@@ -38,6 +38,12 @@ Steps, in the order a first install needs them:
 
 With no step it runs `status`. --dry-run prints each host command and writes nothing.
 
+build refuses a tree it cannot name afterwards: a checkout with uncommitted changes (it
+lists the files) or a HEAD that is not origin/main's commit (it names both ids). The build
+is stamped with the commit it came from, so install says which one it shipped and status
+prints it. WAKE_ALLOW_ANY_REF=1 is the deliberate hotfix: it builds the checked-out commit
+and says so on stderr.
+
 install takes the build this operator made: build records it under WAKE_DEPLOY_STATE
 and install reads only that, so a stale or planted directory in /tmp is never installed.
 Migrations arrive as one tar stream (exact names, no /tmp staging) and a .sql file the
@@ -51,7 +57,8 @@ WAKE_REPO (checkout), WAKE_SERVICE (wake-api), WAKE_SERVICE_USER / WAKE_SERVICE_
 (wake), WAKE_INSTALL_DIR (/opt/wake), WAKE_ENV_FILE (/etc/wake/api.env),
 WAKE_UNIT_DIR (/etc/systemd/system), WAKE_DB_NAME / WAKE_DB_ROLE (wake),
 WAKE_DB_HOST (127.0.0.1), WAKE_DB_PORT (5432), WAKE_PORT (3001), WAKE_BIND
-(127.0.0.1), WAKE_BUILDER (bun), WAKE_NODE (the host's node binary; default: look it
+(127.0.0.1), WAKE_BUILDER (bun), WAKE_ALLOW_ANY_REF (off: 1 builds any checked-out
+commit), WAKE_NODE (the host's node binary; default: look it
 up with `command -v node`), WAKE_DEPLOY_STATE (~/.cache/wake/deploy: where build
 records its artifact), WAKE_MCP_ENABLED (false), WAKE_DB_PASSWORD,
 WAKE_REGISTRATION_SECRET.
@@ -80,6 +87,9 @@ STATE_DIR = os.environ.get("WAKE_DEPLOY_STATE") or os.path.join(
     os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "wake", "deploy"
 )
 DRY = False
+# A deliberate hotfix may build a commit that is not origin/main. Off by default: the one
+# question a deploy has to answer afterwards is which tree it shipped.
+ALLOW_ANY_REF = os.environ.get("WAKE_ALLOW_ANY_REF", "").strip().lower() not in ("", "0", "false", "no")
 
 UNIT = """[Unit]
 Description={service} (agents, messages, threads, doorbell, MCP)
@@ -214,15 +224,116 @@ def step_user():
     )
 
 
+def git(root, *args, timeout=60):
+    """One git command in the checkout: (ok, stdout, stderr). git's own failure is a value here."""
+    try:
+        r = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, "", str(exc)
+    if r.returncode != 0:
+        return False, "", r.stderr.strip()
+    return True, r.stdout.rstrip("\n"), ""
+
+
+def stop_build(problem):
+    """Refuse the build, or under --dry-run name where a real run would stop and still plan."""
+    if DRY:
+        print(f"wake-host-deploy: note: a real run stops here: {problem}", file=sys.stderr)
+        return False
+    sys.exit(f"wake-host-deploy: {problem}")
+
+
+def build_ref(root):
+    """The commit this build ships, or a stop.
+
+    `build` used to run the builder in whatever the shared clone had checked out: an unmerged
+    branch, a half-rebased worktree or a bot's verification clone all looked like `main`, and
+    the artifact carried no record of the tree it came from. So a deploy could ship a pull
+    request nobody had merged and say nothing about it.
+
+    A dirty checkout is refused because the built bytes would then be a commit plus edits
+    nobody can name. HEAD must be origin/main's commit, which is what a release is cut from.
+    WAKE_ALLOW_ANY_REF=1 is the deliberate hotfix: it builds the checked-out commit and says
+    so on stderr, so the run is still attributable afterwards.
+    """
+    ok, _, why = git(root, "rev-parse", "--git-dir")
+    if not ok:
+        problem = (
+            f"{root} is not a git checkout, so the build cannot be named by a commit: "
+            f"WAKE_ALLOW_ANY_REF=1 builds it anyway ({why or 'not a repository'})"
+        )
+        if ALLOW_ANY_REF:
+            print(
+                f"wake-host-deploy: note: {root} is not a git checkout: building it on WAKE_ALLOW_ANY_REF",
+                file=sys.stderr,
+            )
+            return None
+        stop_build(problem)
+        return None
+    ok, dirty, why = git(root, "status", "--porcelain")
+    if not ok:
+        stop_build(f"cannot read the state of {root}: {why}")
+        return None
+    changed = [line[3:] for line in dirty.splitlines() if line.strip()]
+    if changed:
+        listed = ", ".join(changed[:5]) + (f" (+{len(changed) - 5} more)" if len(changed) > 5 else "")
+        stop_build(
+            f"{root} has uncommitted changes, so the build would not be a commit: {listed}: commit or stash them"
+        )
+        return None
+    ok, head, why = git(root, "rev-parse", "HEAD")
+    if not ok:
+        stop_build(f"cannot read the commit in {root}: {why}")
+        return None
+    if DRY:
+        print(f"  $ git -C {root} fetch origin")
+    else:
+        fetched, _, why = git(root, "fetch", "--quiet", "origin")
+        if not fetched:
+            print(
+                "wake-host-deploy: note: git fetch failed, so origin/main is the last one seen: "
+                + (why or "no output"),
+                file=sys.stderr,
+            )
+    ok, main, _ = git(root, "rev-parse", "--verify", "--quiet", "origin/main")
+    if not ok or not main:
+        if ALLOW_ANY_REF:
+            print(
+                f"wake-host-deploy: note: {root} has no origin/main: building {head} on WAKE_ALLOW_ANY_REF",
+                file=sys.stderr,
+            )
+            return head
+        stop_build(
+            f"{root} has no origin/main to compare with, so {head} cannot be called a release "
+            f"tree: fetch it, or set WAKE_ALLOW_ANY_REF=1"
+        )
+        return head
+    if head != main:
+        if ALLOW_ANY_REF:
+            print(
+                f"wake-host-deploy: note: {root} is at {head}, not origin/main {main}: "
+                "building it on WAKE_ALLOW_ANY_REF",
+                file=sys.stderr,
+            )
+            return head
+        stop_build(
+            f"{root} is at {head}, not origin/main {main}: check out main, or set "
+            f"WAKE_ALLOW_ANY_REF=1 to build this commit on purpose"
+        )
+        return head
+    return head
+
+
 def step_build():
     root = os.environ.get("WAKE_REPO") or os.getcwd()
     entry = os.path.join(root, "apps/api/src/index.ts")
     if not os.path.isfile(entry):
         sys.exit(f"wake-host-deploy: no {entry}: set WAKE_REPO to the checkout")
+    commit = build_ref(root)
     out = tempfile.mkdtemp(prefix="wake-build-")
     if DRY:
         print(f"  $ {BUILDER} build {entry} --target=node --outfile={out}/index.mjs")
-        print(f"  $ record {out} in {STATE_DIR}/last-build")
+        print(f"  $ record {out} and {commit or '<commit>'} in {STATE_DIR}/last-build")
         return
     r = subprocess.run(
         [BUILDER, "build", entry, "--target=node", f"--outfile={out}/index.mjs"],
@@ -232,8 +343,9 @@ def step_build():
     )
     if r.returncode != 0:
         sys.exit(f"build failed: {r.stderr[-600:]}")
-    record_build(out)
+    record_build(out, commit)
     migrations = os.path.join(root, "apps/api/src/migrations")
+    print("commit:", commit or "unknown")
     print("migrations:", len(os.listdir(migrations)) if os.path.isdir(migrations) else 0)
     print("size:", os.path.getsize(f"{out}/index.mjs"))
 
@@ -264,13 +376,17 @@ def state_dir():
     os.chmod(STATE_DIR, 0o700)
 
 
-def record_build(path):
-    """Remember this build, so install cannot pick up someone else's."""
+def record_build(path, commit=None):
+    """Remember this build and the commit it came from, so install cannot pick up someone else's.
+
+    One file, two lines: the artifact path and the commit. Install reads the first and names
+    the second, so "which tree is this?" is answered by the state rather than by memory.
+    """
     state_dir()
     pointer = os.path.join(STATE_DIR, "last-build")
     tmp = pointer + ".new"
     with open(tmp, "w", encoding="utf-8") as f:
-        f.write(path + "\n")
+        f.write(path + "\n" + (commit + "\n" if commit else ""))
     os.chmod(tmp, 0o600)
     os.replace(tmp, pointer)
 
@@ -284,11 +400,12 @@ def build_dir():
     pointer = os.path.join(STATE_DIR, "last-build")
     try:
         with open(pointer, encoding="utf-8") as f:
-            made = f.read().strip()
+            lines = f.read().splitlines()
     except OSError:
         if DRY:
             return None
         sys.exit("wake-host-deploy: no build recorded: run the build step first")
+    made = lines[0].strip() if lines else ""
     problem = None
     if not made:
         problem = "no build recorded: run the build step first"
@@ -306,6 +423,18 @@ def build_dir():
         print(f"wake-host-deploy: note: a real run stops here: {problem}", file=sys.stderr)
         return made or None
     sys.exit(f"wake-host-deploy: {problem}")
+
+
+def build_commit():
+    """The commit recorded with the build, or None: what install shipped and status prints."""
+    try:
+        with open(os.path.join(STATE_DIR, "last-build"), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    if len(lines) < 2:
+        return None
+    return lines[1].strip() or None
 
 
 MIGRATION = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\.sql\Z")
@@ -326,6 +455,8 @@ def migration_payload(directory):
 
 def step_install():
     out = build_dir()
+    commit = build_commit()
+    print("install: commit", commit or "unknown (this build was recorded without one: run the build step again)")
     root = os.environ.get("WAKE_REPO") or os.getcwd()
     node = os.environ.get("WAKE_NODE") or host("command -v node").strip()
     if not node:
@@ -453,6 +584,7 @@ def step_status():
     print(host(f"systemctl is-enabled {SERVICE}.service; systemctl is-active {SERVICE}.service"))
     print(host(f"{priv('systemctl')} status {SERVICE}.service --no-pager -l | head -12"))
     print(host(f"curl -fsS http://127.0.0.1:{PORT}/health; echo"))
+    print("build commit:", build_commit() or "unknown")
 
 
 def step_log():
