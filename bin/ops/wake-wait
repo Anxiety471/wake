@@ -1,0 +1,79 @@
+#!/bin/bash
+# desc: block until a thread gets its answer, then print the reply line(s) exactly as `wake --thread` shows them, without asking again; exit 0 answered, 2 no such thread, 3 timeout, 4 thread store unreadable. Uses WAKE_WAIT_TIMEOUT, WAKE_WAIT_INTERVAL, WAKE_WAIT_QUIET
+set -u
+
+USAGE='usage: wake-wait <thread-id>   (WAKE_WAIT_TIMEOUT=180 WAKE_WAIT_INTERVAL=3 wake-wait <id>)'
+
+if [ "$#" -gt 1 ]; then
+    echo "$USAGE" >&2
+    exit 1
+fi
+ID=${1:-}
+TIMEOUT=${WAKE_WAIT_TIMEOUT:-180}
+INTERVAL=${WAKE_WAIT_INTERVAL:-3}
+QUIET=${WAKE_WAIT_QUIET:-0}
+
+case $ID in
+    '')
+        echo "$USAGE" >&2
+        exit 1
+        ;;
+    # The same rule bin/wake applies to a thread id before it becomes a path component.
+    */* | *..*)
+        echo 'wake-wait: bad thread id; pass the id that wake --ask printed, with no path in it' >&2
+        exit 1
+        ;;
+esac
+
+case $TIMEOUT in '' | *[!0-9]*) echo 'wake-wait: WAKE_WAIT_TIMEOUT must be a number of seconds' >&2; exit 1 ;; esac
+case $INTERVAL in '' | *[!0-9]* | 0) echo 'wake-wait: WAKE_WAIT_INTERVAL must be a positive number of seconds' >&2; exit 1 ;; esac
+case $QUIET in 0 | 1) ;; *) echo 'wake-wait: WAKE_WAIT_QUIET must be 0 or 1' >&2; exit 1 ;; esac
+
+command -v wake >/dev/null || {
+    echo 'wake-wait: wake not found on PATH; run ./install.sh first' >&2
+    exit 1
+}
+
+ERR=$(mktemp "${TMPDIR:-/tmp}/wake-wait.XXXXXX")
+trap 'rm -f "$ERR"' EXIT
+
+# A reply line is what bin/wake's show() prints for a reply record:
+#   [2026-11-15T12:00] bot-engineer (reply): text
+# Anchoring on the whole prefix, not the word, keeps an ask whose own text contains "(reply):"
+# from looking like an answer.
+REPLY='^\[[^]]*\] [^ ]* \(reply\): '
+
+say() { [ "$QUIET" = 1 ] || printf '%s\n' "$*" >&2; }
+
+deadline=$((SECONDS + TIMEOUT))
+say "wake-wait: waiting up to ${TIMEOUT}s for an answer on thread $ID"
+while :; do
+    out=$(wake --thread "$ID" 2>"$ERR")
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        if printf '%s\n' "$out" | grep -Eq "$REPLY"; then
+            printf '%s\n' "$out" | grep -E "$REPLY"
+            exit 0
+        fi
+    elif grep -q '^no thread ' "$ERR"; then
+        echo "wake-wait: $ID was never opened, so nothing can answer it. A question thread is created by: wake --ask <bot> \"<question>\"" >&2
+        exit 2
+    elif grep -q 'cannot read the thread store' "$ERR"; then
+        echo "wake-wait: the thread store cannot be read, so polling will not help: $(head -n 1 "$ERR")" >&2
+        exit 4
+    else
+        echo "wake-wait: wake --thread $ID failed: $(head -n 1 "$ERR")" >&2
+        exit 1
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+        echo "wake-wait: no answer on thread $ID after ${TIMEOUT}s; read it later with: wake --thread $ID" >&2
+        exit 3
+    fi
+    # Never oversleep the deadline by a whole interval.
+    left=$((deadline - SECONDS))
+    if [ "$left" -lt "$INTERVAL" ] && [ "$left" -gt 0 ]; then
+        sleep "$left"
+    else
+        sleep "$INTERVAL"
+    fi
+done
