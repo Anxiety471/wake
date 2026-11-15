@@ -171,6 +171,13 @@ class OpsFilesTestCase(unittest.TestCase):
         # A bare `wake-pg` would fail from a checkout that is not installed; "$PG" works either way.
         self.assertNotRegex(read("wake-api-e2e"), r"(?m)^wake-pg ", "call the helper through $PG")
 
+    def test_the_e2e_bridge_step_does_not_count_tools(self):
+        # The bridge appends wake_fleet whenever this machine's registry is
+        # readable, so an exact count is true only on a bare runner; the step
+        # failed for a correct bridge on the operator's box (issue #77). CI never
+        # runs this script (it needs Postgres and bun), so pin the shape here.
+        self.assertNotRegex(read("wake-api-e2e"), r"\.\[1\]\.result\.tools\s*\|\s*length")
+
     def test_the_e2e_script_refuses_a_missing_checkout(self):
         r = run("wake-api-e2e", env={"WAKE_REPO": tempfile.mkdtemp(prefix="not-a-checkout-")})
         self.assertEqual(r.returncode, 1)
