@@ -7,6 +7,13 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **`wake_fleet`: the routing table inside the MCP session.** The bridge advertised only the
+  server's ten thread tools, so a model could see which agents were *registered on the API*
+  (`wake_bots`) but not which bots this machine can reach by alias. That knowledge lives in
+  `WAKE_REGISTRY` (`bots.tsv`), which the server never sees, so the bridge answers it itself and
+  advertises it in `tools/list` only when the file is readable: alias, id, name, kind and role
+  for each row. A call is never forwarded, so it costs no API request and no rate limit.
+
 - **A code of conduct.** [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) says what is expected in
   issues and reviews, and where to report conduct privately without committing an email
   address. `SECURITY.md` now names 0.2.x as the supported line.
@@ -43,6 +50,13 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   ([#22](https://github.com/Anxiety471/wake/issues/22)).
 
 ### Fixed
+
+- **A `WAKE_CONFIG` that cannot supply a token exited 0 with two tools (issue #76).** The bridge
+  picked its mode from the token alone, and `wake_config.load()` treats an unreadable file as no
+  settings, so a path that was moved or wiped produced a successful session with the legacy
+  `wake_bot` / `wake_list` pair and nothing on stderr. A named `WAKE_CONFIG` that does not exist,
+  or exists without `WAKE_MCP_TOKEN`, now exits 2 with a message naming the path; the legacy mode
+  is still one `unset WAKE_CONFIG` away, on purpose.
 
 - **`bin/wake-mcp` was refused by Cloudflare (403, error 1010).** The bridge builds its
   headers explicitly and sent urllib's default agent, `Python-urllib/*`, which the bot rule

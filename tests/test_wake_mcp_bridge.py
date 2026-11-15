@@ -242,14 +242,17 @@ class BridgeTest(unittest.TestCase):
         self.fake.requests.clear()
         self.stealer.requests.clear()
 
-    def env(self, token=TOKEN, api=None, config=None):
+    def env(self, token=TOKEN, api=None, config=None, registry=None, drop_config=False):
         environ = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "WAKE_CONFIG_DIR": self.tmp,
-            "WAKE_CONFIG": config or os.path.join(self.tmp, "missing.env"),
             "WAKE_MCP_API": api or f"http://127.0.0.1:{self.fake.port}",
             "PYTHONDONTWRITEBYTECODE": "1",  # the bridge imports wake_config.py: keep bin/ clean
         }
+        if not drop_config:
+            environ["WAKE_CONFIG"] = config or os.path.join(self.tmp, "missing.env")
+        if registry is not None:
+            environ["WAKE_REGISTRY"] = registry
         if token is not None:
             environ["WAKE_MCP_TOKEN"] = token
         return environ
@@ -474,6 +477,7 @@ class BridgeTest(unittest.TestCase):
                 {"jsonrpc": "2.0", "id": 9, "method": "tools/list"},
             ],
             token=None,
+            drop_config=True,
         )
         self.assertEqual(out[0]["result"]["protocolVersion"], "2024-11-05")
         self.assertEqual(
@@ -481,6 +485,96 @@ class BridgeTest(unittest.TestCase):
             ["wake_bot", "wake_list"],
         )
         self.assertEqual(self.fake.requests, [])
+
+    def registry(self):
+        path = os.path.join(self.tmp, "fleet.tsv")
+        with open(path, "w") as handle:
+            handle.write("# alias\tid\tname\tkind\trole\n")
+            handle.write("grok\tcmwdd4m1\tGrok Bot \u00b7 Chief of Staff\topen\tplans and routing\n")
+            handle.write("evidence\tcmwdev\tEvidence Log \u00b7 Private\tprivate\tnever\n")
+        return path
+
+    def test_a_config_that_names_no_file_refuses_instead_of_two_tools(self):
+        path = os.path.join(self.tmp, "never-written.env")
+        out, process = self.run_bridge(
+            [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}],
+            token=None,
+            config=path,
+        )
+        self.assertEqual(process.returncode, 2, process.stderr)
+        self.assertIn("does not exist", process.stderr)
+        self.assertIn("never-written.env", process.stderr)
+        self.assertNotIn("legacy", out)
+        self.assertEqual(out, [])
+        self.assertEqual(self.fake.requests, [])
+
+    def test_a_config_without_a_token_refuses_instead_of_two_tools(self):
+        path = os.path.join(self.tmp, "tokenless.env")
+        with open(path, "w") as handle:
+            handle.write("WAKE_MCP_API=http://127.0.0.1:1\n")
+        try:
+            out, process = self.run_bridge(
+                [{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}],
+                token=None,
+                config=path,
+            )
+        finally:
+            os.unlink(path)
+        self.assertEqual(process.returncode, 2, process.stderr)
+        self.assertIn("no WAKE_MCP_TOKEN", process.stderr)
+        self.assertIn("tokenless.env", process.stderr)
+        self.assertEqual(out, [])
+
+    def test_tools_list_carries_the_fleet_tool_when_a_registry_exists(self):
+        out, process = self.run_bridge(
+            [{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}],
+            registry=self.registry(),
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        names = [tool["name"] for tool in out[0]["result"]["tools"]]
+        self.assertEqual(names, ["wake_ask", "wake_inbox", "wake_fleet"])
+        self.assertIn("routing table", out[0]["result"]["tools"][-1]["description"])
+
+    def test_wake_fleet_answers_from_this_machines_registry(self):
+        out, _ = self.run_bridge(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": "wake_fleet", "arguments": {}},
+                }
+            ],
+            registry=self.registry(),
+        )
+        payload = json.loads(out[0]["result"]["content"][0]["text"])
+        self.assertEqual([bot["alias"] for bot in payload["bots"]], ["grok", "evidence"])
+        self.assertEqual(payload["bots"][0]["name"], "Grok Bot \u00b7 Chief of Staff")
+        self.assertEqual(payload["bots"][1]["kind"], "private")
+        self.assertEqual(payload["bots"][0]["reach"], 'wake grok "<message>" or wake --ask grok "<question>"')
+        self.assertFalse(out[0]["result"]["isError"])
+        # answered on this machine: the server never sees it
+        self.assertEqual(self.fake.requests, [])
+
+    def test_wake_fleet_without_a_registry_says_so(self):
+        out, _ = self.run_bridge(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "tools/call",
+                    "params": {"name": "wake_fleet", "arguments": {}},
+                }
+            ]
+        )
+        self.assertTrue(out[0]["result"]["isError"])
+        self.assertIn("no routing table", out[0]["result"]["content"][0]["text"])
+        self.assertEqual(self.fake.requests, [])
+
+    def test_no_fleet_tool_without_a_registry(self):
+        out, _ = self.run_bridge([{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}])
+        names = [tool["name"] for tool in out[0]["result"]["tools"]]
+        self.assertEqual(names, ["wake_ask", "wake_inbox"])
 
 
 if __name__ == "__main__":
