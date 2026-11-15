@@ -17,7 +17,10 @@ These are decisions or GitHub settings, not code changes.
 - [ ] **`/bots/<id>` working-directory convention** used by `wake --me` and the default sender label is platform-specific. Documented in README with `WAKE_SOURCE` as the alternative; decide whether to make it configurable.
 - [ ] **Working-directory leftovers.** `TASK.md`, `TASK2.md`, `omp.log` and `omp2.log` in the checkout contain private details. They are excluded only through `.git/info/exclude` (local, not part of the repo). Do not `git add -A` with them present; publish from a fresh clone.
 - [x] **GitHub settings after the repo exists** (applied 2026-11-15): private vulnerability reporting on, Dependabot alerts and security updates on, secret scanning with push protection on, and branch protection on `main` requiring the eight CI jobs (`api (bun)`, `lint`, `secret-scan`, `test (Python 3.9)` to `test (Python 3.13)`) with the administrator able to bypass and force-push and deletion blocked. `ubuntu-latest` still offers Python 3.9 through `actions/setup-python` v6; the v7 bump was closed for that reason, so the matrix and the README claim stay.
-- [ ] **Release tag.** Tag `v0.2.0` on `main` to match `VERSION` and the `CHANGELOG.md` section dated 2026-11-15, then tick this box in the tag's own commit.
+- [x] **Release tag.** `v0.2.0` is on `main` at `2375c80`, matching `VERSION` and the
+  `CHANGELOG.md` section dated 2026-11-15 (release published 2026-11-15). Ticked after
+  the fact: the tag's own commit is already published, so the tick cannot ride it and
+  the tag is not moved for a checkbox.
 
 ## Done
 
