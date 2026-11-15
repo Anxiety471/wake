@@ -8,6 +8,7 @@ or a command line.
 """
 
 import base64
+import contextlib
 import io
 import os
 import subprocess
@@ -398,7 +399,8 @@ class HostDeployTestCase(unittest.TestCase):
         self.assertNotIn(self.secret, r.stdout + r.stderr)
         self.assertNotIn(self.password, r.stdout + r.stderr)
         self.assertIn("REGISTRATION_SECRET=" + self.secret, self.logged())
-        self.assertIn("640 /etc/wake/api.env", self.logged())
+        self.assertIn("-m 640 /dev/null /etc/wake/api.env.new", self.logged(), "the env file is not 0640")
+        self.assertIn("mv -f /etc/wake/api.env.new /etc/wake/api.env", self.logged())
 
     def test_the_db_step_creates_the_role_with_the_password_from_stdin(self):
         r = run("wake-host-deploy", "db", env=self.env)
@@ -469,6 +471,82 @@ class HostDeployTestCase(unittest.TestCase):
         self.assertIn("control character", r.stderr)
         self.assertNotIn("INJECTED_EVIL", r.stdout + r.stderr)
         self.assertFalse(self.logged(), "a host command ran before the value was checked")
+
+    def test_env_is_staged_so_a_failed_write_keeps_the_live_file(self):
+        # The step truncated api.env with `install /dev/null` before the tee, so a write that
+        # failed or was interrupted left the service with an empty environment file.
+        r = run("wake-host-deploy", "env", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.logged()
+        staged = "install -o root -g wake -m 640 /dev/null /etc/wake/api.env.new"
+        self.assertIn(staged, log, "the write is not staged beside the live file")
+        self.assertIn("tee /etc/wake/api.env.new", log)
+        self.assertNotIn("tee /etc/wake/api.env >", log, "the live file is written in place")
+        self.assertLess(log.index(staged), log.index("tee /etc/wake/api.env.new"))
+        self.assertLess(
+            log.index("tee /etc/wake/api.env.new"),
+            log.index("mv -f /etc/wake/api.env.new /etc/wake/api.env"),
+            "the staged file must be renamed after it is written",
+        )
+
+
+class BuildStateTestCase(unittest.TestCase):
+    """The files that remember a build: nobody else's directory, and a dry run never dies."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="state-")
+        self.state = os.path.join(self.dir, "state")
+        self.deploy = load_host_deploy()
+        self.deploy.STATE_DIR = self.state
+
+    def record(self, path):
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, "last-build"), "w", encoding="utf-8") as f:
+            f.write(path + "\n")
+
+    def test_a_state_directory_it_creates_is_private(self):
+        self.deploy.record_build(make_build(self.dir))
+        self.assertEqual(oct(os.stat(self.state).st_mode & 0o777), "0o700")
+        self.assertEqual(oct(os.stat(os.path.join(self.state, "last-build")).st_mode & 0o777), "0o600")
+
+    def test_a_state_directory_it_did_not_create_is_refused_not_chmodded(self):
+        # record_build chmodded whatever STATE_DIR named, so a shared directory this operator
+        # owns but did not make - WAKE_DEPLOY_STATE=/tmp, or /srv/shared/state - came back 0700
+        # and stopped working for everyone else using it.
+        os.makedirs(self.state)
+        os.chmod(self.state, 0o755)
+        with self.assertRaises(SystemExit) as caught:
+            self.deploy.record_build(make_build(self.dir))
+        self.assertIn("not a private directory of yours", str(caught.exception))
+        self.assertEqual(oct(os.stat(self.state).st_mode & 0o777), "0o755", "chmodded a directory it did not create")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "last-build")), "wrote a pointer into it anyway")
+
+    def test_a_state_path_that_is_a_file_is_named(self):
+        # STATE_DIR naming a regular file used to raise a raw FileExistsError traceback.
+        with open(self.state, "w", encoding="utf-8") as f:
+            f.write("not a directory\n")
+        os.chmod(self.state, 0o600)
+        with self.assertRaises(SystemExit) as caught:
+            self.deploy.record_build(make_build(self.dir))
+        self.assertIn("is not a directory", str(caught.exception))
+        self.assertEqual(oct(os.stat(self.state).st_mode & 0o777), "0o600", "chmodded a file it did not create")
+
+    def test_a_dry_run_names_a_stale_build_instead_of_dying(self):
+        gone = os.path.join(self.dir, "gone")
+        self.record(gone)
+        self.deploy.DRY = True
+        note = io.StringIO()
+        with contextlib.redirect_stderr(note):
+            got = self.deploy.build_dir()
+        self.assertEqual(got, gone, "the plan stops naming the build the operator recorded")
+        self.assertIn("a real run stops here", note.getvalue())
+
+    def test_a_stale_build_still_stops_a_real_install(self):
+        self.record(os.path.join(self.dir, "gone"))
+        self.deploy.DRY = False
+        with self.assertRaises(SystemExit) as caught:
+            self.deploy.build_dir()
+        self.assertIn("is gone: run the build step again", str(caught.exception))
 
 
 class NoBytecodeInTheTreeTests(unittest.TestCase):

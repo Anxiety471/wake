@@ -27,6 +27,21 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **`env` emptied the API's environment file before it wrote the new one.** The step ran
+  `install /dev/null /etc/wake/api.env`, then `tee` into it, so a write that failed or was
+  interrupted left the service with an empty file and the previous one gone. It writes
+  `api.env.new` at 0640 and renames over the live file, so the running service keeps a
+  working file until the new one is complete.
+- **`WAKE_DEPLOY_STATE` could make the tool chmod a directory it did not create.** The build
+  step chmodded whatever the variable named, so `WAKE_DEPLOY_STATE=/tmp` - or any shared
+  directory the operator owns but did not make - came back `0700` and stopped working for
+  everyone else using it. (It runs as an operator and elevates per host command, so on a
+  directory someone else owns the chmod fails instead of succeeding; either way the directory
+  was not its to change.) The state directory is created `0700` when it is absent and refused,
+  never chmodded, when it already exists and is not private.
+- **`install --dry-run` exited 1 on a stale recorded build before printing anything.** A dry
+  run installs nothing, so it now names the stale record, says a real run stops there, and
+  prints the plan.
 - **`wake-host-deploy` could install a bundle it never built.** `install` took the newest
   `/tmp/wake-build-*` by mtime, so a stale directory - or one planted by another local user - was
   installed as root. `build` now records its artifact under `WAKE_DEPLOY_STATE` (0700 directory,

@@ -238,10 +238,35 @@ def step_build():
     print("size:", os.path.getsize(f"{out}/index.mjs"))
 
 
+def require_private(path, consequence):
+    """A directory is private when it is ours and nobody else can look in or write in it."""
+    info = os.stat(path)
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        sys.exit(f"wake-host-deploy: {path} is not a private directory of yours: {consequence}")
+
+
+def state_dir():
+    """The deploy state directory: 0700, created here, and never a directory we did not make.
+
+    record_build used to chmod whatever STATE_DIR named, so WAKE_DEPLOY_STATE=/tmp or any
+    shared directory this operator owns but did not make came back 0700, and a directory
+    someone else owns had a chmod aimed at it. The chmod now runs only on a directory this
+    call created; one that already exists must already be private, and is refused rather
+    than repaired.
+    """
+    try:
+        os.makedirs(STATE_DIR, mode=0o700)
+    except FileExistsError:
+        if not os.path.isdir(STATE_DIR):
+            sys.exit(f"wake-host-deploy: {STATE_DIR} is not a directory")
+        require_private(STATE_DIR, "let this tool create it, or chmod 700 it")
+        return
+    os.chmod(STATE_DIR, 0o700)
+
+
 def record_build(path):
     """Remember this build, so install cannot pick up someone else's."""
-    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
-    os.chmod(STATE_DIR, 0o700)
+    state_dir()
     pointer = os.path.join(STATE_DIR, "last-build")
     tmp = pointer + ".new"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -251,7 +276,11 @@ def record_build(path):
 
 
 def build_dir():
-    """The build this operator made, or a stop. Never a glob of the temp directory."""
+    """The build this operator made, or a stop. Never a glob of the temp directory.
+
+    Under --dry-run nothing is installed, so a record that a real run would refuse is named
+    and the plan still prints: the dry run used to exit 1 before showing a single command.
+    """
     pointer = os.path.join(STATE_DIR, "last-build")
     try:
         with open(pointer, encoding="utf-8") as f:
@@ -260,14 +289,23 @@ def build_dir():
         if DRY:
             return None
         sys.exit("wake-host-deploy: no build recorded: run the build step first")
-    if not made or not os.path.isdir(made):
-        sys.exit(f"wake-host-deploy: the recorded build {made} is gone: run the build step again")
-    info = os.stat(made)
-    if info.st_uid != os.getuid() or info.st_mode & 0o077:
-        sys.exit(f"wake-host-deploy: {made} is not a private directory of yours: run the build step again")
-    if not os.path.isfile(os.path.join(made, "index.mjs")):
-        sys.exit(f"wake-host-deploy: {made} has no index.mjs: run the build step again")
-    return made
+    problem = None
+    if not made:
+        problem = "no build recorded: run the build step first"
+    elif not os.path.isdir(made):
+        problem = f"the recorded build {made} is gone: run the build step again"
+    else:
+        info = os.stat(made)
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            problem = f"{made} is not a private directory of yours: run the build step again"
+        elif not os.path.isfile(os.path.join(made, "index.mjs")):
+            problem = f"{made} has no index.mjs: run the build step again"
+    if problem is None:
+        return made
+    if DRY:
+        print(f"wake-host-deploy: note: a real run stops here: {problem}", file=sys.stderr)
+        return made or None
+    sys.exit(f"wake-host-deploy: {problem}")
 
 
 MIGRATION = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\.sql\Z")
@@ -382,8 +420,13 @@ def step_env():
     body = merge_env(existing, values)
     directory = os.path.dirname(ENV_FILE)
     host(f"{priv('install')} -d -o root -g {SERVICE_GROUP} -m 750 {directory}")
-    host(f"{priv('install')} -o root -g {SERVICE_GROUP} -m 640 /dev/null {ENV_FILE}")
-    host(f"{priv('tee')} {ENV_FILE} >/dev/null && {priv('chmod')} 640 {ENV_FILE}", data=body)
+    # Write beside the live file and rename over it: a write that fails or is interrupted then
+    # leaves the service its working environment file instead of an empty one. A rename
+    # replaces a symlinked api.env instead of writing through it, which is the safe direction.
+    staged = ENV_FILE + ".new"
+    host(f"{priv('install')} -o root -g {SERVICE_GROUP} -m 640 /dev/null {staged}")
+    host(f"{priv('tee')} {staged} >/dev/null", data=body)
+    host(f"{priv('mv')} -f {staged} {ENV_FILE}")
     print(host(f"{priv('ls')} -l {ENV_FILE}"))
 
 
