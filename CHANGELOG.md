@@ -27,6 +27,9 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   finishes, and `GET /messages/:id/deliveries` lets the sender read them back (`delivered`,
   `reason`, `attempts`, last HTTP `status`, time). Sender only; anyone else gets the same 404 as a
   missing id.
+- **`mcp_audit` retention.** `POST /mcp/audit/prune` (operator secret) deletes
+  rows older than a window — 90 days by default, 1 to 3650 via `?days=`, `400` otherwise — and
+  answers `{deleted, before}`. A bare `POST` needs no payload, so a host timer can run it daily.
 - **A report that admits it does not know.** If the recipients cannot be read at all, the `wake`
   report now says `error: "recipients_unreadable"` instead of the `deliveries: []` that means "no
   recipient had a target".
@@ -35,7 +38,7 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 - **Doorbell hardening.** The timeout ceiling drops to 9 s, so two attempts plus backoff (18.2 s)
   stay under the CLI's 20 s send timeout. Responses are read to 16 KiB and redirects are not
-  followed (a 3xx is `rejected`, never retried). A per-recipient hourly cap
+  followed (a 3xx is `rejected`, never retried). A per sender and recipient hourly cap
   (`WAKE_DOORBELL_MAX_PER_HOUR`, default 30 = the CLI's `HOURLY_CAP`, 0 disables) stops one
   sender ringing one bot at API speed; over the cap makes no request and reports `rate_limited`.
   An empty target map is checked before the URL/timeout are parsed, so a stale bad value cannot
@@ -43,8 +46,8 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 - **A reply wake carries `ref: ""`.** It cannot be answered, so it must not look answerable; a
   receiver that routes on `ref` no longer fires `wake --reply` into a guaranteed 409. `threadId`
   still names the thread.
-- **Key issuance wording corrected.** Keys are minted by the host's `rakazo-webhook-key`, not by a
-  human rotating them in Rakazo.
+- **Key issuance wording corrected.** Keys are minted by the host's `rakazo-webhook-key`, through
+  the `bot-webhook-key` wrapper a bot container can run, not by a human rotating them in Rakazo.
 
 - **The doorbell (Switchboard merge step 2).** A committed message rings the recipient bot's
   Rakazo webhook (`POST /api/v1/bots/<botId>/webhook`) from the API server, never the CLI, so the
@@ -89,6 +92,18 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **The doorbell's hourly cap keyed on the recipient alone**, so one sender's 30 wakes made another
+  sender's first wake to the same bot `rate_limited`: message stored, no ring, and the API has no
+  `--force`. The key is now `sender:recipient`, which is the CLI's own scope (per target bot per
+  local user). A test with the cap at 1 fails on the old bytes and passes here.
+- **The MCP 429 body was `{"error":"rate_limited"}`, not JSON-RPC.** It now carries a JSON-RPC error
+  object with code `-32000`, so a client that parses every body as JSON-RPC never meets a bare
+  error, while the status stays `429` with `Retry-After: 60`.
+- **`wake_inbox_read` accepted more ids than the 100 it advertises**, forwarding the list to
+  `POST /inbox/read` and returning that route's `400`. It now refuses over 100 with `-32602` and
+  makes no call.
+- **`PUT /agents/mcp/private` was allowed**, which could hide the public identity behind its own
+  wall. It answers `409` now; an ordinary bot is unaffected.
 - A reply that lost the race raised a `23502` (`last_read_seq` was set from an empty `inserted`
   CTE), so `POST /threads/:id/reply` answered `500` where it documents `409`. The read position is
   now kept when nothing was inserted, and a row-locked test proves one `201` and one `409` — never a
