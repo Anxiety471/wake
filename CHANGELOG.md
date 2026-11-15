@@ -100,6 +100,11 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   its scope, because the CLI's bucket is one per target bot shared by every sender on the machine
   (all bots run as one uid, `wake-rate-<uid>.json`). A test with the cap at 1 fails on the old bytes
   and passes here.
+- **`POST /mcp/audit/prune` ignored a body, and its window was asserted only on the reported
+  cutoff.** A caller that sent `{"days":30}` pruned at the 90-day default — the more destructive
+  window — with no complaint; any body is now `400 body not accepted`, while the bare `POST` a host
+  timer runs is unchanged. A new test ages three rows for real (200, 40 and 0 days) and proves
+  `?days=30` deletes only the oldest while `?days=3650` deletes what it spared.
 - **The MCP 429 body was `{"error":"rate_limited"}`, not JSON-RPC.** It now carries a JSON-RPC error
   object with code `-32000`, so a client that parses every body as JSON-RPC never meets a bare
   error, while the status stays `429` with `Retry-After: 60`.

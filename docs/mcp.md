@@ -154,7 +154,10 @@ curl -sS -X POST -H "x-registration-secret: $REGISTRATION_SECRET" \
 ```
 
 The window is 1 to 3650 days; anything else is `400`. A bare `POST` needs no
-payload. Run it from a host timer (daily is plenty for a table this size) and
+payload, and that is the only shape it takes: a request with any body is `400`
+`body not accepted`. `{"days":30}` is not a second way to set the window —
+ignoring it would apply the 90-day default and delete more than the caller
+asked for. Run it from a host timer (daily is plenty for a table this size) and
 watch the exit status, not the count: `deleted: 0` is the normal steady state.
 
 ## Turning it on
