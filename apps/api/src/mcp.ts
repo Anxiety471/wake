@@ -8,6 +8,11 @@ import { slidingWindow, type RateLimit } from './rate-limit.js';
 // with application/json (or a one-event SSE stream when the client asks for
 // that only). Stateless on purpose: no session id to lose, cheaper through
 // Cloudflare's 100 s proxy limit, and every request is authenticated on its own.
+// Same bound as MAX_READ_IDS in app.ts: the tool advertises it, so it must
+// refuse it too. One list per call, so a caller cannot splice in more work than
+// the route behind it accepts.
+export const MAX_TOOL_IDS = 100;
+
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 export const MCP_SERVER_NAME = 'wake';
 export const MCP_SERVER_VERSION = '0.1.0';
@@ -179,7 +184,13 @@ function optionalEnum<T extends string>(
   return value as T;
 }
 
-function stringArray(args: Record<string, unknown>, name: string): string[] {
+// The server, not the client, enforces the schema it advertises: an empty or
+// oversized list is -32602 here, not an HTTP 400 from the route behind it.
+function stringArray(
+  args: Record<string, unknown>,
+  name: string,
+  max = MAX_TOOL_IDS,
+): string[] {
   const value = args[name];
   if (
     !Array.isArray(value) ||
@@ -187,6 +198,9 @@ function stringArray(args: Record<string, unknown>, name: string): string[] {
     value.some((item) => typeof item !== 'string' || item.length === 0)
   ) {
     throw new ToolArgumentError(`${name} must be a non-empty array of strings`);
+  }
+  if (value.length > max) {
+    throw new ToolArgumentError(`${name} must be at most ${max} ids`);
   }
   return value as string[];
 }
@@ -358,7 +372,7 @@ const TOOLS: Tool[] = [
         ids: {
           type: 'array',
           minItems: 1,
-          maxItems: 100,
+          maxItems: MAX_TOOL_IDS,
           items: { type: 'string' },
         },
       },
@@ -459,6 +473,10 @@ type DispatchOutcome = {
 export function registerMcpRoutes(options: McpRouteOptions): void {
   const { server, routes, pool, config } = options;
 
+  // `remote` is the peer of this process. Fastify is not told to trust a proxy
+  // (`trustProxy` is off), so behind nginx or Cloudflare it records the proxy's
+  // address, not the client's; turn it on in the host step, with a proxy list,
+  // not by trusting every hop.
   async function audit(input: {
     agentId: string;
     method: string;
@@ -665,10 +683,14 @@ export function registerMcpRoutes(options: McpRouteOptions): void {
         durationMs: performance.now() - started,
         remote: request.ip,
       });
+      // JSON-RPC errors carry an error object even when the status is the
+      // transport's own: a client parsing every body as JSON-RPC must not
+      // meet a bare {"error": ...} here. -32000 is the implementation-defined
+      // server-error range.
       return reply
         .code(429)
         .header('retry-after', '60')
-        .send({ error: 'rate_limited' });
+        .send(failure(null, { code: -32000, message: 'rate_limited' }));
     }
 
     const raw: unknown = request.body;
