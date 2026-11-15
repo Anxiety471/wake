@@ -160,7 +160,7 @@ wake --list                         # every bot: alias, name, kind, role
 wake --who dns nginx                # bots whose role matches
 wake --info engineer                # id, kind, role and how to reach it
 wake --me                           # which bot this shell is (cwd .../bots/<id>), and the sender label
-wake --version                      # e.g. "wake 0.1.0"; the same version is sent as User-Agent wake-cli/<version>
+wake --version                      # e.g. "wake 0.2.0"; the same version is sent as User-Agent wake-cli/<version>
 
 wake engineer "PR #42 is ready"     # one-way notify
 wake                                # interactive picker (on a TTY)
