@@ -7,6 +7,15 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **Operator helpers in `bin/ops`.** `wake-pg` runs a throwaway local Postgres for the API tests;
+  `wake-api-e2e` starts the real API on a scratch database and proves the public surface over HTTP
+  (`/mcp` initialize, ten tools, `wake_ask` and `wake_read_thread`, the inbox, deliveries,
+  private-bot refusal, `mcp_audit`, audit prune, `GET /mcp` 405, the stdio bridge) with a
+  `REGISTRATION_SECRET` generated per run, so no secret sits in the file; `wake-keys` copies
+  host-minted webhook keys into the local key dir and never prints one; `wake-pingall` asks every
+  open bot in the registry at once. `OPS=1 ./install.sh` installs them beside the core scripts,
+  `bin/ops/README.md` says what each one needs, and `tests/test_ops_scripts.py` keeps personal
+  absolute paths, real addresses and undocumented `WAKE_*` variables out of them.
 - **A deploy runbook, a systemd unit and two operator scripts.** `deploy/README.md` runs the
   API on the host: a `wake` service account, `/opt/wake` (bundle, `node`, migrations beside it),
   `/etc/wake/api.env` as `root:wake 640` and an `mcp-token` nobody else can read, a unit that

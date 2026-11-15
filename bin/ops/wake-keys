@@ -1,0 +1,86 @@
+#!/bin/bash
+# desc: copy webhook keys that were minted on the host into this machine's key dir; prints ok/skip/bad per bot and never a key value. Uses WAKE_HOSTOPS, WAKE_HOST_KEY_DIR, WAKE_KEY_DIR, WAKE_REGISTRY
+set -u
+
+HOSTOPS=${WAKE_HOSTOPS:-}
+KEY_DIR=${WAKE_KEY_DIR:-${WAKE_CONFIG_DIR:-$HOME/.config/wake}}
+REG=${WAKE_REGISTRY:-$KEY_DIR/bots.tsv}
+# Where the host keeps <bot-id>.key: the shared state dir unless told otherwise.
+HOST_KEY_DIR=${WAKE_HOST_KEY_DIR:-${WAKE_STATE_DIR:-/var/lib/wake}}
+
+force=0
+[ "${1:-}" = "--force" ] && force=1
+
+[ -r "$REG" ] || {
+    echo "no registry at $REG (set WAKE_REGISTRY, or copy bots.example.tsv there and fill it in)" >&2
+    exit 1
+}
+mkdir -p "$KEY_DIR"
+
+tmp=""
+trap '[ -n "$tmp" ] && rm -f "$tmp"' EXIT
+
+# A bot id is a path component and a shell word on the host, so it is checked first.
+valid_id() {
+    case $1 in
+        '' | *[!A-Za-z0-9_-]*) return 1 ;;
+    esac
+    return 0
+}
+
+# fetch writes one key to $tmp without printing it: through WAKE_HOSTOPS when that is set,
+# from the key dir directly when wake runs on the host itself.
+fetch() {
+    if [ -n "$HOSTOPS" ]; then
+        "$HOSTOPS" "sudo cat $HOST_KEY_DIR/$1.key" </dev/null >"$tmp" 2>/dev/null
+    else
+        cat "$HOST_KEY_DIR/$1.key" >"$tmp" 2>/dev/null
+    fi
+}
+
+ok=0
+skip=0
+bad=0
+miss=0
+while IFS="$(printf '\t')" read -r alias id _rest <&3; do
+    case ${alias:-} in '' | '#'*) continue ;; esac
+    [ -n "${id:-}" ] || continue
+    if ! valid_id "$id"; then
+        echo "bad   $alias (bot id $id is not letters, digits, underscore or dash)"
+        bad=$((bad + 1))
+        continue
+    fi
+    dest="$KEY_DIR/$id.key"
+    if [ -s "$dest" ] && [ "$force" -ne 1 ]; then
+        if [ -r "$dest" ]; then
+            echo "skip  $alias (key already saved)"
+            skip=$((skip + 1))
+        else
+            echo "bad   $alias (file present but not readable by $(id -un): $(stat -c '%U:%G %a' "$dest"))"
+            bad=$((bad + 1))
+        fi
+        continue
+    fi
+    tmp="$KEY_DIR/.tmp-$id"
+    if fetch "$id" && [ -s "$tmp" ]; then
+        chmod 600 "$tmp"
+        mv "$tmp" "$dest"
+        rm -f "$tmp"
+        tmp=""
+        if [ -r "$dest" ]; then
+            echo "ok    $alias"
+            ok=$((ok + 1))
+        else
+            echo "bad   $alias (saved but owned by $(stat -c '%U:%G' "$dest")); needs a host chown"
+            bad=$((bad + 1))
+        fi
+    else
+        rm -f "$tmp"
+        tmp=""
+        echo "none  $alias (no key in the host store)"
+        miss=$((miss + 1))
+    fi
+done 3<"$REG"
+
+echo "saved $ok, skipped $skip, unreadable $bad, no key $miss"
+[ "$bad" -eq 0 ]
