@@ -5,6 +5,33 @@
 #   SKILL_DIR=~/.claude/skills ./install.sh   # also copy docs/agent-skill/SKILL.md to $SKILL_DIR/wake-bot/
 #   OPS=1 ./install.sh                   # also install the bin/ops operator helpers
 set -eu
+case ${1:-} in
+    -h | --help)
+        cat <<'EOF'
+usage: ./install.sh [--help]
+
+  Installs the core scripts into $PREFIX/bin (default ~/.local/bin): wake, wake-hook, wake-run,
+  wake-mcp, wake-inbox-io and the wake_config.py they import.
+
+  PREFIX=/usr/local ./install.sh             install system-wide (run as root)
+  OPS=1 ./install.sh                         also install the bin/ops operator helpers
+  SKILL_DIR=~/.claude/skills ./install.sh    also copy docs/agent-skill/SKILL.md into
+                                             $SKILL_DIR/wake-bot/
+
+  It overwrites a file of the same name in $PREFIX/bin, which is why checking "command -v wake"
+  first is worth a minute. When ~/.config/wake has no bots.tsv it prints the two files to copy.
+
+  --help is the only argument it takes; another one is a mistake, not a no-op.
+EOF
+        exit 0
+        ;;
+    '') ;;
+    *)
+        echo "install.sh takes no arguments; try --help" >&2
+        exit 2
+        ;;
+esac
+
 cd "$(dirname "$0")"
 PREFIX=${PREFIX:-$HOME/.local}
 mkdir -p "$PREFIX/bin"

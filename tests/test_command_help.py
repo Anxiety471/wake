@@ -105,6 +105,23 @@ class CommandHelpTestCase(unittest.TestCase):
                     f"{path.name} is not named in the {where} README",
                 )
 
+    def test_the_installer_answers_help_without_installing_anything(self):
+        """`./install.sh --help` must be read, not run: an installer that installs on --help is a trap."""
+        with tempfile.TemporaryDirectory() as home:
+            prefix = Path(home) / "prefix"
+            r = subprocess.run(
+                [str(ROOT / "install.sh"), "--help"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                stdin=subprocess.DEVNULL,
+                cwd=home,
+                env=dict(environment(home), PREFIX=str(prefix)),
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(r.stdout.startswith("usage: ./install.sh"), f"--help printed {r.stdout[:80]!r}")
+            self.assertFalse(prefix.exists(), "--help created the install prefix")
+
     def test_a_helper_that_takes_no_option_refuses_one(self):
         """--help is the only unknown flag that is answered; another one is a mistake, not a no-op."""
         for name in ("wake-keys", "wake-api-e2e"):
