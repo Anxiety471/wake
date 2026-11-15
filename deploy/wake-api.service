@@ -3,6 +3,11 @@ Description=wake API (agents, messages, threads, doorbell, MCP)
 Documentation=https://github.com/Anxiety471/wake
 After=network-online.target postgresql.service
 Wants=network-online.target postgresql.service
+# RestartSec=5 with systemd's default 10s window means five restarts span 25s and
+# the limiter never trips: a bad environment loops in "activating" forever. These
+# widen the window so five failures in 300s stop it at "failed" instead.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
