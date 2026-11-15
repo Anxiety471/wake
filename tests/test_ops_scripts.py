@@ -163,6 +163,14 @@ class OpsFilesTestCase(unittest.TestCase):
                         f"{os.path.basename(path)} carries the hostname {hit!r}",
                     )
 
+    def test_the_suite_runner_keeps_bytecode_out_of_the_tree(self):
+        """bin/wake imports bin/wake_config.py, so a suite run would otherwise cache bytecode in
+        the checkout; tests/test_wake.py passes the same setting to every child it spawns.
+        """
+        with open(os.path.join(ROOT, "tests", "run.sh"), encoding="utf-8") as f:
+            runner = f.read()
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1", runner)
+
     def test_the_hostname_guard_is_not_a_no_op(self):
         for sample in ("bots.example.com", "vps01.example.com", "wake.internal", "h.some-hospital.example.org"):
             with self.subTest(sample=sample):

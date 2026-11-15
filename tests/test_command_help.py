@@ -40,6 +40,8 @@ def environment(home):
         "HOME": str(home),
         "TMPDIR": str(home),
         "LANG": "C.UTF-8",
+        # bin/wake imports bin/wake_config.py: without this the check caches it in the checkout
+        "PYTHONDONTWRITEBYTECODE": "1",
     }
 
 

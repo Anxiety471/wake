@@ -7,16 +7,15 @@ A gate that refuses a shape turns the call into a silent no-op: wake reads nothi
 back and the message is gone. So a new build of `wake` is checked against the gate
 before it is installed.
 
-The gate itself is executed in this process, with your privileges: `exec_module` runs
-its module-level code, so run this on a gate you trust. What is contained is the wake
+The gate itself is executed in this process, with your privileges: its module-level
+code runs, so run this on a gate you trust. It is compiled and executed, never
+imported, so nothing is written beside it. What is contained is the wake
 copy - `subprocess` and `_host_run` are replaced, and the state paths point at a
 scratch directory - so no command it builds reaches a host, a network or your state.
 """
 
 import ast
 import hashlib
-import importlib.machinery
-import importlib.util
 import json
 import os
 import re
@@ -45,10 +44,10 @@ class Result:
 
 
 def load_gate(path):
-    loader = importlib.machinery.SourceFileLoader("wake_gate", path)
-    spec = importlib.util.spec_from_loader("wake_gate", loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
+    module = types.ModuleType("wake_gate")
+    module.__file__ = path
+    with open(path, encoding="utf-8") as f:
+        exec(compile(f.read(), path, "exec"), module.__dict__)  # noqa: S102 - the operator's gate
     return module
 
 
