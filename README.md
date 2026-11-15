@@ -273,6 +273,22 @@ Every ask, reply and refusal is appended to `$WAKE_RATE_DIR/wake-audit-<uid>.log
 
 Each request also carries an `Idempotency-Key` derived from bot, source, event, detail and a 10-minute bucket, so a retried identical wake can be deduplicated by the server.
 
+## Agent skills
+
+`skills/` holds Claude Agent Skills — a `SKILL.md` whose frontmatter carries `name` and
+`description`, then the recipe — that teach an assistant to operate wake instead of
+rediscovering it. They are plain files: copy the directory you want into your agent's
+skills directory.
+
+| Skill | Covers |
+|---|---|
+| `skills/wake-ops` | the `bin/ops` helpers: a scratch database, the HTTP end-to-end run, host-minted keys, a fleet ping, a script install, the service install, and a gate review |
+| `skills/wake-mcp` | the stdio bridge, the public `/mcp` endpoint, its single identity, and how to read a 401/404/405 |
+| `skills/wake-deploy` | scripts, the systemd service, the one nginx location, the check from outside, and an exact rollback |
+
+The bundled `docs/agent-skill/SKILL.md`, installed by `SKILL_DIR=… ./install.sh`, stays
+the short "talk to the other bots" skill.
+
 ## Development
 
 ```sh

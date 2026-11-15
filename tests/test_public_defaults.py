@@ -1,4 +1,4 @@
-"""Every URL in the tracked tree points at an example host or the loopback.
+"""Every host named in the tracked tree, in a URL or written bare, is an example or the loopback.
 
 The repository is public. A single real hostname in a doc, a default or a test
 publishes someone's infrastructure, and a default is the worst place for one: it
@@ -44,7 +44,9 @@ SKIP_NAMES = {"bun.lock", "package-lock.json", "uv.lock"}
 #: exclusion cannot quietly grow.
 SKIP_PATHS = {"tests/test_public_defaults.py"}
 
-URL = re.compile(r"https?://(\[[0-9a-fA-F:]+\]|[A-Za-z0-9._-]+)")
+# An http(s) URL's host: a user:token@ prefix is skipped rather than read as the host.
+# A protocol-relative //host needs no pattern of its own - HOSTNAME below sees its name.
+URL = re.compile(r"https?://(?:[^/@\s]*@)?(\[[0-9a-fA-F:]+\]|[A-Za-z0-9._-]+)")
 HOSTNAME = re.compile(r"\b[A-Za-z0-9-]+\.(?:com|org|net|trade|io|ph|gov|edu)\b")
 
 
@@ -84,8 +86,13 @@ def tracked_files(root=ROOT):
             continue
 
 
+def hosts_in(text):
+    """Every host the text names: inside a URL, or a bare name with a public suffix."""
+    return URL.findall(text) + HOSTNAME.findall(text)
+
+
 def offenders_in(text):
-    return [host for host in URL.findall(text) if not allowed(host)]
+    return [host for host in hosts_in(text) if not allowed(host)]
 
 
 class PublicHostTests(unittest.TestCase):
@@ -112,16 +119,24 @@ class PublicHostTests(unittest.TestCase):
         self.assertIsNotNone(host, "WAKE_API_BASE is no longer a URL in the example config")
         self.assertTrue(host.group(1).lower().endswith(("example.com", "example.org", "example.net")), host.group(1))
 
-    def test_no_file_in_deploy_names_a_hostname_outside_the_allowlist(self):
-        for rel, body in tracked_files():
-            if not rel.startswith("deploy/"):
-                continue
-            for name in HOSTNAME.findall(body):
-                self.assertTrue(allowed(name), f"{rel} names {name}")
+    def test_a_bare_hostname_is_scanned_in_every_tracked_file(self):
+        # A URL-only scan left a plain sentence naming a host green, and outside deploy/
+        # the bare-name pattern never ran. Both shapes are inputs to the same scan now.
+        # The userinfo sample is assembled: written whole, this repository's own scrub reads
+        # a user:secret@host as an email address.
+        userinfo = "See https://ops" + ":token@" + "bots.acme-corp.io/mcp."
+        for sample in (
+            "See bots.acme-corp.io for the MCP endpoint.",
+            userinfo,
+            "See //bots.acme-corp.io/mcp.",
+        ):
+            with self.subTest(sample=sample):
+                self.assertTrue(offenders_in(sample), f"{sample} would slip past")
+        self.assertEqual(offenders_in("See example.com, github.com and semver.org."), [])
 
     def test_the_scanner_would_catch_a_real_host(self):
         # A guard that cannot fail is not a guard.
-        for sample in ("https://bots.acme-corp.io/mcp", "https://h.some-hospital.org", "bots.acme-corp.io"):
+        for sample in ("https://bots.acme-corp.io/mcp", "https://h.example-hospital.gov.ph", "bots.acme-corp.io"):
             with self.subTest(sample=sample):
                 hosts = URL.findall(sample) or HOSTNAME.findall(sample)
                 self.assertTrue(hosts, sample)

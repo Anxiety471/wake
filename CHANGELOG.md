@@ -12,12 +12,25 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   directory, webhook domain or nginx file name; the runbook's rollback and verify steps
   are otherwise unchanged. `tests/test_public_defaults.py` allowlists the hosts a public
   repository may name (loopback, the example domains, the repository itself), so a real
-  hostname fails the suite instead of shipping.
+  hostname fails the suite instead of shipping. Every tracked file is scanned for a host
+  in a URL and for a bare hostname alike (bare names used to be checked only under
+  `deploy/`, and a `user:token@` prefix was read as the host); a sentence naming a real
+  host now fails like a default does.
 
 ### Security
 
 - **Site names, an owner's domain and a personal path are out of the tree.** They were
-  documentation only; no code path changed.
+  documentation and defaults. One code default moved with them: `deploy/ops/mcp-verify.py`
+  names `example.com` when no URL is passed, and an explicit URL argument behaves as
+  before.
+
+### Fixed
+
+- **`wake-wait` refuses `--from` with no bot name.** `--from=`, `--from ""` and a blank
+  `--from "   "` used to run the "any new reply" rule without saying so, and a three-space alias
+  waited the whole timeout for a bot that cannot exist. Both flag forms now exit 1 with
+  `--from needs a bot alias` before the thread is read; an empty `WAKE_WAIT_FROM` stays the
+  ordinary unset case.
 
 ### Added
 
@@ -54,6 +67,12 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 - **`bin/ops` shellcheck covers the shell helpers only.** `ci.yml` and the README name the five
   bash helpers instead of a glob, and `tests/test_ops_scripts.py` fails if a Python helper is
   handed to shellcheck or a shell helper is left out.
+- **Three agent skills under `skills/`.** `wake-ops` covers the operator helpers (a scratch
+  database, the HTTP end-to-end run, keys, a fleet ping, the two installers and a gate
+  review); `wake-mcp` covers the stdio bridge, the public `/mcp` endpoint and its single
+  identity, including what a 401, a 404 and a 405 mean there; `wake-deploy` covers the
+  order of operations on a host, the one nginx location, the check from outside and an
+  exact rollback. Each is a `SKILL.md` with `name` and `description` frontmatter.
 - **Operator helpers in `bin/ops`.** `wake-pg` runs a throwaway local Postgres for the API tests;
   `wake-api-e2e` starts the real API on a scratch database and proves the public surface over HTTP
   (`/mcp` initialize, ten tools, `wake_ask` and `wake_read_thread`, the inbox, deliveries,
