@@ -273,9 +273,17 @@ if grep -q "def run_bridge" "$REPO/bin/wake-mcp"; then
     | "${bridge_env[@]}" "$REPO/bin/wake-mcp" >"$WORK/e2e-bridge.jsonl"
   test "$(wc -l <"$WORK/e2e-bridge.jsonl")" = "3"
   jq -s -e '.[0].result.serverInfo.name == "wake"' "$WORK/e2e-bridge.jsonl" >/dev/null
-  jq -s -e '.[1].result.tools | length == 10' "$WORK/e2e-bridge.jsonl" >/dev/null
+  # By name, not by count: the bridge appends wake_fleet locally whenever this
+  # machine's registry (WAKE_REGISTRY, bots.tsv) is readable, so on the
+  # operator's own box the list is eleven while a bare runner sees ten. A fixed
+  # count made this step fail for a correct bridge (issue #77).
+  jq -s -e '
+    [.[1].result.tools[].name] as $n
+    | (["wake_ask","wake_reply","wake_read_thread","wake_thread_read","wake_threads","wake_inbox","wake_inbox_read","wake_bots","wake_send","wake_search"] - $n | length) == 0
+    and (($n - ["wake_fleet"]) | length) == 10
+  ' "$WORK/e2e-bridge.jsonl" >/dev/null
   jq -s -e '.[2].result.isError == false and (.[2].result.content[0].text | fromjson | .agents | length) >= 1' "$WORK/e2e-bridge.jsonl" >/dev/null
-  echo "PASS stdio bridge: initialize, 10 tools, wake_bots over POST /mcp"
+  echo "PASS stdio bridge: initialize, the ten server tools (plus wake_fleet from a local registry), wake_bots over POST /mcp"
 
   # A stale token is the API's own REST error, not JSON-RPC: the bridge must
   # answer -32603 on the asking id, or the client waits for a reply it drops.

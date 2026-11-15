@@ -17,9 +17,10 @@ wake-pg start && wake-pg status          # scratch Postgres on 5433, its own dat
 wake-api-e2e                             # real API on that database, PASS per step, ALL PASS at the end
 wake-pg stop
 ```
-`wake-api-e2e` covers `/mcp` initialize, the ten tools, `wake_ask` and
+`wake-api-e2e` covers `/mcp` initialize, the ten tools by name, `wake_ask` and
 `wake_read_thread`, the inbox, deliveries, private-bot refusal, `mcp_audit`, audit
-prune, `GET /mcp` 405 and the stdio bridge. It generates its own
+prune, `GET /mcp` 405 and the stdio bridge, whose `tools/list` it checks by name
+because the bridge adds `wake_fleet` when this machine has a registry. It generates its own
 `REGISTRATION_SECRET` and keeps every file it writes in one private `mktemp -d`
 directory. One run at a time.
 

@@ -781,7 +781,17 @@ class HelperTests(WakeTestCase):
                 "params": {"name": "wake_bot", "arguments": {"bot": "engineer", "message": "hi"}},
             },
         ]
-        r = self.run_bin("wake-mcp", stdin="".join(json.dumps(m) + "\n" for m in msgs))
+        # Legacy mode is only entered when nothing names a config now, so the
+        # station-wide WAKE_CONFIG_DIR is unset on purpose: an empty value reads
+        # as unset, and HOME is the test's own empty tree.
+        r = self.run_bin(
+            "wake-mcp",
+            env={
+                "WAKE_CONFIG_DIR": "",
+                "WAKE_REGISTRY": os.path.join(self.cfg, "bots.tsv"),
+            },
+            stdin="".join(json.dumps(m) + "\n" for m in msgs),
+        )
         out = [json.loads(x) for x in r.stdout.splitlines()]
         self.assertEqual(out[0]["result"]["serverInfo"], {"name": "wake", "version": wake_config.VERSION})
         self.assertEqual([t["name"] for t in out[1]["result"]["tools"]], ["wake_bot", "wake_list"])

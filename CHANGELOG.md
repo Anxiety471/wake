@@ -7,6 +7,13 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **`wake_fleet`: the routing table inside the MCP session.** The bridge advertised only the
+  server's ten thread tools, so a model could see which agents were *registered on the API*
+  (`wake_bots`) but not which bots this machine can reach by alias. That knowledge lives in
+  `WAKE_REGISTRY` (`bots.tsv`), which the server never sees, so the bridge answers it itself and
+  advertises it in `tools/list` only when the file is readable: alias, id, name, kind and role
+  for each row. A call is never forwarded, so it costs no API request and no rate limit.
+
 - **A code of conduct.** [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) says what is expected in
   issues and reviews, and where to report conduct privately without committing an email
   address. `SECURITY.md` now names 0.2.x as the supported line.
@@ -43,6 +50,35 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   ([#22](https://github.com/Anxiety471/wake/issues/22)).
 
 ### Fixed
+
+- **One non-UTF-8 byte in `bots.tsv` emptied `tools/list`.** `fleet()` opened the registry with
+  the locale codec and caught only `OSError`, so a single undecodable byte raised
+  `UnicodeDecodeError` out of the tool list: the client got `-32603` and zero tools, with no
+  session left to report the reason on. The registry and `config.env` are read as UTF-8 with
+  replacement now, so a damaged byte costs one character instead of the session. `wake_fleet`
+  also takes the row shape `bin/wake` accepts (four or five fields), so it never names an alias
+  the CLI calls unknown; it is never answered when it arrives as a notification; and a
+  `WAKE_CONFIG` that exists but cannot be read says so instead of reporting a missing token line.
+
+- **`WAKE_CONFIG_DIR` was the same silent downgrade one variable over (issue #76).** The
+  guard added for `WAKE_CONFIG` read that variable alone, so naming a directory whose
+  `config.env` was missing, unreadable or tokenless still exited 0 with the legacy two-tool
+  helper and an empty stderr. Naming either variable is a request for the bridge now, and the
+  message names the one that was set and the path it resolved to.
+
+- **The API e2e failed on a machine that has a registry.** Its stdio step asserted
+  `tools/list | length == 10`, but the bridge appends `wake_fleet` whenever `WAKE_REGISTRY`
+  is readable, which is the operator's own box and never a bare CI runner: the step stopped
+  with `rc=1` and no `PASS stdio bridge` line for a correct bridge. It now asserts the ten
+  server tools by name and allows `wake_fleet` as the only extra, so ten and eleven both pass
+  and a missing or unknown tool still fails.
+
+- **A `WAKE_CONFIG` that cannot supply a token exited 0 with two tools (issue #76).** The bridge
+  picked its mode from the token alone, and `wake_config.load()` treats an unreadable file as no
+  settings, so a path that was moved or wiped produced a successful session with the legacy
+  `wake_bot` / `wake_list` pair and nothing on stderr. A named `WAKE_CONFIG` that does not exist,
+  or exists without `WAKE_MCP_TOKEN`, now exits 2 with a message naming the path; the legacy mode
+  is still one `unset WAKE_CONFIG` away, on purpose.
 
 - **`bin/wake-mcp` was refused by Cloudflare (403, error 1010).** The bridge builds its
   headers explicitly and sent urllib's default agent, `Python-urllib/*`, which the bot rule

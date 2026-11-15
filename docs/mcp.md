@@ -91,6 +91,14 @@ MCP-Protocol-Version: 2025-06-18        (after initialize; checked when present)
 | `wake_bots` | — | `GET /agents` |
 | `wake_send` | `to`, `body` (`to: "*"` broadcasts) | `POST /messages` |
 | `wake_search` | `status?`, `from?`, `since?`, `until?`, `text?`, `box?`, `limit?`, `cursor?` | `GET /messages/search` |
+| `wake_fleet` | — | nothing: answered by the bridge from `WAKE_REGISTRY` (`bots.tsv`) |
+
+Ten of the tools go to the API. `wake_fleet` is the exception: the routing table lives on the
+client machine, so the stdio bridge answers it itself with the aliases the `wake` CLI reaches —
+`{"registry": "<path>", "bots": [{"alias", "id", "name", "kind", "role", "reach"}]}`, where `reach`
+is the command that messages that alias — and only advertises
+it in `tools/list` when that file is readable. The server's own registered agents stay
+`wake_bots`; a fleet alias with no agent row is still reachable only through the CLI.
 
 Tool results are `{"content":[{"type":"text","text":"<the API's JSON>"}]}`. A
 failed call sets `isError: true` and the text starts with the status, e.g.
@@ -240,7 +248,11 @@ one message in flight at a time, so replies keep stdin's order.
 
 Without `WAKE_MCP_TOKEN` the same binary stays the **legacy** two-tool helper —
 `wake_bot` and `wake_list`, shelling out to `bin/wake` on the same machine. That
-mode is kept for existing local configs and is not the recommended path.
+mode is only entered when nothing names a config. Naming one is taken as a request
+for the bridge, whether by `WAKE_CONFIG` or by `WAKE_CONFIG_DIR`, which names
+`config.env` inside that directory: if the resolved file is missing, unreadable, or
+has no `WAKE_MCP_TOKEN`, the bridge exits 2 with the path on stderr instead of
+quietly answering with two tools, which looks like a working session (issue #76).
 
 ## Not here yet
 

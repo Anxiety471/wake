@@ -231,7 +231,7 @@ wake --all "read-only window until 18:00"   # one message to every open bot; pri
 
 - `wake-run [--bot BOT] [--only-errors] [--name label] -- cmd...` — run a command, wake a bot when it ends (`ok` on exit 0, `error` otherwise). Child commands see `WAKE_DEPTH+1`.
 - `wake-hook claude-code Stop|StopFailure` (hook JSON on stdin) or `wake-hook codex '<json>'` — turn coding-agent hook events into wakes. Off unless `WAKE_HOOK=errors|all`.
-- `wake-mcp` — MCP stdio server. With `WAKE_MCP_TOKEN` set it is a bridge to `POST /mcp`, so a stdio-only client gets the same ten thread tools, rate limit, audit and private-bot wall as an HTTP client; without one it keeps the legacy `wake_bot` and `wake_list` tools that shell out to `wake`.
+- `wake-mcp` — MCP stdio server. With `WAKE_MCP_TOKEN` set it is a bridge to `POST /mcp`, so a stdio-only client gets the same ten thread tools, rate limit, audit and private-bot wall as an HTTP client, plus `wake_fleet` from this machine's `bots.tsv`; without one, and with `WAKE_CONFIG` unset, it keeps the legacy `wake_bot` and `wake_list` tools that shell out to `wake`. A `WAKE_CONFIG` that names a missing or tokenless file now exits 2 instead of quietly serving those two tools.
 - `wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]` — session inbox plumbing for a session extension. `<hash>` is 6 to 32 lowercase hex characters; `read` only accepts `$WAKE_STATE_DIR/inbox/<hash>.jsonl`.
 - Every command above answers `-h`/`--help` with its usage, its exit codes and the environment it
   reads, before it does anything else. `tests/test_command_help.py` runs each one in an empty

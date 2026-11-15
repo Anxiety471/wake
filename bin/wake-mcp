@@ -37,6 +37,55 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 OPENER = urllib.request.build_opener(_NoRedirect)
 
+FLEET_TOOL = {
+    "name": "wake_fleet",
+    "description": (
+        "List the bots in this machine's routing table (WAKE_REGISTRY, bots.tsv) with alias, name, "
+        "kind and role: the fleet the wake CLI reaches by alias. These are not the same as the "
+        "agents registered on this server, which wake_ask and wake_send address: those are wake_bots."
+    ),
+    "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
+}
+
+
+def fleet():
+    """The local routing table as rows, or (None, path) when there is no readable registry.
+
+    Decoded as UTF-8 with replacement, never with the locale codec: one byte that
+    is not UTF-8 used to raise UnicodeDecodeError out of tools/list, and a client
+    that cannot list tools has no session left to report the reason on. Rows are
+    the shape bin/wake accepts (four or five tab-separated fields), so wake_fleet
+    never names an alias the CLI itself calls unknown.
+    """
+    path = CFG.get("WAKE_REGISTRY") or ""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return None, path
+    bots = []
+    for line in lines:
+        line = line.rstrip("\n")
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) not in (4, 5) or not fields[0].strip():
+            continue
+        fields += [""] * (5 - len(fields))
+        alias = fields[0].strip()
+        bots.append(
+            {
+                "alias": alias,
+                "id": fields[1].strip(),
+                "name": fields[2].strip(),
+                "kind": fields[3].strip(),
+                "role": fields[4].strip(),
+                "reach": "wake " + alias + ' "<message>" or wake --ask ' + alias + ' "<question>"',
+            }
+        )
+    return bots, path
+
+
 LEGACY_TOOLS = [
     {
         "name": "wake_bot",
@@ -174,6 +223,25 @@ def bridge_line(line, state):
         )
         return
     rid = message.get("id")
+    params = message.get("params") if isinstance(message.get("params"), dict) else {}
+    if message.get("method") == "tools/call" and params.get("name") == "wake_fleet":
+        # Local by design: the routing table lives on this machine, not on the server.
+        # A notification has no id and takes no answer, here as everywhere else.
+        if "id" not in message:
+            return
+        bots, path = fleet()
+        if bots is None:
+            text, failed = "no routing table at " + path + " (WAKE_REGISTRY)", True
+        else:
+            text, failed = json.dumps({"registry": path, "bots": bots}, ensure_ascii=False), False
+        emit(
+            {
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": {"content": [{"type": "text", "text": text}], "isError": failed},
+            }
+        )
+        return
     # The API tells the two apart the same way: no "id" key is a notification,
     # while "id": null is a request and gets a null-id answer. MCP ids are
     # string|number, so null is outside the id space, but silence is worse.
@@ -215,6 +283,12 @@ def bridge_line(line, state):
             result = reply.get("result")
             if isinstance(result, dict) and isinstance(result.get("protocolVersion"), str):
                 state["version"] = result["protocolVersion"]
+            if isinstance(result, dict) and isinstance(result.get("tools"), list):
+                bots, _ = fleet()
+                if bots is not None and not any(
+                    isinstance(tool, dict) and tool.get("name") == "wake_fleet" for tool in result["tools"]
+                ):
+                    result["tools"].append(FLEET_TOOL)
             if reply.get("id") != rid:
                 # A 429 is decided before the body is parsed, so it carries
                 # id: null. A client matches replies by id: answer on the id
@@ -338,7 +412,14 @@ usage: wake-mcp [--help]
   stdio-only client gets the server's ten thread tools, with the same rate limit, audit and
   private-bot wall as an HTTP client.
   Without a token it keeps the legacy two-tool mode (wake_bot, wake_list), which shells out to
-  wake.
+  wake. That mode is only entered when nothing names a config: a WAKE_CONFIG - or a
+  WAKE_CONFIG_DIR, which names the same file one directory up - that resolves to a missing,
+  unreadable or tokenless file exits 2 instead, because silently answering with two tools looks
+  like a working session (issue #76).
+
+  wake_fleet is answered here, not by the API: it lists this machine's routing table
+  (WAKE_REGISTRY, bots.tsv) - alias, name, kind, role - and it is only advertised when that
+  file is readable. The agents registered on the server stay wake_bots.
 
   A redirect is never followed: urllib re-sends Authorization on one, so a 3xx would hand the
   token to whatever host Location names. A stale or rotated token, a disabled /mcp endpoint and a
@@ -359,4 +440,59 @@ if __name__ == "__main__":
         check_settings()
         run_bridge()
     else:
+        # A client that named a config file asked for the bridge. Falling back to the
+        # two-tool helper there is a silent downgrade: it answers every method and
+        # lists two tools, so nothing looks wrong (issue #76).
+        named = ""
+        if os.environ.get("WAKE_CONFIG"):
+            named = "WAKE_CONFIG"
+            path = os.path.expanduser(os.environ["WAKE_CONFIG"])
+        elif os.environ.get("WAKE_CONFIG_DIR"):
+            # One variable over: naming the directory asks for the same file, so a
+            # tokenless config.env found there is the same silent downgrade.
+            named = "WAKE_CONFIG_DIR"
+            path = os.path.join(os.path.expanduser(os.environ["WAKE_CONFIG_DIR"]), "config.env")
+        if named:
+            if not os.path.exists(path):
+                note(
+                    "wake-mcp: "
+                    + named
+                    + " resolves to "
+                    + path
+                    + ", which does not exist, so there is no token to bridge with. Put "
+                    + "WAKE_MCP_TOKEN=<token> there, or unset "
+                    + named
+                    + " to ask for the legacy two-tool helper on purpose."
+                )
+            else:
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as handle:
+                        handle.read()
+                except OSError as error:
+                    # Present but not readable (mode, a directory, a bad mount) is
+                    # not the same fact as tokenless, and saying "no token" sent the
+                    # operator looking for a line that may already be there.
+                    note(
+                        "wake-mcp: "
+                        + named
+                        + " resolves to "
+                        + path
+                        + ", which cannot be read ("
+                        + (str(error) or type(error).__name__)
+                        + "), so no token can come from it. Fix its mode or path, or unset "
+                        + named
+                        + " to ask for the legacy two-tool helper on purpose."
+                    )
+                else:
+                    note(
+                        "wake-mcp: "
+                        + named
+                        + " resolves to "
+                        + path
+                        + ", which has no WAKE_MCP_TOKEN, so this session would be the legacy two-tool "
+                        + "helper instead of the bridge. Add the token there, or unset "
+                        + named
+                        + " to ask for the helper on purpose."
+                    )
+            sys.exit(2)
         run_legacy()
