@@ -63,6 +63,9 @@ function doorbell(agents: { name: string; botId: string }[]) {
     WAKE_DOORBELL_BOTS: JSON.stringify(bots),
     WAKE_DOORBELL_URL: `http://127.0.0.1:${stub.port}/api/v1/bots`,
     WAKE_DOORBELL_TIMEOUT_MS: '500',
+    // The cap is exercised on its own in doorbell.test.ts; these tests send
+    // more than 30 messages to bob across the file.
+    WAKE_DOORBELL_MAX_PER_HOUR: '0',
   });
 }
 
@@ -307,7 +310,9 @@ test('a reply wakes the asker', async () => {
   expect(payload).toMatchObject({
     depth: 0,
     event: 'reply',
-    ref: `thread:${thread.threadId}`,
+    // Informational: no thread ref, so a ref-routing receiver cannot try to
+    // answer an answer.
+    ref: '',
     from: 'bob',
     to: 'alice',
     // The asker cannot answer its own ask (409), so a reply carries the form

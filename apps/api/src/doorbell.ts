@@ -5,6 +5,7 @@ import type {
   WakeReport,
 } from '@wake/shared';
 import { ConfigError } from './options.js';
+import { slidingWindow, type RateLimit } from './rate-limit.js';
 import { NAME_PATTERN } from './recipients.js';
 
 // Rakazo's doorbell: POST /api/v1/bots/<botId>/webhook. See docs/doorbell.md for
@@ -13,10 +14,20 @@ export const DEFAULT_DOORBELL_URL = 'http://127.0.0.1:3417/api/v1/bots';
 export const DOORBELL_MAX_BODY_BYTES = 64 * 1024;
 export const DEFAULT_DOORBELL_TIMEOUT_MS = 1500;
 export const MIN_DOORBELL_TIMEOUT_MS = 100;
-export const MAX_DOORBELL_TIMEOUT_MS = 10_000;
+// 2 attempts x 9 s + 200 ms backoff = 18.2 s, under the CLI's 20 s urllib
+// timeout (bin/wake:send), so a sender that gives up cannot leave a retry
+// running on the server and store a duplicate message.
+export const MAX_DOORBELL_TIMEOUT_MS = 9_000;
 export const DOORBELL_ATTEMPTS = 2;
 export const DOORBELL_BACKOFF_MS = 200;
 export const DOORBELL_USER_AGENT = 'wake-api';
+// The CLI's HOURLY_CAP is 30 wakes per bot per hour. The API now fans out at
+// API speed, so it holds the same ceiling per recipient; 0 disables the cap.
+export const DEFAULT_DOORBELL_MAX_PER_HOUR = 30;
+export const MAX_DOORBELL_MAX_PER_HOUR = 10_000;
+// Rakazo answers with a short JSON body. Reading an unbounded body would let a
+// broken or hostile doorbell stream forever.
+export const MAX_RESPONSE_BYTES = 16 * 1024;
 
 const MIN_SECRET_LENGTH = 16;
 const BOT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -32,12 +43,15 @@ export type DoorbellSettings = {
   timeoutMs: number;
   attempts: number;
   backoffMs: number;
+  maxPerHour: number;
 };
 
 export type DoorbellConfig = DoorbellSettings & {
   // Keyed by lowercased agent name, because agent names are looked up
   // case-insensitively everywhere else in the API.
   targets: Map<string, DoorbellTarget>;
+  // One window for the process: created here so every send shares it.
+  limit: RateLimit;
 };
 
 function setting(value: string | undefined): string | undefined {
@@ -86,6 +100,19 @@ export function parseDoorbellTimeout(value: string | undefined): number {
     );
   }
   return ms;
+}
+
+export function parseDoorbellMaxPerHour(value: string | undefined): number {
+  const raw = setting(value);
+  if (raw === undefined) {
+    return DEFAULT_DOORBELL_MAX_PER_HOUR;
+  }
+  if (!/^\d+$/.test(raw) || Number(raw) > MAX_DOORBELL_MAX_PER_HOUR) {
+    throw new ConfigError(
+      `WAKE_DOORBELL_MAX_PER_HOUR must be an integer from 0 to ${MAX_DOORBELL_MAX_PER_HOUR} (0 disables the cap)`,
+    );
+  }
+  return Number(raw);
 }
 
 // {"engineer": {"botId": "cmw...", "secret": "..."}}: one entry per agent that
@@ -161,18 +188,24 @@ export function parseDoorbellTargets(
 }
 
 export function parseDoorbell(env: NodeJS.ProcessEnv): DoorbellConfig | null {
+  // An empty map means the doorbell is off. Check that before parsing the URL
+  // and timeout: a stale bad value must not break the boot of a doorbell that
+  // is disabled anyway.
   const targets = parseDoorbellTargets(env.WAKE_DOORBELL_BOTS);
-  const url = parseDoorbellUrl(env.WAKE_DOORBELL_URL);
-  const timeoutMs = parseDoorbellTimeout(env.WAKE_DOORBELL_TIMEOUT_MS);
   if (targets.size === 0) {
     return null;
   }
+  const url = parseDoorbellUrl(env.WAKE_DOORBELL_URL);
+  const timeoutMs = parseDoorbellTimeout(env.WAKE_DOORBELL_TIMEOUT_MS);
+  const maxPerHour = parseDoorbellMaxPerHour(env.WAKE_DOORBELL_MAX_PER_HOUR);
   return {
     url,
     targets,
     timeoutMs,
+    maxPerHour,
     attempts: DOORBELL_ATTEMPTS,
     backoffMs: DOORBELL_BACKOFF_MS,
+    limit: slidingWindow({ limit: maxPerHour, windowMs: 60 * 60 * 1000 }),
   };
 }
 
@@ -237,7 +270,13 @@ export function doorbellPayload(input: {
     event: input.event,
     level: 'info',
     detail: detailFor(input),
-    ref: input.threadId === null ? '' : `thread:${input.threadId}`,
+    // A reply cannot be answered (the asker would get a 409), so it carries no
+    // thread ref: a receiver that routes on `ref` must not try wake --reply.
+    // `threadId` still names the thread for anything that wants to record it.
+    ref:
+      input.threadId === null || input.event === 'reply'
+        ? ''
+        : `thread:${input.threadId}`,
     time: input.time.toISOString(),
     messageId: input.messageId,
     threadId: input.threadId,
@@ -326,6 +365,39 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function readCapped(
+  response: Response,
+): Promise<{ text: string; tooLarge: boolean }> {
+  if (response.body === null) {
+    return { text: '', tooLarge: false };
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    if (value === undefined) {
+      continue;
+    }
+    size += value.byteLength;
+    if (size > MAX_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      return { text: '', tooLarge: true };
+    }
+    chunks.push(value);
+  }
+  const joined = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { text: new TextDecoder().decode(joined), tooLarge: false };
+}
+
 // One delivery, retried only on 5xx and network/timeout: a 401 means the key was
 // rotated, a 413 means the payload is too big and `no_routine` is a configuration
 // error on the bot, so none of those get better by repeating them in place.
@@ -362,10 +434,21 @@ export async function ringDoorbell(
           'user-agent': DOORBELL_USER_AGENT,
         },
         body: request.body,
+        // A 3xx is a configuration error (http:// instead of https://), not
+        // something a repeat fixes: read it as a status and report `rejected`
+        // instead of following it, which could also leave the host.
+        redirect: 'manual',
         signal: AbortSignal.timeout(config.timeoutMs),
       });
-      const text = await response.text();
-      last = classify(response.status, text, attempts);
+      const body = await readCapped(response);
+      last = body.tooLarge
+        ? {
+            delivered: false,
+            reason: 'bad_response',
+            attempts,
+            status: response.status,
+          }
+        : classify(response.status, body.text, attempts);
     } catch (error) {
       last = {
         delivered: false,
@@ -514,6 +597,37 @@ export async function notifyMessage(
   });
   const deliveries = await Promise.all(
     rung.map(async ({ agent, target }): Promise<WakeDelivery> => {
+      // The API fans out at API speed; one sender must not be able to ring one
+      // bot more often than the CLI's hourly cap allows. Over the cap no
+      // request is made at all, and the outcome is still recorded.
+      if (!config.limit.allow(agent.name.toLowerCase(), now.getTime())) {
+        log.warn(
+          {
+            messageId: message.messageId,
+            agent: agent.name,
+            botId: target.botId,
+            delivered: false,
+            reason: 'rate_limited',
+            attempts: 0,
+            status: null,
+          },
+          'wake not rung: hourly cap reached',
+        );
+        await persist(pool, log, {
+          messageId: message.messageId,
+          agent,
+          delivered: false,
+          reason: 'rate_limited',
+          attempts: 0,
+          status: null,
+        });
+        return {
+          agent: agent.name,
+          delivered: false,
+          reason: 'rate_limited',
+          attempts: 0,
+        };
+      }
       const body = encodeDoorbellPayload(
         doorbellPayload({
           messageId: message.messageId,
