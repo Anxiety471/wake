@@ -5,12 +5,38 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ## [Unreleased]
 
+### Changed
+
+- **The tree names examples, not anyone's infrastructure.** The example config, the README
+  table, the deploy runbook and the MCP verify default no longer carry a real state
+  directory, webhook domain or nginx file name; the runbook's rollback and verify steps
+  are otherwise unchanged. `tests/test_public_defaults.py` allowlists the hosts a public
+  repository may name (loopback, the example domains, the repository itself), so a real
+  hostname fails the suite instead of shipping.
+
+### Security
+
+- **Site names, an owner's domain and a personal path are out of the tree.** They were
+  documentation only; no code path changed.
+
 ### Added
 
 - **`tests/test_gate_shapes.py` no longer carries one machine's staging directory.**
   The directory is `WAKE_GATE_STAGE` now (default: unset, so the allow-list tests skip),
   `WAKE_GATE` still names one artifact, and a test pins the empty case. Where a gate is
   staged is a property of a machine, never of the repository.
+- **`--help` on every command, including the installer.** Seven commands treated the flag as
+  data: `wake-api-e2e --help` ran the whole end-to-end suite, `wake-pingall --help` asked a bot
+  named `--help` a question, `wake-mcp --help` started the stdio server, `wake-keys --help` ran
+  the key sync, `wake-hook --help` read stdin as a hook payload, and `wake-inbox-io` / `wake-pg`
+  printed usage on stderr with exit 1 and 2. `./install.sh --help` was worse: it installed. Each
+  now answers `-h`/`--help` with its usage, exit codes and environment on stdout, before anything
+  else runs, and refuses an argument it does not have instead of ignoring it (`install.sh`,
+  `wake-keys --forc`, `wake-api-e2e --anything`). `tests/test_command_help.py` walks `bin/` and
+  `bin/ops` and fails on a command that does not answer help, one with no `# desc:` line, and one
+  no README names; with only that file on the bytes before this change, 14 checks fail.
+  `wake-pingall` also refuses an alias that is not letters, digits, hyphen or underscore, so
+  `<log dir>/<alias>.log` cannot be written outside the log directory.
 - **Three agent skills under `skills/`.** `wake-ops` covers the operator helpers (a scratch
   database, the HTTP end-to-end run, keys, a fleet ping, the two installers and a gate
   review); `wake-mcp` covers the stdio bridge, the public `/mcp` endpoint and its single
