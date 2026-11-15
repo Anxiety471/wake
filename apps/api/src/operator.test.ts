@@ -69,6 +69,7 @@ test('operator routes do not exist without a registration secret', async () => {
       { method: 'GET' as const, url: '/mcp/identity' },
       { method: 'POST' as const, url: '/mcp/identity' },
       { method: 'DELETE' as const, url: '/mcp/identity' },
+      { method: 'POST' as const, url: '/mcp/audit/prune' },
       {
         method: 'PUT' as const,
         url: '/agents/bob/private',
@@ -88,6 +89,7 @@ test('operator routes reject the wrong secret', async () => {
     { method: 'GET' as const, url: '/mcp/identity' },
     { method: 'POST' as const, url: '/mcp/identity' },
     { method: 'DELETE' as const, url: '/mcp/identity' },
+    { method: 'POST' as const, url: '/mcp/audit/prune' },
     {
       method: 'PUT' as const,
       url: '/agents/bob/private',
@@ -318,4 +320,106 @@ test('marking a private bot is idempotent and a missing bot is a 404', async () 
     payload: { private: true },
   });
   expect(missing.statusCode).toBe(404);
+});
+
+test('the public identity cannot be made private', async () => {
+  await provision();
+  for (const name of ['mcp', 'MCP']) {
+    const refused = await app.inject({
+      method: 'PUT',
+      url: `/agents/${name}/private`,
+      headers: operator(),
+      payload: { private: true },
+    });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toEqual({
+      error: 'the public identity cannot be private',
+    });
+  }
+  // Refused means unchanged, not half-applied.
+  const row = await admin.query<{ is_private: boolean }>(
+    `SELECT is_private FROM agents WHERE lower(name) = 'mcp'`,
+  );
+  expect(row.rows[0]?.is_private).toBe(false);
+  // An ordinary bot is still markable.
+  await register('bob');
+  const marked = await app.inject({
+    method: 'PUT',
+    url: '/agents/bob/private',
+    headers: operator(),
+    payload: { private: true },
+  });
+  expect(marked.statusCode).toBe(200);
+});
+
+test('pruning the audit deletes only rows past the window', async () => {
+  await provision();
+  const insert = (at: string) =>
+    admin.query(
+      `INSERT INTO mcp_audit
+         (agent_id, method, tool, ok, error, status, duration_ms, remote, created_at)
+       SELECT id, 'initialize', NULL, true, NULL, 200, 1, '127.0.0.1', $1::timestamptz
+       FROM agents WHERE kind = 'mcp'`,
+      [at],
+    );
+  // 2026-01-01 is more than 90 days before this suite runs; now() is not.
+  await insert('2026-01-01T00:00:00.000Z');
+  await insert('2026-06-01T00:00:00.000Z');
+  await insert(new Date().toISOString());
+
+  const pruned = await app.inject({
+    method: 'POST',
+    url: '/mcp/audit/prune',
+    headers: operator(),
+  });
+  expect(pruned.statusCode).toBe(200);
+  const body = pruned.json<{ deleted: number; before: string }>();
+  expect(body.deleted).toBe(2);
+  // The default window is 90 days, and it reports the cutoff it used.
+  const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+  expect(Math.abs(Date.parse(body.before) - cutoff)).toBeLessThan(60_000);
+
+  const left = await admin.query<{ count: string }>(
+    'SELECT count(*)::text AS count FROM mcp_audit',
+  );
+  expect(left.rows[0]?.count).toBe('1');
+  // A second run finds nothing and is still a 200.
+  const again = await app.inject({
+    method: 'POST',
+    url: '/mcp/audit/prune',
+    headers: operator(),
+  });
+  expect(again.statusCode).toBe(200);
+  expect(again.json<{ deleted: number }>().deleted).toBe(0);
+});
+
+test('the prune window is bounded and needs the operator secret', async () => {
+  for (const days of ['0', '-1', '3651', '1.5', 'ten']) {
+    const refused = await app.inject({
+      method: 'POST',
+      url: `/mcp/audit/prune?days=${days}`,
+      headers: operator(),
+    });
+    expect(refused.statusCode).toBe(400);
+  }
+  const refused = await app.inject({ method: 'POST', url: '/mcp/audit/prune' });
+  expect(refused.statusCode).toBe(401);
+  const wrong = await app.inject({
+    method: 'POST',
+    url: '/mcp/audit/prune',
+    headers: operator('not-the-secret-0123456789'),
+  });
+  expect(wrong.statusCode).toBe(401);
+  const custom = await app.inject({
+    method: 'POST',
+    url: '/mcp/audit/prune?days=30',
+    headers: operator(),
+  });
+  expect(custom.statusCode).toBe(200);
+  expect(
+    Math.abs(
+      Date.parse(custom.json<{ before: string }>().before) -
+        (Date.now() - 30 * 86_400_000),
+    ),
+  ).toBeLessThan(60_000);
 });

@@ -30,6 +30,20 @@ instance with no operator secret has no operator routes at all.
 `POST /agents` can no longer take the name `mcp`; a rotation on a revoked
 identity revives it rather than failing.
 
+**Runbook: `POST /mcp/identity` answers `409`.** A bot registered before this
+step already holds the name (the provisioning insert is `ON CONFLICT DO NOTHING`,
+and a 409 is how it refuses to replace an identity in use). There is no HTTP
+rename route; move the old bot out of the way in SQL, then provision again:
+
+```sql
+UPDATE agents SET name = 'mcp-legacy' WHERE lower(name) = 'mcp' AND kind = 'bot';
+```
+
+Its token keeps working (the token is not derived from the name), and old
+messages keep their `from`/`to` text. Check first with
+`SELECT id, name, kind FROM agents WHERE lower(name) = 'mcp'`. While a bot holds
+the reserved name, `PUT /agents/mcp/private` answers `409` too — rename it first.
+
 A bot's own token is refused on `/mcp` with `401`: the public surface has one
 identity, and a fleet token is not it.
 
@@ -69,7 +83,7 @@ MCP-Protocol-Version: 2025-06-18        (after initialize; checked when present)
 | `wake_thread_read` | `threadId`, `seq` | `POST /threads/:id/read` |
 | `wake_threads` | `limit?`, `cursor?` | `GET /threads` |
 | `wake_inbox` | `unread?`, `limit?`, `after?` | `GET /inbox` |
-| `wake_inbox_read` | `ids` | `POST /inbox/read` |
+| `wake_inbox_read` | `ids` (1–100) | `POST /inbox/read` |
 | `wake_bots` | — | `GET /agents` |
 | `wake_send` | `to`, `body` (`to: "*"` broadcasts) | `POST /messages` |
 | `wake_search` | `status?`, `from?`, `since?`, `until?`, `text?`, `box?`, `limit?`, `cursor?` | `GET /messages/search` |
@@ -78,7 +92,9 @@ Tool results are `{"content":[{"type":"text","text":"<the API's JSON>"}]}`. A
 failed call sets `isError: true` and the text starts with the status, e.g.
 `HTTP 404 {"error":"recipient not found"}`, so a model cannot mistake an error
 for a payload. Bad arguments are a JSON-RPC error (`-32602`) and never reach the
-API.
+API — including a list over the tool's own bound (more than 100 ids for
+`wake_inbox_read`), which the server refuses instead of forwarding to a route
+that answers `400`.
 
 ## Private bots are blocked server-side
 
@@ -97,8 +113,10 @@ keys on the caller's `agents.kind` (`mcp`), not on the route.
 
 `WAKE_MCP_RATE_LIMIT_PER_MINUTE` (default 60, `0` disables it) is a
 sliding-window cap per token, in-process: it resets on restart and is per
-instance. Over the cap answers `429 {"error":"rate_limited"}` with
-`Retry-After: 60`.
+instance. Over the cap answers `429` with `Retry-After: 60` and a JSON-RPC error
+body — `{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"rate_limited"}}`
+— so a client that parses every body as JSON-RPC never meets a bare
+`{"error":...}`.
 
 Every request is one row in `mcp_audit`:
 
@@ -112,10 +130,32 @@ Every request is one row in `mcp_audit`:
 | `status` | HTTP status of the inner API call, or of this request |
 | `duration_ms`, `remote`, `created_at` | timing, client address, time |
 
+`remote` is the address this process sees. Fastify is **not** told to trust a
+proxy, so behind nginx or Cloudflare every row records the proxy's address, not
+the client's — that is the state until the host step turns on `trustProxy` with
+an explicit proxy list (never "trust every hop"). Audit by token and time until
+then; the identity is one token, so per-client attribution does not exist yet
+either.
+
 No bodies and no tokens are stored. A failed audit write is logged and never
-fails the call. Prune with
-`DELETE FROM mcp_audit WHERE created_at < now() - interval '90 days'` on
-whatever schedule the host wants.
+fails the call.
+
+### Retention
+
+`POST /mcp/audit/prune` (operator secret, like the identity routes) deletes
+rows older than the window and answers what it did:
+
+```sh
+curl -sS -X POST -H "x-registration-secret: $REGISTRATION_SECRET" \
+  https://wake.example/mcp/audit/prune            # 90 days, the default
+curl -sS -X POST -H "x-registration-secret: $REGISTRATION_SECRET" \
+  "https://wake.example/mcp/audit/prune?days=30"
+# {"deleted":412,"before":"2026-08-17T02:00:00.000Z"}
+```
+
+The window is 1 to 3650 days; anything else is `400`. A bare `POST` needs no
+payload. Run it from a host timer (daily is plenty for a table this size) and
+watch the exit status, not the count: `deleted: 0` is the normal steady state.
 
 ## Turning it on
 
@@ -133,6 +173,15 @@ The host part is a later step, deliberately not done here: nginx must forward
 `proxy_read_timeout` over 60 s, and the token lives only in the client's config
 on that client's machine. Cloudflare's proxy must keep `POST` and must not cache
 the response.
+
+## Two things, two names
+
+`bin/wake-mcp` is the **local stdio** helper shipped with the CLI: a tiny MCP
+server with two tools, `wake_bot` and `wake_list`, that shells out to `bin/wake`
+on the same machine. `POST /mcp` — the endpoint this document describes — is the
+**HTTP** surface with the ten thread tools, one public token, a rate limit and an
+audit trail. They share a protocol, not an implementation, and neither replaces
+the other today.
 
 ## Not here yet
 

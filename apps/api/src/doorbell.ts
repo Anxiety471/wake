@@ -21,8 +21,10 @@ export const MAX_DOORBELL_TIMEOUT_MS = 9_000;
 export const DOORBELL_ATTEMPTS = 2;
 export const DOORBELL_BACKOFF_MS = 200;
 export const DOORBELL_USER_AGENT = 'wake-api';
-// The CLI's HOURLY_CAP is 30 wakes per bot per hour. The API now fans out at
-// API speed, so it holds the same ceiling per recipient; 0 disables the cap.
+// The CLI's HOURLY_CAP is 30, and its bucket is one per target bot shared by
+// every sender on the machine (all bots run as one uid, bin/wake:373). The API
+// keeps the number but deliberately narrows the scope to a sender and recipient
+// pair: it fans out at API speed and can tell senders apart. 0 disables the cap.
 export const DEFAULT_DOORBELL_MAX_PER_HOUR = 30;
 export const MAX_DOORBELL_MAX_PER_HOUR = 10_000;
 // Rakazo answers with a short JSON body. Reading an unbounded body would let a
@@ -472,6 +474,15 @@ export type DoorbellLogger = {
   warn: (fields: Record<string, unknown>, message: string) => void;
 };
 
+// A deliberate divergence, not parity: the CLI's HOURLY_CAP is one bucket per
+// target bot shared by every sender on the machine (one uid against
+// wake-rate-<uid>.json, bin/wake:373), so two senders there are one budget. Here
+// they are two, because keying on the recipient alone let one sender's 30 wakes
+// refuse another sender's first one. The number is the CLI's; the scope is not.
+export function capKey(from: string, to: string): string {
+  return `${from.toLowerCase()}:${to.toLowerCase()}`;
+}
+
 export type NotifyMessage = {
   messageId: string;
   from: string;
@@ -597,10 +608,15 @@ export async function notifyMessage(
   });
   const deliveries = await Promise.all(
     rung.map(async ({ agent, target }): Promise<WakeDelivery> => {
-      // The API fans out at API speed; one sender must not be able to ring one
-      // bot more often than the CLI's hourly cap allows. Over the cap no
-      // request is made at all, and the outcome is still recorded.
-      if (!config.limit.allow(agent.name.toLowerCase(), now.getTime())) {
+      // The API fans out at API speed, so one sender may ring one bot at most
+      // the CLI's hourly number of times, and must not spend another sender's
+      // budget. The CLI's own bucket is per target bot and shared by every
+      // sender (one uid, wake-rate-<uid>.json); this per-sender scope is
+      // deliberate, not parity. Over the cap no request is made at all, and the
+      // outcome is still recorded.
+      if (
+        !config.limit.allow(capKey(message.from, agent.name), now.getTime())
+      ) {
         log.warn(
           {
             messageId: message.messageId,
