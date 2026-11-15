@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+# desc: install the wake scripts and the ops helpers on this machine or another one over ssh, verify each copy, and drop the agent extensions when asked. Usage: wake-deploy [local|ssh:DEST ...] [--dry-run]
+"""Install a checkout's scripts where wake is run from.
+
+One target is `local` (this machine), any other is `ssh:DEST` (a host you can reach
+with ssh). The scripts are sent as one tar stream, so a remote install is a single
+round trip, and every copy is verified by running `wake --help` on the target.
+
+Nothing here needs a password, and nothing writes to a system directory unless the
+prefix you name is one (then ssh targets need passwordless sudo: WAKE_SSH_SUDO=1).
+"""
+
+import io
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+
+CORE = ("wake", "wake-hook", "wake-run", "wake-mcp", "wake-inbox-io")
+MODULE = "wake_config.py"
+EXTENSIONS = ("wake.ts", "wake-inbox.ts")
+SSH_OPTS = ("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new")
+
+USAGE = """usage: wake-deploy [TARGET ...] [--prefix DIR] [--dry-run]
+
+TARGET is `local` (default) or `ssh:DEST` for a host you reach with ssh. Each target
+gets bin/wake, bin/wake-hook, bin/wake-run, bin/wake-mcp, bin/wake-inbox-io and
+bin/wake_config.py, plus every helper in bin/ops. Core scripts and helpers land at
+mode 755, the module at 644. A copy is verified by running `wake --help` there.
+
+  --prefix DIR   where the scripts go (default $WAKE_PREFIX, else ~/.local/bin)
+  --dry-run      print the install commands and write nothing
+
+Env: WAKE_DEPLOY_TARGETS (comma list, when no target is given), WAKE_PREFIX,
+WAKE_REPO (checkout; default: the one this script is in), WAKE_SSH_SUDO=1 (prefix
+the remote install with `sudo -n`), WAKE_EXTENSION_SRC (a directory holding
+wake.ts and wake-inbox.ts), WAKE_EXTENSION_DIRS (colon list of extension
+directories to copy those two files into).
+
+Registering the extensions in your agent's config.yml is a manual step: this script
+copies the files, it does not edit another tool's configuration.
+
+exit: 0 every target verified, 1 a target failed, 2 bad input
+"""
+
+
+def usage():
+    print(USAGE, end="")
+
+
+def env(name, default=""):
+    return os.environ.get(name) or default
+
+
+def repo_root():
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    for candidate in (env("WAKE_REPO"), here):
+        if candidate and os.path.isfile(os.path.join(candidate, "bin", "wake")):
+            return candidate
+    sys.exit("wake-deploy: no checkout: run it from a checkout or set WAKE_REPO")
+
+
+def payload(root):
+    files = [(os.path.join(root, "bin", name), name, 0o755) for name in CORE]
+    module = os.path.join(root, "bin", MODULE)
+    if not os.path.isfile(module):
+        sys.exit(f"wake-deploy: {module} is missing, so the scripts would not import")
+    files.append((module, MODULE, 0o644))
+    ops = os.path.join(root, "bin", "ops")
+    if os.path.isdir(ops):
+        for name in sorted(os.listdir(ops)):
+            path = os.path.join(ops, name)
+            if name.endswith(".md") or not os.path.isfile(path):
+                continue
+            files.append((path, name, 0o755))
+    return files
+
+
+def tar_stream(files):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for src, name, mode in files:
+            info = tar.gettarinfo(src, arcname=name)
+            info.mode = mode
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            with open(src, "rb") as f:
+                tar.addfile(info, f)
+    return buf.getvalue()
+
+
+def install_local(files, prefix, dry):
+    if dry:
+        for src, name, mode in files:
+            print(f"  install -m {mode:o} {src} {os.path.join(prefix, name)}")
+        return
+    os.makedirs(prefix, exist_ok=True)
+    for src, name, mode in files:
+        dst = os.path.join(prefix, name)
+        # A wake running from the prefix can exec this file while it is being written, so write a
+        # neighbour and rename it into place: rename is atomic, a truncated script is not.
+        tmp = dst + ".new"
+        shutil.copyfile(src, tmp)
+        os.chmod(tmp, mode)
+        os.replace(tmp, dst)
+    print(f"local: {len(files)} files -> {prefix}")
+
+
+def verify_local(prefix):
+    wake = os.path.join(prefix, "wake")
+    r = subprocess.run([sys.executable, wake, "--help"], capture_output=True, text=True)
+    if r.returncode != 0:
+        return f"{wake} --help failed: {(r.stderr or r.stdout).strip()[:200]}"
+    return ""
+
+
+def install_ssh(files, dest, prefix, dry, sudo):
+    pre = "sudo -n " if sudo else ""
+    quoted = shlex.quote(prefix)
+    command = f"{pre}install -d -m 755 {quoted} && {pre}tar -x -f - -C {quoted}"
+    if dry:
+        print(f"  ssh {dest} {command}")
+        return
+    r = subprocess.run(["ssh", *SSH_OPTS, dest, command], input=tar_stream(files), capture_output=True)
+    if r.returncode != 0:
+        sys.exit(f"wake-deploy: {dest}: {(r.stderr or r.stdout).decode(errors='replace').strip()[-400:]}")
+    print(f"{dest}: {len(files)} files -> {prefix}")
+
+
+def verify_ssh(dest, prefix):
+    wake = shlex.quote(os.path.join(prefix, "wake"))
+    r = subprocess.run(
+        ["ssh", *SSH_OPTS, dest, f"{wake} --help >/dev/null && echo ok"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0 or "ok" not in r.stdout:
+        return f"{dest}: {os.path.join(prefix, 'wake')} --help failed: {(r.stderr or r.stdout).strip()[:200]}"
+    return ""
+
+
+def install_extensions(src, dirs, dry):
+    if not dirs:
+        return
+    files = [(os.path.join(src, name), name) for name in EXTENSIONS if os.path.isfile(os.path.join(src, name))]
+    if not files:
+        sys.exit(f"wake-deploy: no {' or '.join(EXTENSIONS)} in {src}")
+    for directory in dirs:
+        directory = os.path.expanduser(directory)
+        if dry:
+            for _, name in files:
+                print(f"  install -m 644 {os.path.join(src, name)} {os.path.join(directory, name)}")
+            continue
+        os.makedirs(directory, exist_ok=True)
+        for source, name in files:
+            dst = os.path.join(directory, name)
+            shutil.copyfile(source, dst)
+            os.chmod(dst, 0o644)
+        print(f"extensions: {len(files)} files -> {directory}")
+
+
+def main(argv):
+    targets, dry, prefix = [], False, env("WAKE_PREFIX", "~/.local/bin")
+    unknown = None
+    args = list(argv)
+    while args:
+        arg = args.pop(0)
+        if arg in ("-h", "--help"):
+            usage()
+            return 0
+        if arg == "--dry-run":
+            dry = True
+        elif arg == "--prefix":
+            if not args:
+                print("wake-deploy: --prefix needs a directory", file=sys.stderr)
+                return 2
+            prefix = args.pop(0)
+        elif arg.startswith("-"):
+            unknown = arg
+            break
+        else:
+            targets.append(arg)
+    if unknown:
+        print(f"wake-deploy: unknown argument: {unknown}", file=sys.stderr)
+        usage()
+        return 2
+    for target in targets:
+        if target != "local" and not target.startswith("ssh:") or target in ("ssh:", "ssh"):
+            print(f"wake-deploy: target must be `local` or `ssh:DEST`, not {target!r}", file=sys.stderr)
+            return 2
+    if not targets:
+        targets = [t.strip() for t in env("WAKE_DEPLOY_TARGETS", "local").split(",") if t.strip()]
+
+    prefix = os.path.expanduser(prefix)
+    root = repo_root()
+    files = payload(root)
+    print(f"source: {root} ({len(files)} files)")
+    failures = []
+    for target in targets:
+        if target == "local":
+            install_local(files, prefix, dry)
+            if not dry:
+                problem = verify_local(prefix)
+                print("verified" if not problem else f"NOT VERIFIED: {problem}")
+                if problem:
+                    failures.append(problem)
+        else:
+            dest = target.split(":", 1)[1]
+            install_ssh(files, dest, prefix, dry, env("WAKE_SSH_SUDO") == "1")
+            if not dry:
+                problem = verify_ssh(dest, prefix)
+                print(f"{dest}: " + ("verified" if not problem else f"NOT VERIFIED: {problem}"))
+                if problem:
+                    failures.append(problem)
+
+    dirs = [d for d in env("WAKE_EXTENSION_DIRS").split(":") if d]
+    install_extensions(env("WAKE_EXTENSION_SRC", os.path.join(root, "docs", "agent-extensions")), dirs, dry)
+    if failures:
+        for problem in failures:
+            print(f"wake-deploy: {problem}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

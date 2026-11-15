@@ -4,7 +4,16 @@
 target-version = "py39"
 line-length = 120
 # the commands in bin/ are Python scripts without a .py suffix
-extend-include = ["bin/wake", "bin/wake-hook", "bin/wake-inbox-io", "bin/wake-mcp", "bin/wake-run"]
+extend-include = [
+    "bin/wake",
+    "bin/wake-hook",
+    "bin/wake-inbox-io",
+    "bin/wake-mcp",
+    "bin/wake-run",
+    "bin/ops/wake-deploy",
+    "bin/ops/wake-host-deploy",
+    "bin/ops/wake-shape-check",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]

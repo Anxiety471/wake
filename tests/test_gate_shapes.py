@@ -13,14 +13,13 @@ shape invariants below still run: the append never changes a mode and every read
 silences stderr, which is what the gate's read routes match on.
 """
 
-import importlib.machinery
-import importlib.util
 import json
 import os
 import re
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -144,10 +143,10 @@ class GateAllowListTests(WakeTestCase):
             self.skipTest(f"no staged gate ({where}): set WAKE_GATE or WAKE_GATE_STAGE to check wake's commands")
 
     def load_gate(self):
-        loader = importlib.machinery.SourceFileLoader("wake_gate", self.gate_path)
-        spec = importlib.util.spec_from_loader("wake_gate", loader)
-        mod = importlib.util.module_from_spec(spec)
-        loader.exec_module(mod)
+        mod = types.ModuleType("wake_gate")
+        mod.__file__ = self.gate_path
+        with open(self.gate_path, encoding="utf-8") as f:
+            exec(compile(f.read(), self.gate_path, "exec"), mod.__dict__)  # noqa: S102 - the staged gate
         if not hasattr(mod, "ROUTES"):
             self.skipTest("staged gate is the old pattern list (no ROUTES/match); re-stage the allow-list gate")
         threads = os.path.join(self.state, "threads")
