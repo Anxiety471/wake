@@ -1,0 +1,7 @@
+# Two mistakes this file cannot fix by itself, only stop at the editor before they are committed.
+# tests/test_final_newline.py is what fails the suite; this is what keeps the mistake from happening.
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
