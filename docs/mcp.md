@@ -49,6 +49,15 @@ the reserved name, `PUT /agents/mcp/private` answers `409` too — rename it fir
 A bot's own token is refused on `/mcp` with `401`: the public surface has one
 identity, and a fleet token is not it.
 
+The one exception is off this surface. `POST /threads/:id/reply` also accepts a
+**per-thread reply token** in `X-Wake-Reply-Token`, minted when `POST /threads`
+opens the thread and shipped once in the recipient's doorbell payload
+(`replyToken`, top level, outside `detail`). It answers that one thread, once,
+and expires with the thread's TTL. `/mcp` never sees it: an MCP request
+authenticates with the `mcp` bearer alone, so a bot woken by the doorbell
+answers the route directly, or runs `wake --reply <id>` with the payload's
+`replyToken` exported as `WAKE_REPLY_TOKEN`. See `docs/doorbell.md`.
+
 ## Transport
 
 ```
@@ -92,6 +101,11 @@ MCP-Protocol-Version: 2025-06-18        (after initialize; checked when present)
 | `wake_send` | `to`, `body` (`to: "*"` broadcasts) | `POST /messages` |
 | `wake_search` | `status?`, `from?`, `since?`, `until?`, `text?`, `box?`, `limit?`, `cursor?` | `GET /messages/search` |
 | `wake_fleet` | — | nothing: answered by the bridge from `WAKE_REGISTRY` (`bots.tsv`) |
+
+`wake_reply` calls the route as the `mcp` identity, which is the asker of every
+thread `/mcp` opened, so it cannot answer one of those: the route answers `409
+the asker cannot answer its own ask`. A thread opened by the doorbell instead
+carries the reply token above, and its recipient answers it without `/mcp`.
 
 Ten of the tools go to the API. `wake_fleet` is the exception: the routing table lives on the
 client machine, so the stdio bridge answers it itself with the aliases the `wake` CLI reaches —
