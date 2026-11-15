@@ -174,7 +174,7 @@ test('initialize names the protocol, tools and server', async () => {
   expect(body.result).toMatchObject({
     protocolVersion: '2025-06-18',
     capabilities: { tools: { listChanged: false } },
-    serverInfo: { name: 'wake', version: '0.1.0' },
+    serverInfo: { name: 'wake', version: '0.2.0' },
   });
   const initialized = await rpc(mcp.token, {
     jsonrpc: '2.0',
