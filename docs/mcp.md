@@ -211,13 +211,19 @@ notification's `202` produces no output (a notification is never answered, even
 when it fails); a stdin batch is refused locally with `-32600`; an unreachable
 API, a reply cut short or a body that is not JSON-RPC becomes `-32603` on the
 asking id, so the client sees why instead of waiting — and one bad answer never
-ends the session. A `3xx` is answered, not followed: urllib would re-send the
+ends the session. "Not JSON-RPC" includes the API's own error shape: a stale
+token answers `401 {"error":"unauthorized"}` and a disabled endpoint `404
+{"error":"not found"}`, which have no `jsonrpc` and a string `error`, so they
+become `-32603` carrying the status and the body rather than being relayed as a
+reply a client would drop. An empty `200`/`202` to a request is `-32603` too,
+never silence. A `3xx` is answered, not followed: urllib would re-send the
 bearer token to whatever host `Location` names, so the bridge refuses redirects
 the way the doorbell does (`redirect: 'manual'`) and reports the status as a
-`-32603`. A `429` is decided before the API parses the body, so its `id` is
-`null`; the bridge answers on the id that asked, which is the one a client
-matches. A server-initiated message (`notifications/progress` and friends) is
-forwarded verbatim and belongs to no request.
+`-32603` — even when the redirect's body is shaped like a result. A `429` is
+decided before the API parses the body, so its `id` is `null`; the bridge
+answers on the id that asked, which is the one a client matches. A
+server-initiated message (`notifications/progress` and friends) is forwarded
+verbatim and belongs to no request.
 
 `WAKE_MCP_API` should be `https://` for any non-loopback host: the token is a
 bearer credential and would travel in clear over plain `http`, so the bridge warns
