@@ -1,0 +1,23 @@
+[Unit]
+Description=wake API (agents, messages, threads, doorbell, MCP)
+Documentation=https://github.com/Anxiety471/wake
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+
+[Service]
+Type=simple
+User=wake
+Group=wake
+WorkingDirectory=/opt/wake
+EnvironmentFile=/etc/wake/api.env
+ExecStart=/opt/wake/node /opt/wake/index.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
