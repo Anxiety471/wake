@@ -17,7 +17,12 @@ jobs:
       matrix:
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
+      # Full history and tags: tests/test_publish_checklist.py compares the release line in
+      # docs/PUBLISH-CHECKLIST.md with what the tag resolves to, and a one-commit clone has no
+      # tag to resolve. The repository is small; the other jobs keep the shallow default.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
@@ -64,6 +69,21 @@ jobs:
         run: bun run test
       - name: Build
         run: bun run build
+      # #63: the threads e2e has never run in CI, so a PR could change the boot rule and still
+      # show every check green. It gets a database of its own: the script registers agents and
+      # expects its own thread list, so it must not share wake_test with the suite above. The
+      # database is created empty on purpose - the API applies its migrations on first use.
+      - name: End-to-end threads over HTTP
+        env:
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/wake_e2e_test
+        run: |
+          bun -e 'import { Client } from "pg";
+          const client = new Client({ connectionString: "postgres://postgres:postgres@127.0.0.1:5432/postgres" });
+          await client.connect();
+          await client.query("DROP DATABASE IF EXISTS wake_e2e_test");
+          await client.query("CREATE DATABASE wake_e2e_test");
+          await client.end();'
+          bun scripts/e2e-threads.ts
 
   lint:
     runs-on: ubuntu-latest

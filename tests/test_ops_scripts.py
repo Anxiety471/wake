@@ -12,8 +12,10 @@ python3 -m unittest discover -s tests
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
@@ -61,6 +63,37 @@ def run(name, *args, env=None):
     base = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tempfile.mkdtemp(prefix="ops-home-")}
     base.update(env or {})
     return subprocess.run([os.path.join(OPS, name), *args], capture_output=True, text=True, env=base, timeout=60)
+
+
+def e2e_path(openssl):
+    """A PATH holding what wake-api-e2e checks for, with openssl absent, silent, or real.
+
+    The real tools are symlinked rather than faked, because the script under test uses some of
+    them (mktemp, rm) before it reaches its own checks; bun, jq and curl only have to exist.
+    """
+    home = tempfile.mkdtemp(prefix="ops-path-")
+    bindir = os.path.join(home, "bin")
+    os.makedirs(bindir)
+    for tool in ("dirname", "mktemp", "rm"):
+        real = shutil.which(tool)
+        assert real is not None, f"{tool} is missing from this machine"
+        os.symlink(real, os.path.join(bindir, tool))
+    os.symlink(sys.executable, os.path.join(bindir, "python3"))
+    # bun, jq and curl only have to exist; wake-pg is checked before the secret is minted, so
+    # the silent-openssl case needs it on the PATH too, and it is never run here.
+    for tool in ("bun", "jq", "curl", "wake-pg"):
+        path = os.path.join(bindir, tool)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\nexit 0\n")
+        os.chmod(path, 0o755)
+    if openssl == "silent":
+        path = os.path.join(bindir, "openssl")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\nexit 0\n")
+        os.chmod(path, 0o755)
+    elif openssl == "real" and shutil.which("openssl") is not None:
+        os.symlink(shutil.which("openssl"), os.path.join(bindir, "openssl"))
+    return bindir
 
 
 def fake_wake(home):
@@ -146,11 +179,32 @@ class OpsFilesTestCase(unittest.TestCase):
 
     def test_the_e2e_script_refuses_a_short_secret_before_starting_anything(self):
         # The API exits 1 on a short secret, and the health wait that followed spent 20
-        # seconds before it said so. The length is checked before Postgres is started.
-        r = run("wake-api-e2e", env={"WAKE_E2E_SECRET": "a" * 31})
+        # seconds before it said so. The length is checked before Postgres is started, and
+        # before the dependency check: the PATH is the one e2e_path builds, not the developer's,
+        # so this passes on a box with bun installed and on a runner with none, which is where
+        # the ordering was found to be wrong.
+        r = run("wake-api-e2e", env={"WAKE_E2E_SECRET": "a" * 31, "PATH": e2e_path("real")})
         self.assertEqual(r.returncode, 1)
         self.assertIn("at least 32", r.stderr)
         self.assertNotIn("ALL PASS", r.stdout)
+
+    def test_the_e2e_script_names_a_missing_openssl_instead_of_blaming_the_secret(self):
+        # The secret was minted above the dependency check, so a host without openssl died with
+        # a bare "openssl: command not found" and exit 127, and one that printed nothing carried
+        # on to the length check as "WAKE_E2E_SECRET is 0 characters" - blaming a variable the
+        # caller never set. Both are the missing or silent tool's fault, and the run must say so.
+        cases = (
+            ("absent", "openssl not found on PATH", "WAKE_E2E_SECRET is"),
+            ("silent", "openssl rand -hex 24 printed 0 characters", None),
+        )
+        for openssl, expected, absent in cases:
+            with self.subTest(openssl=openssl):
+                r = run("wake-api-e2e", env={"PATH": e2e_path(openssl)})
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn(expected, r.stderr)
+                if absent is not None:
+                    self.assertNotIn(absent, r.stderr)
+                self.assertNotIn("ALL PASS", r.stdout)
 
     def test_the_registry_default_does_not_follow_the_key_dir(self):
         # bin/wake_config.py derives the registry from WAKE_CONFIG_DIR. A helper that put it under
