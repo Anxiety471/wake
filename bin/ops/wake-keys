@@ -14,6 +14,38 @@ REG=${WAKE_REGISTRY:-$CFG/bots.tsv}
 # Where the host keeps <bot-id>.key: the shared state dir unless told otherwise.
 HOST_KEY_DIR=${WAKE_HOST_KEY_DIR:-${WAKE_STATE_DIR:-/var/lib/wake}}
 
+usage() {
+    cat <<'EOF'
+usage: wake-keys [--force]
+
+  Copies the webhook keys that were minted on the host into this machine's key dir, one
+  <bot-id>.key at mode 600, and prints one line per bot: ok, skip, bad, none or err.
+  It never prints a key value.
+
+  --force      re-copy a key that is already saved (skip is the default)
+  -h, --help   this text
+
+  A key it could not fetch prints err with the host's first line, never none: only a missing
+  file means the key really is absent, so a dead host cannot look like a bot with no key.
+
+  environment   WAKE_REGISTRY        the bot registry ($WAKE_CONFIG_DIR/bots.tsv)
+                WAKE_CONFIG_DIR      default ~/.config/wake
+                WAKE_KEY_DIR         where keys are saved (defaults to WAKE_CONFIG_DIR)
+                WAKE_HOST_KEY_DIR    where the host keeps <bot-id>.key ($WAKE_STATE_DIR)
+                WAKE_HOSTOPS         the command that reaches the host, from a guest
+
+  exit 0 when every bot was ok, skip or none; 1 when a saved key was bad, a fetch failed, or
+  there is no registry
+EOF
+}
+
+case ${1:-} in
+    -h | --help)
+        usage
+        exit 0
+        ;;
+esac
+
 force=0
 [ "${1:-}" = "--force" ] && force=1
 
