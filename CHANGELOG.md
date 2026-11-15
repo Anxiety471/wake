@@ -61,6 +61,16 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   The scan reads `git log -p --all` on a `fetch-depth: 0` checkout, so while that fixture lived on
   any branch every pull request's secret-scan failed, not just the branch that added it
   ([#84](https://github.com/Anxiety471/wake/issues/84)).
+- **The publish-checklist guard could not be green on a release commit.** It required every
+  claimed tag to exist in the clone, so the one commit that prepares a release - `VERSION`
+  bumped, the new tag named, the tag itself cut after the merge - failed by construction:
+  `v0.3.0 is named but is not a tag in this clone`. A claim for exactly `v<VERSION>` may now name
+  a tag this clone does not have yet, and its id is checked as soon as the tag exists, which is
+  when it is corrected to the merge commit. Every other claim keeps its teeth: an older release
+  line whose tag is missing, or on another commit, still fails, so the stale `2375c80` line that
+  started this guard is still rejected. `ReleaseSimulationTest` builds a real repository, tags
+  `v0.2.0`, prepares `v0.3.0` and cuts the tag, so the release path is proved against git instead
+  of a stub ([#73](https://github.com/Anxiety471/wake/issues/73)).
 
 - **A NUL in `WAKE_REGISTRY` still emptied `tools/list`.** `fleet()` caught only
   `OSError`, but `open()` raises `ValueError` for a path with an embedded NUL, and a
