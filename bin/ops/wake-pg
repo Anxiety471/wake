@@ -1,0 +1,93 @@
+#!/bin/bash
+# desc: throwaway local Postgres for the wake API tests: start|stop|status|reset|createdb NAME|dropdb NAME|psql ... ; reads WAKE_PG_BASE, WAKE_PG_DATA, WAKE_PG_PORT
+set -euo pipefail
+
+BASE=${WAKE_PG_BASE:-}
+DATA=${WAKE_PG_DATA:-${TMPDIR:-/tmp}/wake-pg/data}
+SOCK=${WAKE_PG_SOCK:-${TMPDIR:-/tmp}/wake-pg/sock}
+PORT=${WAKE_PG_PORT:-5433}
+LOGD=${WAKE_PG_LOG_DIR:-${TMPDIR:-/tmp}/wake-pg}
+
+# A Postgres tool: $WAKE_PG_BASE/bin/<tool> when a prefix is set, otherwise the one on PATH.
+tool() {
+    if [ -n "$BASE" ] && [ -x "$BASE/bin/$1" ]; then
+        printf '%s/bin/%s' "$BASE" "$1"
+        return 0
+    fi
+    command -v "$1" 2>/dev/null || {
+        echo "wake-pg: $1 not found on PATH; install Postgres or set WAKE_PG_BASE to a Postgres prefix" >&2
+        exit 1
+    }
+}
+
+ready() { "$(tool pg_isready)" -h 127.0.0.1 -p "$PORT" >/dev/null 2>&1; }
+
+# psql_ runs the client without replacing this shell, so callers can read its output.
+psql_() { "$(tool psql)" -h 127.0.0.1 -p "$PORT" -U postgres "$@"; }
+
+# A database name goes into a SQL string, so it is checked before it is used.
+name() {
+    case ${1:-} in
+        '' | *[!A-Za-z0-9_]*)
+            echo "wake-pg: bad database name; use letters, digits and underscore only" >&2
+            exit 2
+            ;;
+    esac
+    printf '%s' "$1"
+}
+
+case ${1:-status} in
+    start)
+        mkdir -p "$SOCK" "$LOGD"
+        if ready; then
+            echo "already up on 127.0.0.1:$PORT"
+            exit 0
+        fi
+        if [ ! -d "$DATA" ]; then
+            mkdir -p "$(dirname "$DATA")"
+            "$(tool initdb)" -D "$DATA" -U postgres --auth=trust >"$LOGD/initdb.log" 2>&1
+        fi
+        "$(tool pg_ctl)" -D "$DATA" -o "-p $PORT -k $SOCK -c listen_addresses=127.0.0.1" -l "$LOGD/postgres.log" start >/dev/null
+        for _ in $(seq 1 50); do
+            ready && break
+            sleep 0.2
+        done
+        ready || {
+            echo "wake-pg: did not come up; see $LOGD/postgres.log" >&2
+            exit 1
+        }
+        "$(tool pg_isready)" -h 127.0.0.1 -p "$PORT"
+        ;;
+    stop)
+        "$(tool pg_ctl)" -D "$DATA" stop -m fast >/dev/null
+        echo stopped
+        ;;
+    status)
+        "$(tool pg_isready)" -h 127.0.0.1 -p "$PORT"
+        ;;
+    reset)
+        "$(tool pg_ctl)" -D "$DATA" stop -m fast >/dev/null 2>&1 || true
+        rm -rf "$DATA"
+        echo "removed $DATA"
+        ;;
+    createdb)
+        db=$(name "${2:-}")
+        if [ "$(psql_ -tAc "SELECT 1 FROM pg_database WHERE datname = '$db'")" != "1" ]; then
+            "$(tool createdb)" -h 127.0.0.1 -p "$PORT" -U postgres "$db"
+        fi
+        echo "db $db ready"
+        ;;
+    dropdb)
+        db=$(name "${2:-}")
+        "$(tool dropdb)" -h 127.0.0.1 -p "$PORT" -U postgres --if-exists "$db"
+        echo "db $db dropped"
+        ;;
+    psql)
+        shift
+        exec "$(tool psql)" -h 127.0.0.1 -p "$PORT" -U postgres "$@"
+        ;;
+    *)
+        echo "usage: wake-pg {start|stop|status|reset|createdb NAME|dropdb NAME|psql ...}" >&2
+        exit 2
+        ;;
+esac
