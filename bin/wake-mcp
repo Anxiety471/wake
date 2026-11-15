@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
-# desc: tiny MCP stdio server exposing wake as tools (wake_bot, wake_list) so an agent can wake a bot mid-task. Not registered anywhere by default.
+# desc: MCP stdio server for wake. With WAKE_MCP_TOKEN set it is a bridge: every message on stdin goes to POST /mcp and the reply comes back on stdout, so a stdio-only client gets the server's ten thread tools with no second tool table. Without a token it is the legacy two-tool CLI helper (wake_bot, wake_list).
 import json
 import os
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import wake_config  # noqa: E402
 
-TOOLS = [
+CFG = wake_config.load()
+TOKEN = (CFG.get("WAKE_MCP_TOKEN") or "").strip()
+API = ((CFG.get("WAKE_MCP_API") or "").strip() or "http://127.0.0.1:3001").rstrip("/")
+TIMEOUT = 60.0
+
+LEGACY_TOOLS = [
     {
         "name": "wake_bot",
         "description": "Wake one of the registered bots (see wake_list) with a short message. Use level error for failures, info for a request, ok for a quiet note. Private bots are refused.",
@@ -31,59 +38,189 @@ TOOLS = [
 ]
 
 
-def call(name, a):
-    if name == "wake_list":
-        cmd = ["wake", "--list"]
-    elif name == "wake_bot":
-        cmd = [
-            "wake",
-            str(a["bot"]),
-            str(a["message"])[:500],
-            "--source",
-            "harness:mcp",
-            "--level",
-            a.get("level", "info"),
-        ]
-        if a.get("ref"):
-            cmd += ["--ref", str(a["ref"])]
-    else:
-        return "unknown tool", True
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    return (r.stdout + r.stderr).strip() or "(no output)", r.returncode != 0
-
-
-def reply(i, result=None, error=None):
-    m = {"jsonrpc": "2.0", "id": i}
-    m.update({"error": error} if error else {"result": result})
-    sys.stdout.write(json.dumps(m) + "\n")
+def emit(message):
+    sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")
     sys.stdout.flush()
 
 
-for line in sys.stdin:
+def note(text):
+    sys.stderr.write(text.rstrip() + "\n")
+    sys.stderr.flush()
+
+
+def error_body(rid, message):
+    return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32603, "message": message}}
+
+
+class Unreachable(Exception):
+    pass
+
+
+def post(message, version):
+    headers = {
+        "authorization": "Bearer " + TOKEN,
+        "content-type": "application/json",
+        "accept": "application/json, text/event-stream",
+    }
+    if version:
+        headers["mcp-protocol-version"] = version
+    request = urllib.request.Request(
+        API + "/mcp",
+        data=json.dumps(message).encode(),
+        headers=headers,
+        method="POST",
+    )
     try:
-        m = json.loads(line)
-    except Exception:
-        continue
-    i, method = m.get("id"), m.get("method")
-    if i is None:
-        continue
-    if method == "initialize":
-        reply(
-            i,
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            return response.status, response.headers.get("content-type", ""), response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, error.headers.get("content-type", ""), error.read()
+    except (urllib.error.URLError, OSError) as error:
+        raise Unreachable(str(getattr(error, "reason", error))) from error
+
+
+def payloads(content_type, raw):
+    """The reply as JSON-RPC documents: a JSON body, or the data of one SSE event."""
+    text = raw.decode("utf-8", "replace")
+    if "text/event-stream" not in content_type:
+        return [text] if text.strip() else []
+    out = []
+    data = []
+    for line in text.splitlines():
+        if line.startswith("data:"):
+            data.append(line[5:].lstrip())
+        elif not line.strip() and data:
+            out.append("\n".join(data))
+            data = []
+    if data:
+        out.append("\n".join(data))
+    return out
+
+
+def bridge_line(line, state):
+    try:
+        message = json.loads(line)
+    except ValueError:
+        emit({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}})
+        return
+    if isinstance(message, list):
+        emit(
             {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "wake", "version": wake_config.VERSION},
-            },
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32600, "message": "batching is not supported"},
+            }
         )
-    elif method == "tools/list":
-        reply(i, {"tools": TOOLS})
-    elif method == "tools/call":
-        p = m.get("params", {})
+        return
+    rid = message.get("id")
+    try:
+        status, content_type, raw = post(message, state.get("version"))
+    except Unreachable as failure:
+        if rid is None:
+            note("wake-mcp: wake API unreachable at " + API + ": " + str(failure))
+        else:
+            emit(error_body(rid, "wake API unreachable at " + API + ": " + str(failure)))
+        return
+    bodies = payloads(content_type, raw)
+    if not bodies:
+        if status not in (200, 202) and rid is not None:
+            emit(error_body(rid, "HTTP " + str(status)))
+        return
+    for body in bodies:
+        if rid is None:
+            # A notification is never answered, whatever the server sends back.
+            note("wake-mcp: dropped a reply to a notification: " + body.strip()[:300])
+            continue
         try:
-            text, err = call(p.get("name"), p.get("arguments") or {})
-        except Exception as e:
-            text, err = str(e), True
-        reply(i, {"content": [{"type": "text", "text": text}], "isError": err})
+            reply = json.loads(body)
+        except ValueError:
+            reply = None
+        if isinstance(reply, dict) and ("result" in reply or "error" in reply):
+            result = reply.get("result")
+            if isinstance(result, dict) and isinstance(result.get("protocolVersion"), str):
+                state["version"] = result["protocolVersion"]
+            emit(reply)
+        else:
+            emit(error_body(rid, "HTTP " + str(status) + ": " + body.strip()[:300]))
+
+
+def run_bridge():
+    state = {}
+    for line in sys.stdin:
+        line = line.strip()
+        if line:
+            bridge_line(line, state)
+
+
+def legacy_call(name, arguments):
+    if name == "wake_list":
+        command = ["wake", "--list"]
+    elif name == "wake_bot":
+        command = [
+            "wake",
+            str(arguments["bot"]),
+            str(arguments["message"])[:500],
+            "--source",
+            "harness:mcp",
+            "--level",
+            arguments.get("level", "info"),
+        ]
+        if arguments.get("ref"):
+            command += ["--ref", str(arguments["ref"])]
     else:
-        reply(i, error={"code": -32601, "message": "method not found"})
+        return "unknown tool", True
+    result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    return (result.stdout + result.stderr).strip() or "(no output)", result.returncode != 0
+
+
+def run_legacy():
+    for line in sys.stdin:
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        rid, method = message.get("id"), message.get("method")
+        if rid is None:
+            continue
+        if method == "initialize":
+            emit(
+                {
+                    "jsonrpc": "2.0",
+                    "id": rid,
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "wake", "version": wake_config.VERSION},
+                    },
+                }
+            )
+        elif method == "tools/list":
+            emit({"jsonrpc": "2.0", "id": rid, "result": {"tools": LEGACY_TOOLS}})
+        elif method == "tools/call":
+            params = message.get("params", {})
+            try:
+                text, failed = legacy_call(params.get("name"), params.get("arguments") or {})
+            except Exception as error:  # the tool call is the boundary, not a crash
+                text, failed = str(error), True
+            emit(
+                {
+                    "jsonrpc": "2.0",
+                    "id": rid,
+                    "result": {"content": [{"type": "text", "text": text}], "isError": failed},
+                }
+            )
+        else:
+            emit(
+                {
+                    "jsonrpc": "2.0",
+                    "id": rid,
+                    "error": {"code": -32601, "message": "method not found"},
+                }
+            )
+
+
+if __name__ == "__main__":
+    if TOKEN:
+        run_bridge()
+    else:
+        run_legacy()
