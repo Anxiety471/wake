@@ -46,8 +46,10 @@ python3 deploy/ops/mcp-verify.py --url https://…/mcp --token-file …   # init
 
 ## Reading a failure
 
-- **401** on every call, API healthy: the `REGISTRATION_SECRET` in `api.env` is quoted
-  and the script read the quotes literally. Write it unquoted.
+- **401** on every call, API healthy: the value is not the secret the running service
+  loaded - a stale edit the unit has not reloaded (`systemctl restart wake-api`), a
+  different file from the unit's `EnvironmentFile`, or a secret rotated in one place only.
+  Quoting is not the cause: systemd and the operator scripts both drop one matched pair.
 - **404** on `/mcp` from outside: either the endpoint is unpublished (correct when the
   service is stopped or the location was removed) or the location does not match the
   path, which is exactly what an unpublished endpoint looks like. Check `ss -ltnp`

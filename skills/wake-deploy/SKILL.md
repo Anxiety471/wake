@@ -25,8 +25,8 @@ wake-host-deploy build install env unit status
 - service account `wake` (nologin), no file it serves is writable by it;
 - `/opt/wake` holds `index.mjs`, `node` and `migrations/` at `root:wake`;
 - `/etc/wake/api.env` is `root:wake 640` and holds the `DATABASE_URL` and the
-  `REGISTRATION_SECRET` **unquoted** — a quoted value works through systemd and breaks
-  every script that reads the file;
+  `REGISTRATION_SECRET`; systemd drops one pair of quotes and so do the operator
+  scripts, so either form works — unquoted is one less thing to explain;
 - the unit restarts on failure and carries `ProtectSystem=strict`; the only filesystem
   calls under `apps/` and `packages/` are reads, so it needs no `ReadWritePaths`.
 
