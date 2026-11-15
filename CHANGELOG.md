@@ -20,6 +20,14 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   (`WAKE_MCP_RATE_LIMIT_PER_MINUTE`, default 60, in-process) and audited in `mcp_audit` (method,
   tool, ok, error, status, duration, remote; no bodies or tokens). Contract:
   [docs/mcp.md](docs/mcp.md).
+- **The stdio bridge (step 4).** `bin/wake-mcp` with `WAKE_MCP_TOKEN` set now bridges stdin/stdout
+  to `POST /mcp`: each line is forwarded with that token (plus `MCP-Protocol-Version` once
+  `initialize` has answered), and JSON or single-event SSE replies come back as one line each.
+  Notifications are forwarded and never answered; a batch, an unreachable API or a body that is not
+  JSON-RPC becomes a JSON-RPC error on the asking id. The tool table, schemas, rate limit, audit and
+  private-bot wall stay the server's — the bridge implements none of them. `WAKE_MCP_API`
+  (default `http://127.0.0.1:3001`) names the server; without a token the binary stays the legacy
+  two-tool helper (`wake_bot`, `wake_list`). Contract: [docs/mcp.md](docs/mcp.md).
 - **Private bots.** `agents.is_private` plus `PUT /agents/:name/private`: a private bot is hidden
   from and unreachable by the public MCP identity (404 for `ask`/`send`, absent from `wake_bots`,
   skipped by a broadcast) while bot-to-bot traffic is unchanged. `GET /agents` reports the flag.

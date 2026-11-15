@@ -177,22 +177,53 @@ The host part is a later step, deliberately not done here: nginx must forward
 on that client's machine. Cloudflare's proxy must keep `POST` and must not cache
 the response.
 
-## Two things, two names
+## Local clients (stdio)
 
-`bin/wake-mcp` is the **local stdio** helper shipped with the CLI: a tiny MCP
-server with two tools, `wake_bot` and `wake_list`, that shells out to `bin/wake`
-on the same machine. `POST /mcp` — the endpoint this document describes — is the
-**HTTP** surface with the ten thread tools, one public token, a rate limit and an
-audit trail. They share a protocol, not an implementation, and neither replaces
-the other today.
+A client that speaks only stdio runs `bin/wake-mcp`. With `WAKE_MCP_TOKEN` set it
+is a **bridge**: each line of stdin is one JSON-RPC message, posted verbatim to
+`POST {WAKE_MCP_API}/mcp` with that token, and the reply comes back on stdout as
+one line — whether the server answered JSON or a single SSE event. Nothing is
+implemented twice: the tool table, schemas, rate limit, audit and private-bot
+wall are the server's own, so the stdio client gets exactly what an HTTP client
+gets.
+
+The token and the base URL live in `~/.config/wake/config.env` (mode 600), the
+same file the CLI reads, so a client config holds no secret:
+
+```json
+{"mcpServers":{"wake":{"command":"/home/you/.local/bin/wake-mcp"}}}
+```
+
+```sh
+# ~/.config/wake/config.env
+WAKE_MCP_API=http://127.0.0.1:3001
+WAKE_MCP_TOKEN=<the mcp identity's token>
+```
+
+The server it bridges to must have `WAKE_MCP_ENABLED=true`; it is off by default.
+
+What the bridge does on the wire: `initialize` is forwarded and its
+`protocolVersion` is reused as `MCP-Protocol-Version` on every later request; a
+notification's `202` produces no output (a notification is never answered, even
+when it fails); a stdin batch is refused locally with `-32600`; an unreachable
+API or a body that is not JSON-RPC becomes `-32603` on the asking id, so the
+client sees why instead of waiting.
+
+Its limits are the surface's: one identity, so private bots are unreachable and
+attribution is by token and time; no session to resume (the server is stateless);
+one message in flight at a time, so replies keep stdin's order.
+
+Without `WAKE_MCP_TOKEN` the same binary stays the **legacy** two-tool helper —
+`wake_bot` and `wake_list`, shelling out to `bin/wake` on the same machine. That
+mode is kept for existing local configs and is not the recommended path.
 
 ## Not here yet
 
-- **stdio transport**: local clients use the same HTTP endpoint on
-  `127.0.0.1:3001`; a stdio bridge is a later step, when the Python CLI becomes a
-  client of this API.
 - **resources, prompts, sampling**: tools only, by design.
 - **server-initiated messages**: a tool call is request/response; wake has no
   push channel into an MCP client yet.
 - **per-client tokens**: one public token, rotated by the operator, is the
   contract for now.
+- **the CLI as an API client**: `bin/wake` still uses the shared-folder store and
+  the webhook doorbell. Moving it onto this API is its own step, and the one that
+  retires the shared-folder store.
