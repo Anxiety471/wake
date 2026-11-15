@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Only the latest release gets fixes. Currently that is 0.1.x.
+Only the latest release gets fixes. Currently that is 0.2.x.
 
 ## Reporting a vulnerability
 
