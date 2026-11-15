@@ -23,7 +23,8 @@ usage: wake-api-e2e [--help]
                 WAKE_E2E_SECRET             WAKE_PG (wake-pg)
 
   needs   bun, jq, curl, openssl, python3 and wake-pg on PATH
-  exit    0 when every step passed; 1 at the first step that did not
+  exit    0 when every step passed; 1 at the first step that did not; 2 for an argument,
+          because it takes none
 EOF
 }
 
