@@ -10,6 +10,7 @@ import {
   type InboxMessage,
   type InboxPage,
   type MessageCursor,
+  type MessageDeliveries,
   type ReadReceipt,
   type RegisteredAgent,
   type SentMessage,
@@ -17,6 +18,7 @@ import {
 import { caller } from './auth.js';
 import {
   notifyMessage,
+  wakeDeliveryReasonSchema,
   wakeReportSchema,
   type DoorbellConfig,
 } from './doorbell.js';
@@ -750,6 +752,101 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
           }
           throw error;
         }
+      },
+    );
+
+    agentRoutes.get<{ Params: { id: string } }>(
+      '/messages/:id/deliveries',
+      {
+        schema: {
+          params: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['id'],
+            properties: {
+              id: { type: 'string', pattern: UUID_PATTERN },
+            },
+          },
+          response: {
+            200: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['messageId', 'deliveries'],
+              properties: {
+                messageId: { type: 'string' },
+                deliveries: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: [
+                      'agent',
+                      'delivered',
+                      'reason',
+                      'attempts',
+                      'status',
+                      'at',
+                    ],
+                    properties: {
+                      agent: { type: 'string' },
+                      delivered: { type: 'boolean' },
+                      reason: wakeDeliveryReasonSchema,
+                      attempts: { type: 'integer' },
+                      status: { type: ['integer', 'null'] },
+                      at: { type: 'string' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      async (request, reply) => {
+        const agent = caller(request);
+        // Only the sender may ask what happened to its own message. A message
+        // that is not the caller's answers exactly like one that does not
+        // exist, so the route cannot be used to probe message ids.
+        const owned = await pool.query(
+          'SELECT 1 FROM messages WHERE id = $1::uuid AND from_agent = $2::uuid',
+          [request.params.id, agent.id],
+        );
+        if (owned.rowCount === 0) {
+          return reply.code(404).send({ error: 'not found' });
+        }
+        const result = await pool.query<{
+          name: string;
+          delivered: boolean;
+          reason: string | null;
+          attempts: number;
+          status: number | null;
+          updated_at: Date | string;
+        }>(
+          `SELECT a.name,
+                  d.delivered,
+                  d.reason,
+                  d.attempts,
+                  d.status,
+                  d.updated_at
+           FROM wake_deliveries d
+           JOIN agents a ON a.id = d.agent_id
+           WHERE d.message_id = $1::uuid
+           ORDER BY a.name ASC`,
+          [request.params.id],
+        );
+        const payload: MessageDeliveries = {
+          messageId: request.params.id,
+          deliveries: result.rows.map((row) => ({
+            agent: row.name,
+            delivered: row.delivered,
+            reason:
+              row.reason as MessageDeliveries['deliveries'][number]['reason'],
+            attempts: row.attempts,
+            status: row.status,
+            at: isoTime(row.updated_at) ?? '',
+          })),
+        };
+        return payload;
       },
     );
 

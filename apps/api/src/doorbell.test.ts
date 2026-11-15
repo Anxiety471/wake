@@ -496,6 +496,29 @@ describe('notifyMessage', () => {
     };
   }
 
+  function recordingPool(
+    recipients: Array<{ id: string; name: string }>,
+    options?: { failInsert?: boolean },
+  ): { pool: Pick<Pool, 'query'>; writes: Array<{ values: unknown[] }> } {
+    const writes: Array<{ values: unknown[] }> = [];
+    const pool = {
+      query: (text: string, values?: unknown[]) => {
+        if (text.includes('FROM message_receipts')) {
+          return Promise.resolve({ rows: recipients });
+        }
+        if (text.includes('INSERT INTO wake_deliveries')) {
+          if (options?.failInsert === true) {
+            return Promise.reject(new Error('insert failed'));
+          }
+          writes.push({ values: values ?? [] });
+          return Promise.resolve({ rows: [] });
+        }
+        return Promise.reject(new Error(`unexpected query: ${text}`));
+      },
+    } as unknown as Pick<Pool, 'query'>;
+    return { pool, writes };
+  }
+
   const message = {
     messageId: '11111111-1111-1111-1111-111111111111',
     from: 'alice',
@@ -531,6 +554,8 @@ describe('notifyMessage', () => {
     expect(await notifyMessage(pool, config, message, log)).toEqual({
       enabled: true,
       deliveries: [],
+      // Not "nobody had a target": the recipients could not be read at all.
+      error: 'recipients_unreadable',
     });
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({
@@ -540,7 +565,7 @@ describe('notifyMessage', () => {
     });
   });
 
-  test('rings only recipients that have a target', async () => {
+  test('rings only recipients that have a target and records the outcome', async () => {
     const stub = startStub(() => ({
       status: 200,
       body: JSON.stringify({ ok: true, seq: 1 }),
@@ -556,10 +581,10 @@ describe('notifyMessage', () => {
       if (config === null) {
         throw new Error('expected a doorbell config');
       }
-      const pool = {
-        query: () =>
-          Promise.resolve({ rows: [{ name: 'bob' }, { name: 'carol' }] }),
-      } as unknown as Pick<Pool, 'query'>;
+      const { pool, writes } = recordingPool([
+        { id: '22222222-2222-2222-2222-222222222222', name: 'bob' },
+        { id: '33333333-3333-3333-3333-333333333333', name: 'carol' },
+      ]);
       const report = await notifyMessage(pool, config, message, log);
       expect(report).toEqual({
         enabled: true,
@@ -569,6 +594,16 @@ describe('notifyMessage', () => {
       });
       expect(stub.requests).toHaveLength(1);
       expect(stub.requests[0]?.path).toBe('/api/v1/bots/cmwbot123/webhook');
+      // Carol has no target, so only bob's outcome is written.
+      expect(writes).toHaveLength(1);
+      expect(writes[0]?.values).toEqual([
+        message.messageId,
+        '22222222-2222-2222-2222-222222222222',
+        true,
+        null,
+        1,
+        200,
+      ]);
       expect(lines).toHaveLength(1);
       expect(lines[0]).toMatchObject({
         level: 'info',
@@ -576,6 +611,80 @@ describe('notifyMessage', () => {
         delivered: true,
       });
       expect(JSON.stringify(lines)).not.toContain(SECRET);
+    } finally {
+      stub.close();
+    }
+  });
+
+  test('records an undelivered outcome with its reason and status', async () => {
+    const stub = startStub(() => ({
+      status: 401,
+      body: JSON.stringify({ error: 'unauthorized' }),
+    }));
+    try {
+      const { log } = capture();
+      const config = parseDoorbell({
+        WAKE_DOORBELL_BOTS: JSON.stringify({
+          bob: { botId: 'cmwbot123', secret: SECRET },
+        }),
+        WAKE_DOORBELL_URL: stub.url,
+      });
+      if (config === null) {
+        throw new Error('expected a doorbell config');
+      }
+      const { pool, writes } = recordingPool([
+        { id: '22222222-2222-2222-2222-222222222222', name: 'bob' },
+      ]);
+      const report = await notifyMessage(pool, config, message, log);
+      expect(report.deliveries[0]).toMatchObject({
+        agent: 'bob',
+        delivered: false,
+        reason: 'unauthorized',
+        attempts: 1,
+      });
+      expect(writes[0]?.values).toEqual([
+        message.messageId,
+        '22222222-2222-2222-2222-222222222222',
+        false,
+        'unauthorized',
+        1,
+        401,
+      ]);
+    } finally {
+      stub.close();
+    }
+  });
+
+  test('a failed outcome write is logged and never fails the send', async () => {
+    const stub = startStub(() => ({
+      status: 200,
+      body: JSON.stringify({ ok: true, seq: 1 }),
+    }));
+    try {
+      const { log, lines } = capture();
+      const config = parseDoorbell({
+        WAKE_DOORBELL_BOTS: JSON.stringify({
+          bob: { botId: 'cmwbot123', secret: SECRET },
+        }),
+        WAKE_DOORBELL_URL: stub.url,
+      });
+      if (config === null) {
+        throw new Error('expected a doorbell config');
+      }
+      const { pool } = recordingPool(
+        [{ id: '22222222-2222-2222-2222-222222222222', name: 'bob' }],
+        { failInsert: true },
+      );
+      const report = await notifyMessage(pool, config, message, log);
+      expect(report.deliveries).toEqual([
+        { agent: 'bob', delivered: true, reason: null, attempts: 1 },
+      ]);
+      expect(
+        lines.some(
+          (line) =>
+            line['message'] === undefined && line['error'] === 'insert failed',
+        ),
+      ).toBe(true);
     } finally {
       stub.close();
     }
