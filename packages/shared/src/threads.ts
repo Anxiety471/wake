@@ -1,3 +1,5 @@
+import type { WakeReport } from './wake.js';
+
 export type ThreadKind = 'ask' | 'thread';
 
 export type ThreadStatus = 'open' | 'answered' | 'closed';
@@ -53,6 +55,7 @@ export type CreatedThread = {
   messageId: string;
   seq: number;
   createdAt: string;
+  wake: WakeReport;
 };
 
 export type ThreadReply = CreatedThread & {

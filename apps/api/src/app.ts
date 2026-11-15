@@ -15,6 +15,11 @@ import {
   type SentMessage,
 } from '@wake/shared';
 import { caller } from './auth.js';
+import {
+  notifyMessage,
+  wakeReportSchema,
+  type DoorbellConfig,
+} from './doorbell.js';
 import { registerDashboardRoutes } from './dashboard.js';
 import { readInbox } from './inbox-read.js';
 import { migrate } from './migrate.js';
@@ -104,6 +109,7 @@ export type BuildAppOptions = {
   registrationSecret?: string;
   dashboardSecret?: string;
   threadTtlHours?: number | null;
+  doorbell?: DoorbellConfig | null;
 };
 
 type RegisterBody = {
@@ -319,6 +325,7 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
   const logging = options?.logger === true || options?.logStream !== undefined;
   const registrationSecret = options?.registrationSecret;
   const dashboardSecret = options?.dashboardSecret;
+  const doorbell = options?.doorbell ?? null;
   const threadTtlHours =
     options?.threadTtlHours === undefined
       ? DEFAULT_THREAD_TTL_HOURS
@@ -676,9 +683,10 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
             201: {
               type: 'object',
               additionalProperties: false,
-              required: ['id'],
+              required: ['id', 'wake'],
               properties: {
                 id: { type: 'string' },
+                wake: wakeReportSchema,
               },
             },
           },
@@ -719,7 +727,19 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
             [sender.id, recipientId, body],
           );
           const row = requiredRow(result.rows);
-          const payload: SentMessage = { id: row.id };
+          const wake = await notifyMessage(
+            pool,
+            doorbell,
+            {
+              messageId: row.id,
+              from: sender.name,
+              body,
+              event: 'message',
+              threadId: null,
+            },
+            request.log,
+          );
+          const payload: SentMessage = { id: row.id, wake };
           return reply.code(201).send(payload);
         } catch (error) {
           if (pgField(error, 'code') === '23503') {
@@ -1152,7 +1172,10 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
         return body;
       },
     );
-    registerThreadRoutes(agentRoutes, pool, { ttlHours: threadTtlHours });
+    registerThreadRoutes(agentRoutes, pool, {
+      ttlHours: threadTtlHours,
+      doorbell,
+    });
   });
 
   registerDashboardRoutes(app, pool, ONLINE_INTERVAL, dashboardSecret);

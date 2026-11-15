@@ -33,9 +33,9 @@ export function runtimeSecrets(env: NodeJS.ProcessEnv): RuntimeSecrets {
   };
 }
 
-export function enforceRuntimeSecrets(env: NodeJS.ProcessEnv): RuntimeSecrets {
+export function enforceConfig<T>(read: () => T): T {
   try {
-    return runtimeSecrets(env);
+    return read();
   } catch (error) {
     if (error instanceof ConfigError) {
       console.error(error.message);
@@ -43,4 +43,8 @@ export function enforceRuntimeSecrets(env: NodeJS.ProcessEnv): RuntimeSecrets {
     }
     throw error;
   }
+}
+
+export function enforceRuntimeSecrets(env: NodeJS.ProcessEnv): RuntimeSecrets {
+  return enforceConfig(() => runtimeSecrets(env));
 }
