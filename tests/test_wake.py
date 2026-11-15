@@ -16,13 +16,32 @@ import tempfile
 import textwrap
 import threading
 import time
+import types
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "bin")
-sys.path.insert(0, BIN)
-import wake_config  # noqa: E402
+
+
+def load_wake_config():
+    """Execute bin/wake_config.py as a module without writing bytecode into the checkout.
+
+    A plain `import wake_config` (with bin/ on sys.path) makes CPython cache the module in
+    bin/__pycache__, so `python3 -m unittest discover -s tests` dirtied the tree even though
+    tests/run.sh sets PYTHONDONTWRITEBYTECODE. compile() plus exec writes nothing, and
+    registering the module keeps the name importable for any test that asks for it.
+    """
+    path = os.path.join(BIN, "wake_config.py")
+    module = types.ModuleType("wake_config")
+    module.__file__ = path
+    with open(path, encoding="utf-8") as f:
+        exec(compile(f.read(), path, "exec"), module.__dict__)  # noqa: S102 - the module under test
+    sys.modules.setdefault("wake_config", module)
+    return module
+
+
+wake_config = load_wake_config()
 
 IS_ROOT = os.getuid() == 0
 ROOT_SKIP = (
@@ -897,6 +916,44 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             (cfg["WAKE_STATE_DIR"], cfg["WAKE_GROUP"], cfg["WAKE_BOT"], cfg["WAKE_KEY_DIR"]),
             ("/srv/wake", "team", "ops", "/k"),
+        )
+
+
+class SuiteLeavesNoBytecodeTest(unittest.TestCase):
+    """A bare interpreter run must not put bytecode in bin/, which is what gets installed."""
+
+    def test_a_bare_run_writes_nothing_into_bin(self):
+        cache = os.path.join(BIN, "__pycache__")
+        child_cache = os.path.join(ROOT, "tests", "__pycache__")
+        for stale in (cache, child_cache):
+            shutil.rmtree(stale, ignore_errors=True)
+            if os.path.exists(stale):
+                self.skipTest(stale + " cannot be removed here, so there is nothing to measure")
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"}
+        # tests/run.sh sets PYTHONDONTWRITEBYTECODE, which hides this; a bare interpreter does not.
+        # Discovery imports every test module and runs nothing. It goes through the loader directly
+        # because `python -m unittest` with no test selected exits 5 since 3.12, and the count it
+        # prints is the proof the imports really happened.
+        script = 'import unittest\nprint(unittest.defaultTestLoader.discover("tests").countTestCases())\n'
+        try:
+            r = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        finally:
+            # The child writes no flag of its own, so it caches the test modules here; a run has to
+            # leave the tree as it found it, or the check dirties what it is meant to protect.
+            shutil.rmtree(child_cache, ignore_errors=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertGreater(int(r.stdout.strip() or 0), 0, "the child imported no test, so this proves nothing")
+        self.assertFalse(
+            os.path.exists(cache),
+            "importing the test modules wrote bin/__pycache__; load a bin/*.py module with "
+            "compile() and exec (see load_wake_config) instead of a plain import",
         )
 
 
