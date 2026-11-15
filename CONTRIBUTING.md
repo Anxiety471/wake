@@ -28,6 +28,9 @@ CI tests Python 3.9 to 3.13 on Ubuntu and pins ruff in `.github/workflows/ci.yml
 - Tests are offline. Use the fake webhook server and temporary directories in `tests/test_wake.py`; never touch the real `~/.config/wake`, `/tmp` rate log or a real host.
 - Add or update a test for every behaviour change.
 - Never commit real keys, hostnames, IP addresses, email addresses or bot ids. Use the names in `bots.example.tsv`. If a fake value trips `scripts/scrub-check.sh`, add the exact string to `scripts/scrub-allow.txt`.
+  A test address on an RFC 2606/6761 reserved name (`example.com`, `example.net`, `example.org` and
+  their subdomains, `*.invalid`, `*.test`, `*.example`, `*.localhost`) needs no entry: the email
+  stage ignores it, because no mailbox can exist there, and any other address still fails.
 - Update `README.md`, `docs/` and `CHANGELOG.md` (under an "Unreleased" heading) for user-visible changes.
 - One logical change per commit, with a message that says what and why.
 - Keep it civil: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) applies to issues, pull requests
