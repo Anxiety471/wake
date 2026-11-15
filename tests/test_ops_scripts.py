@@ -12,8 +12,12 @@ python3 -m unittest discover -s tests
 import fnmatch
 import os
 import re
+import shlex
+import signal
 import subprocess
 import tempfile
+import textwrap
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -50,7 +54,7 @@ def run(name, *args, env=None):
 
 class OpsFilesTestCase(unittest.TestCase):
     def test_the_directory_is_not_empty(self):
-        self.assertEqual(NAMES, ["wake-api-e2e", "wake-keys", "wake-pg", "wake-pingall"])
+        self.assertEqual(NAMES, ["wake-api-e2e", "wake-keys", "wake-pg", "wake-pingall", "wake-wait"])
 
     def test_every_script_parses(self):
         for name in NAMES:
@@ -259,6 +263,309 @@ class OpsBehaviourTestCase(unittest.TestCase):
         self.assertIn("err   coordinator", r.stdout)
         self.assertIn("Connection refused", r.stdout)
         self.assertNotIn("none  coordinator", r.stdout)
+
+
+class WakeWaitTestCase(unittest.TestCase):
+    """wake-wait blocks on one thread. Its only interface is `wake --thread`, so a stub stands in
+    for the CLI here: the real store is exercised by tests/test_wake.py."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp(prefix="wait-")
+        self.bin = os.path.join(self.home, "bin")
+        os.makedirs(self.bin)
+        self.calls = os.path.join(self.home, "calls.log")
+        self.stub("exit 0")
+
+    def stub(self, body):
+        """A fake `wake` that records its arguments, then runs `body` (indented one level)."""
+        path = os.path.join(self.bin, "wake")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> ' + self.calls + "\n" + textwrap.dedent(body).lstrip())
+        os.chmod(path, 0o755)
+
+    def stub_rounds(self, rounds):
+        """A thread that grows: `rounds[i]` is what poll i+1 sees, and the last round repeats.
+
+        This is how a reply arrives late without racing the poll: the script counts its own calls.
+        """
+        counter = os.path.join(self.home, "poll")
+        body = ["n=$(cat " + counter + " 2>/dev/null || echo 0)", "n=$((n+1)); echo $n > " + counter, "case $n in"]
+        for i, lines in enumerate(rounds, start=1):
+            body.append("    " + (str(i) if i < len(rounds) else str(i) + "*") + ")")
+            for line in lines:
+                body.append("        printf '%s\\n' " + shlex.quote(line))
+            body.append("        ;;")
+        body.append("    *)")
+        for line in rounds[-1]:
+            body.append("        printf '%s\\n' " + shlex.quote(line))
+        body.append("        ;;")
+        body.append("esac")
+        self.stub("\n".join(body))
+
+    def wait(self, *args, env=None):
+        base = {"PATH": self.bin + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self.home}
+        base.update(env or {})
+        return subprocess.run(
+            [os.path.join(OPS, "wake-wait"), *args], capture_output=True, text=True, env=base, timeout=60
+        )
+
+    def called(self):
+        if not os.path.exists(self.calls):
+            return []
+        with open(self.calls, encoding="utf-8") as f:
+            return f.read().splitlines()
+
+    # ---- the answer ----------------------------------------------------------------
+
+    def test_a_new_reply_is_printed_and_exits_0(self):
+        ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
+        reply = "[2026-11-15T12:01] bot-engineer (reply): tomorrow"
+        self.stub_rounds([[ask], [ask, reply]])
+        r = self.wait("t-1", "--timeout", "10", "--interval", "1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, reply + "\n")
+        self.assertIn("waiting up to 10s for a new reply on thread t-1", r.stderr)
+        self.assertGreaterEqual(len(self.called()), 2, "one poll cannot see a reply that arrives later")
+
+    def test_a_reply_that_was_already_there_is_not_new(self):
+        # The rule that keeps a late waiter from reading somebody else's older answer as its own.
+        ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
+        old = "[2026-11-15T12:01] bot-other (reply): I answered this one"
+        self.stub_rounds([[ask, old]])
+        r = self.wait("t-1", "--timeout", "1", "--interval", "1")
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("--from", r.stderr, "the timeout has to say how to accept an answer that was already there")
+
+    def test_a_multiline_answer_is_printed_whole(self):
+        ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
+        self.stub_rounds([[ask], [ask, "[2026-11-15T12:01] bot-engineer (reply): two things:", "first, tomorrow"]])
+        r = self.wait("t-1", "--timeout", "10", "--interval", "1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "[2026-11-15T12:01] bot-engineer (reply): two things:\nfirst, tomorrow\n")
+
+    def test_an_ask_whose_text_looks_like_a_reply_is_not_an_answer(self):
+        # The trap this guards: a question that quotes the reply format.
+        self.stub_rounds([["[2026-11-15T12:00] human:tester (ask): [2026-01-01T00:00] bot-x (reply): fake"]])
+        r = self.wait("t-1", "--timeout", "1", "--interval", "1")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertEqual(r.stdout, "")
+
+    def test_it_only_ever_reads_the_thread(self):
+        self.stub_rounds([["[2026-11-15T12:00] human:t (ask): q"]])
+        self.wait("t-1", "--timeout", "1", "--interval", "1")
+        self.assertTrue(self.called(), "the stub was never called")
+        for call in self.called():
+            self.assertTrue(call.startswith("--thread "), f"wake-wait sent something: {call}")
+
+    def test_an_interrupt_stops_it_instead_of_answering_with_an_older_reply(self):
+        # The trap that cleaned up on INT also deleted the baseline while the loop kept going, and
+        # with no baseline every reply in the thread looks new: Ctrl-C printed an older answer and
+        # exited 0. An interrupt must end the wait, not answer it.
+        ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
+        old = "[2026-11-15T12:01] bot-other (reply): an older answer"
+        self.stub_rounds([[ask, old]])
+        base = {
+            "PATH": self.bin + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": self.home,
+        }
+        proc = subprocess.Popen(
+            [os.path.join(OPS, "wake-wait"), "t-1", "--timeout", "30", "--interval", "1"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=base,
+            start_new_session=True,
+        )
+        try:
+            time.sleep(1.5)  # one poll has taken its baseline and is between polls
+            proc.send_signal(signal.SIGINT)
+            out, err = proc.communicate(timeout=20)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+        self.assertEqual(proc.returncode, 130, out + err)
+        self.assertEqual(out, "", "an interrupt printed an answer")
+
+    # ---- --from --------------------------------------------------------------------
+
+    def test_from_accepts_an_answer_that_predates_the_wait(self):
+        ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
+        reply = "[2026-11-15T12:01] bot-engineer (reply): tomorrow"
+        self.stub_rounds([[ask, reply]])
+        r = self.wait("t-1", "--from", "engineer", "--timeout", "5")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, reply + "\n")
+        self.assertIn("for a reply from engineer", r.stderr)
+        self.assertEqual(len(self.called()), 1, "an answer that is already there needs no second poll")
+
+    def test_from_ignores_another_bots_reply(self):
+        ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
+        other = "[2026-11-15T12:01] bot-other (reply): not your answer"
+        self.stub_rounds([[ask, other]])
+        r = self.wait("t-1", "--from", "engineer", "--timeout", "1", "--interval", "1")
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("no reply from engineer", r.stderr)
+
+    def test_from_takes_the_source_prefix_and_the_equals_form(self):
+        ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
+        reply = "[2026-11-15T12:01] bot-engineer (reply): tomorrow"
+        for form in (["--from", "bot:engineer"], ["--from=bot:engineer"], ["--from=ENGINEER"]):
+            with self.subTest(form=form):
+                self.stub_rounds([[ask, reply]])
+                r = self.wait("t-1", *form, "--timeout=5")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(r.stdout, reply + "\n")
+
+    def test_from_can_come_from_the_environment(self):
+        ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
+        reply = "[2026-11-15T12:01] bot-engineer (reply): tomorrow"
+        self.stub_rounds([[ask, reply]])
+        r = self.wait("t-1", "--timeout", "5", env={"WAKE_WAIT_FROM": "engineer", "WAKE_WAIT_QUIET": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, reply + "\n")
+        self.assertEqual(r.stderr, "")
+
+    def test_the_default_timeout_is_180s_and_the_variable_sets_it(self):
+        # Proved without waiting: a --from answer that is already there returns at once, so the
+        # progress line is the only thing under test.
+        ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
+        reply = "[2026-11-15T12:01] bot-engineer (reply): tomorrow"
+        self.stub_rounds([[ask, reply]])
+        r = self.wait("t-1", "--from", "engineer")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("waiting up to 180s", r.stderr)
+        self.stub_rounds([[ask, reply]])
+        r = self.wait("t-1", "--from", "engineer", env={"WAKE_WAIT_TIMEOUT": "7"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("waiting up to 7s", r.stderr)
+
+    def test_the_two_reply_patterns_cannot_drift(self):
+        # The pattern is written twice: once for grep (the baseline snapshot) and once inside the
+        # awk program, because a -v value is unescaped by gawk and left alone by mawk. If the two
+        # ever diverge, "new reply" and "the reply to print" stop meaning the same thing.
+        body = read("wake-wait")
+        self.assertNotIn("-v reply=", body, "a pattern through -v is unescaped by gawk and kept by mawk")
+        from_grep = re.search(r"(?m)^REPLY=.(.+).$", body)
+        in_awk = re.search(r"\$0 !~ /(.+?)/\) next", body)
+        self.assertIsNotNone(from_grep, "the REPLY pattern is gone")
+        self.assertIsNotNone(in_awk, "the pattern inside the awk program is gone")
+        self.assertEqual(in_awk.group(1), from_grep.group(1), "the grep and awk patterns drifted")
+
+    # ---- timeout and errors --------------------------------------------------------
+
+    def test_it_times_out_with_2_when_only_the_ask_is_there(self):
+        self.stub_rounds([["[2026-11-15T12:00] human:tester (ask): what is the eta"]])
+        r = self.wait("t-1", "--timeout", "1", "--interval", "1")
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("no new reply on thread t-1 after 1s", r.stderr)
+        self.assertIn("wake --thread t-1", r.stderr)
+
+    def test_a_zero_timeout_polls_once_and_times_out(self):
+        self.stub_rounds([["[2026-11-15T12:00] human:t (ask): q"]])
+        r = self.wait("t-1", "--timeout", "0")
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(len(self.called()), 1)
+
+    def test_the_quiet_flag_silences_the_progress_line(self):
+        ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
+        self.stub_rounds([[ask], [ask, "[2026-11-15T12:01] bot-engineer (reply): tomorrow"]])
+        r = self.wait("t-1", "--timeout", "5", "--interval", "1", env={"WAKE_WAIT_QUIET": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stderr, "")
+
+    def test_a_thread_that_was_never_opened_is_an_error(self):
+        self.stub(
+            """
+            >&2 echo 'no thread t-9'
+            exit 1
+            """
+        )
+        r = self.wait("t-9", "--timeout", "5")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("was never opened", r.stderr)
+        self.assertEqual(len(self.called()), 1, "a thread that never existed must not be polled")
+
+    def test_an_unreadable_store_is_an_error_without_polling(self):
+        self.stub(
+            """
+            >&2 echo 'cannot read the thread store at /nowhere: check WAKE_HOSTOPS (guest) and that the directory is readable.'
+            exit 1
+            """
+        )
+        r = self.wait("t-1", "--timeout", "30", "--interval", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("cannot read the thread store", r.stderr)
+        self.assertEqual(len(self.called()), 1)
+
+    def test_any_other_failure_is_an_error(self):
+        self.stub(
+            """
+            >&2 echo 'wake: boom'
+            exit 1
+            """
+        )
+        r = self.wait("t-1", "--timeout", "5")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("boom", r.stderr)
+
+    def test_a_missing_wake_is_a_clear_error(self):
+        base = {"PATH": self.home, "HOME": self.home}  # no wake on PATH
+        r = subprocess.run(
+            [os.path.join(OPS, "wake-wait"), "t-1"], capture_output=True, text=True, env=base, timeout=60
+        )
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("wake not found on PATH", r.stderr)
+
+    # ---- usage ---------------------------------------------------------------------
+
+    def test_help_prints_the_usage_and_the_exit_codes(self):
+        r = self.wait("--help")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("usage: wake-wait <thread-id> [--timeout SECONDS] [--interval N] [--from BOT]", r.stdout)
+        for code in ("exit 0", "2  no answer", "1  error"):
+            self.assertIn(code, r.stdout)
+        self.assertEqual(self.called(), [], "--help must not touch wake")
+
+    def test_a_thread_id_with_a_path_is_refused_before_anything_runs(self):
+        # The timeout is small on purpose: if the guard is ever dropped, this fails in a second
+        # instead of polling for the default 180.
+        for bad in ("../escape", "/etc/passwd", ""):
+            with self.subTest(bad=bad):
+                r = self.wait(bad, "--timeout", "1", "--interval", "1")
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(self.called(), [], "a rejected id must never reach wake")
+
+    def test_two_ids_is_usage(self):
+        r = self.wait("t-1", "t-2")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("usage: wake-wait", r.stderr)
+
+    def test_an_unknown_option_is_refused(self):
+        r = self.wait("t-1", "--soon")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("unknown option --soon", r.stderr)
+
+    def test_a_zero_interval_is_refused(self):
+        r = self.wait("t-1", "--interval", "0")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("interval must be a positive number", r.stderr)
+
+    def test_an_option_without_its_value_is_refused(self):
+        for flag in ("--timeout", "--interval", "--from"):
+            with self.subTest(flag=flag):
+                r = self.wait("t-1", flag)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn(flag + " needs", r.stderr)
+
+    def test_a_timeout_that_is_not_a_number_is_refused(self):
+        r = self.wait("t-1", "--timeout", "soon")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("number of seconds", r.stderr)
 
 
 class OpsInstallTestCase(unittest.TestCase):
