@@ -7,16 +7,18 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
-- **`--help` on every command.** Seven of them treated the flag as data: `wake-api-e2e --help`
-  ran the whole end-to-end suite, `wake-pingall --help` asked a bot named `--help` a question,
-  `wake-mcp --help` started the stdio server, `wake-keys --help` ran the key sync, `wake-hook
-  --help` read stdin as a hook payload, and `wake-inbox-io` / `wake-pg` printed usage on stderr
-  with exit 1 and 2. Each now answers `-h`/`--help` with its usage, exit codes and environment on
-  stdout, before anything else runs. `tests/test_command_help.py` walks `bin/` and `bin/ops` and
-  fails on a command that does not, on a missing `# desc:` line, and on a command no README names;
-  it fails 14 times on the bytes before this change. `wake-pingall` also refuses an alias that is
-  not letters, digits, hyphen or underscore, so `<log dir>/<alias>.log` cannot be written outside
-  the log directory.
+- **`--help` on every command, including the installer.** Seven commands treated the flag as
+  data: `wake-api-e2e --help` ran the whole end-to-end suite, `wake-pingall --help` asked a bot
+  named `--help` a question, `wake-mcp --help` started the stdio server, `wake-keys --help` ran
+  the key sync, `wake-hook --help` read stdin as a hook payload, and `wake-inbox-io` / `wake-pg`
+  printed usage on stderr with exit 1 and 2. `./install.sh --help` was worse: it installed. Each
+  now answers `-h`/`--help` with its usage, exit codes and environment on stdout, before anything
+  else runs, and refuses an argument it does not have instead of ignoring it (`install.sh`,
+  `wake-keys --forc`, `wake-api-e2e --anything`). `tests/test_command_help.py` walks `bin/` and
+  `bin/ops` and fails on a command that does not answer help, one with no `# desc:` line, and one
+  no README names; with only that file on the bytes before this change, 14 checks fail.
+  `wake-pingall` also refuses an alias that is not letters, digits, hyphen or underscore, so
+  `<log dir>/<alias>.log` cannot be written outside the log directory.
 - **Operator helpers in `bin/ops`.** `wake-pg` runs a throwaway local Postgres for the API tests;
   `wake-api-e2e` starts the real API on a scratch database and proves the public surface over HTTP
   (`/mcp` initialize, ten tools, `wake_ask` and `wake_read_thread`, the inbox, deliveries,
