@@ -99,8 +99,12 @@ def install_local(files, prefix, dry):
     os.makedirs(prefix, exist_ok=True)
     for src, name, mode in files:
         dst = os.path.join(prefix, name)
-        shutil.copyfile(src, dst)
-        os.chmod(dst, mode)
+        # A wake running from the prefix can exec this file while it is being written, so write a
+        # neighbour and rename it into place: rename is atomic, a truncated script is not.
+        tmp = dst + ".new"
+        shutil.copyfile(src, tmp)
+        os.chmod(tmp, mode)
+        os.replace(tmp, dst)
     print(f"local: {len(files)} files -> {prefix}")
 
 
