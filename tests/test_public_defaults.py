@@ -7,11 +7,15 @@ is what an operator inherits without reading anything.
 This test does not try to recognise a private name. It allowlists the hosts a
 public repository is allowed to name, so a new real one fails here instead of
 shipping. Add an entry only when the repository is meant to name that host.
+
+The walker asks git which files are tracked, not the filesystem: a dot-directory
+like .github is where a runner label or a deploy target gets named, and an
+untracked note in someone's working copy is not part of the repository.
 """
 
-import glob
 import os
 import re
+import subprocess
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,11 +35,17 @@ ALLOWED = {
 #: A host that cannot be a public name: reserved test suffixes.
 ALLOWED_SUFFIXES = (".invalid", ".example", ".example.com", ".example.org", ".internal")
 
-SKIP_DIRS = {".git", "node_modules", "target", "__pycache__", ".ruff_cache", "dist", "build"}
-SKIP_FILES = {"bun.lock", "package-lock.json"}
+#: Binary or generated files a text scan cannot read.
+SKIP_SUFFIXES = (".png", ".gif", ".jpg", ".jpeg", ".ico", ".pdf", ".pyc", ".woff", ".woff2")
+SKIP_NAMES = {"bun.lock", "package-lock.json", "uv.lock"}
+
+#: The one file that cannot be scanned: to prove the guard bites, it has to hold a
+#: host that must fail. A test below pins this set to exactly this file, so the
+#: exclusion cannot quietly grow.
+SKIP_PATHS = {"tests/test_public_defaults.py"}
 
 URL = re.compile(r"https?://(\[[0-9a-fA-F:]+\]|[A-Za-z0-9._-]+)")
-HOSTNAME = re.compile(r"\b[A-Za-z0-9-]+\.(?:com|org|net|trade|io)\b")
+HOSTNAME = re.compile(r"\b[A-Za-z0-9-]+\.(?:com|org|net|trade|io|ph|gov|edu)\b")
 
 
 def allowed(host):
@@ -52,26 +62,43 @@ def read(path):
 
 
 def tracked_files(root=ROOT):
-    for path in glob.glob(os.path.join(root, "**", "*"), recursive=True):
-        rel = os.path.relpath(path, root)
-        if any(part in SKIP_DIRS for part in rel.split(os.sep)):
+    """Every tracked text file, as (relative path, text). Git decides the list."""
+    try:
+        listing = subprocess.run(
+            ["git", "-C", root, "ls-files", "-z"],
+            check=True,
+            capture_output=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:  # pragma: no cover
+        raise unittest.SkipTest(f"not a git checkout, cannot list tracked files: {error}") from error
+
+    for raw in listing.split(b"\0"):
+        if not raw:
             continue
-        if os.path.basename(rel) in SKIP_FILES or os.path.isdir(path):
-            continue
-        if not os.path.isfile(path) or path.endswith((".png", ".gif", ".pyc")):
+        rel = raw.decode("utf-8", "surrogateescape")
+        if rel in SKIP_PATHS or os.path.basename(rel) in SKIP_NAMES or rel.endswith(SKIP_SUFFIXES):
             continue
         try:
-            yield rel, read(path)
+            yield rel, read(os.path.join(root, rel))
         except (UnicodeDecodeError, OSError):
             continue
 
 
+def offenders_in(text):
+    return [host for host in URL.findall(text) if not allowed(host)]
+
+
 class PublicHostTests(unittest.TestCase):
     def test_no_url_names_a_host_outside_the_allowlist(self):
-        offenders = [
-            f"{rel}: {host}" for rel, text in tracked_files() for host in URL.findall(text) if not allowed(host)
-        ]
-        self.assertEqual(offenders, [], "a real host leaked into the tree")
+        found = [f"{rel}: {host}" for rel, text in tracked_files() for host in offenders_in(text)]
+        self.assertEqual(found, [], "a real host leaked into the tree")
+
+    def test_only_this_file_is_excluded_from_the_scan(self):
+        self.assertEqual(SKIP_PATHS, {"tests/test_public_defaults.py"})
+
+    def test_workflow_files_are_scanned_too(self):
+        names = [rel for rel, _ in tracked_files()]
+        self.assertIn(".github/workflows/ci.yml", names, "the walker skipped a dot-directory")
 
     def test_the_deploy_verify_default_is_an_example(self):
         body = read(os.path.join(ROOT, "deploy", "ops", "mcp-verify.py"))
@@ -86,11 +113,19 @@ class PublicHostTests(unittest.TestCase):
         self.assertTrue(host.group(1).lower().endswith(("example.com", "example.org", "example.net")), host.group(1))
 
     def test_no_file_in_deploy_names_a_hostname_outside_the_allowlist(self):
-        for path in glob.glob(os.path.join(ROOT, "deploy", "**", "*"), recursive=True):
-            if os.path.isdir(path) or path.endswith((".png", ".gif", ".pyc")):
+        for rel, body in tracked_files():
+            if not rel.startswith("deploy/"):
                 continue
-            for name in HOSTNAME.findall(read(path)):
-                self.assertTrue(allowed(name), f"{os.path.relpath(path, ROOT)} names {name}")
+            for name in HOSTNAME.findall(body):
+                self.assertTrue(allowed(name), f"{rel} names {name}")
+
+    def test_the_scanner_would_catch_a_real_host(self):
+        # A guard that cannot fail is not a guard.
+        for sample in ("https://bots.acme-corp.io/mcp", "https://h.clmmrh.gov.ph", "bots.acme-corp.io"):
+            with self.subTest(sample=sample):
+                hosts = URL.findall(sample) or HOSTNAME.findall(sample)
+                self.assertTrue(hosts, sample)
+                self.assertFalse(all(allowed(host) for host in hosts), f"{sample} would slip past")
 
 
 if __name__ == "__main__":
