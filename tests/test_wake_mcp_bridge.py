@@ -9,6 +9,7 @@ the real ~/.config/wake.
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -742,6 +743,7 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertEqual(out[0]["result"]["protocolVersion"], "2025-06-18")
         self.assertEqual(len(self.fake.requests), 1)
+        self.assertEqual(self.fake.requests[0]["headers"]["authorization"], "Bearer " + TOKEN)
 
     def test_a_non_utf8_config_file_does_not_end_the_session(self):
         # wake_config.load() decoded config.env with the locale codec, so one
@@ -757,6 +759,66 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["result"]["protocolVersion"], "2025-06-18")
+
+    def test_a_nul_in_the_registry_path_does_not_empty_the_tool_list(self):
+        # open() raises ValueError, not OSError, for a path with an embedded NUL,
+        # and config.env can carry that byte. One NUL used to take tools/list with
+        # it (-32603, zero tools), the same failure class the UTF-8 fix closed.
+        path = os.path.join(self.tmp, "nul-registry.env")
+        with open(path, "wb") as handle:
+            handle.write(b"WAKE_MCP_TOKEN=" + TOKEN.encode() + b"\n")
+            handle.write(b"WAKE_MCP_API=http://127.0.0.1:" + str(self.fake.port).encode() + b"\n")
+            handle.write(b"WAKE_REGISTRY=" + os.path.join(self.tmp, "bad").encode() + b"\x00registry.tsv\n")
+        out, process = self.run_bridge(
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": "wake_fleet", "arguments": {}},
+                },
+            ],
+            config=path,
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual([message["id"] for message in out], [1, 2])
+        self.assertNotIn("error", out[0])
+        self.assertEqual(
+            [tool["name"] for tool in out[0]["result"]["tools"]],
+            ["wake_ask", "wake_inbox"],
+        )
+        self.assertTrue(out[1]["result"]["isError"])
+        self.assertIn("no routing table at", out[1]["result"]["content"][0]["text"])
+
+    def test_fleet_quotes_the_alias_it_suggests(self):
+        # reach is a command a model may run. An operator-written alias with a
+        # quote or semicolon must not turn it into a second command.
+        registry = os.path.join(self.tmp, "quoted-alias.tsv")
+        alias = 'evil" ; echo pwned ; "'
+        with open(registry, "w", encoding="utf-8") as handle:
+            handle.write(alias + "\tid\tEvil\tbot\trole\n")
+        token_file = os.path.join(self.tmp, "token.env")
+        with open(token_file, "w", encoding="utf-8") as handle:
+            handle.write("WAKE_MCP_TOKEN=" + TOKEN + "\n")
+        out, process = self.run_bridge(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "wake_fleet", "arguments": {}},
+                }
+            ],
+            config=token_file,
+            registry=registry,
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        payload = json.loads(out[0]["result"]["content"][0]["text"])
+        parts = shlex.split(payload["bots"][0]["reach"])
+        self.assertEqual(parts[:2], ["wake", alias])
+        self.assertEqual(parts[4:6], ["wake", "--ask"])
+        self.assertEqual(parts[6], alias)
 
 
 if __name__ == "__main__":

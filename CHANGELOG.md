@@ -51,6 +51,14 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **A NUL in `WAKE_REGISTRY` still emptied `tools/list`.** `fleet()` caught only
+  `OSError`, but `open()` raises `ValueError` for a path with an embedded NUL, and a
+  `config.env` can carry that byte even though an environment variable cannot: one NUL
+  produced the same `-32603` and zero tools as the UTF-8 bug below. It catches both
+  now, and `reach` quotes the alias with `shlex.quote`, so an operator-written alias
+  cannot turn the suggested command into a second one
+  ([#79](https://github.com/Anxiety471/wake/issues/79)).
+
 - **One non-UTF-8 byte in `bots.tsv` emptied `tools/list`.** `fleet()` opened the registry with
   the locale codec and caught only `OSError`, so a single undecodable byte raised
   `UnicodeDecodeError` out of the tool list: the client got `-32603` and zero tools, with no
@@ -76,9 +84,10 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 - **A `WAKE_CONFIG` that cannot supply a token exited 0 with two tools (issue #76).** The bridge
   picked its mode from the token alone, and `wake_config.load()` treats an unreadable file as no
   settings, so a path that was moved or wiped produced a successful session with the legacy
-  `wake_bot` / `wake_list` pair and nothing on stderr. A named `WAKE_CONFIG` that does not exist,
-  or exists without `WAKE_MCP_TOKEN`, now exits 2 with a message naming the path; the legacy mode
-  is still one `unset WAKE_CONFIG` away, on purpose.
+  `wake_bot` / `wake_list` pair and nothing on stderr. A named `WAKE_CONFIG` — or a
+  `WAKE_CONFIG_DIR` naming the `config.env` inside it — that does not exist, or exists
+  without `WAKE_MCP_TOKEN`, now exits 2 with a message naming the path; the legacy mode
+  is still one unset away, on purpose, when neither variable names a config.
 
 - **`bin/wake-mcp` was refused by Cloudflare (403, error 1010).** The bridge builds its
   headers explicitly and sent urllib's default agent, `Python-urllib/*`, which the bot rule

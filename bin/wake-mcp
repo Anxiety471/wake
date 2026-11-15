@@ -3,6 +3,7 @@
 import http.client
 import json
 import os
+import shlex
 import subprocess
 import sys
 import urllib.error
@@ -53,15 +54,16 @@ def fleet():
 
     Decoded as UTF-8 with replacement, never with the locale codec: one byte that
     is not UTF-8 used to raise UnicodeDecodeError out of tools/list, and a client
-    that cannot list tools has no session left to report the reason on. Rows are
-    the shape bin/wake accepts (four or five tab-separated fields), so wake_fleet
+    that cannot list tools has no session left to report the reason on. A path with
+    an embedded NUL raises ValueError from open(), which is not OSError either. Rows
+    are the shape bin/wake accepts (four or five tab-separated fields), so wake_fleet
     never names an alias the CLI itself calls unknown.
     """
     path = CFG.get("WAKE_REGISTRY") or ""
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
             lines = handle.read().splitlines()
-    except OSError:
+    except (OSError, ValueError):
         return None, path
     bots = []
     for line in lines:
@@ -80,7 +82,11 @@ def fleet():
                 "name": fields[2].strip(),
                 "kind": fields[3].strip(),
                 "role": fields[4].strip(),
-                "reach": "wake " + alias + ' "<message>" or wake --ask ' + alias + ' "<question>"',
+                "reach": "wake "
+                + shlex.quote(alias)
+                + ' "<message>" or wake --ask '
+                + shlex.quote(alias)
+                + ' "<question>"',
             }
         )
     return bots, path
