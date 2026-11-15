@@ -62,6 +62,12 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **A refused inbox says so, instead of printing a path to nothing.** `wake-inbox-io` discarded the
+  exit status of every host command it ran, so a gate refusal was indistinguishable from success:
+  `register` printed an inbox path for a file nothing had created and exited 0, and the session
+  exported `WAKE_INBOX` pointing at nothing. `register` and `beat` now return the host command's
+  status and print its stderr, and a failed `register` prints no path. `read` is unchanged: an
+  unreadable inbox still reads as empty, because that is what a quiet inbox looks like.
 - **A reserved test address is not a secret, and one branch's fixture failed every branch's scan.**
   `scripts/scrub-check.sh` flagged `user.email=simulation@example.invalid` in
   `tests/test_publish_checklist.py`: an address on an RFC 2606 reserved name, which can never resolve

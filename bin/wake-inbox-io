@@ -40,6 +40,21 @@ def sh(cmd, data=None):
     return subprocess.run([HOSTOPS, cmd], input=data, capture_output=True, text=True)
 
 
+def checked(r):
+    """Fail the bridge when the command it ran failed.
+
+    The host gate refuses anything off its allow-list. That refusal used to be discarded:
+    register printed an inbox path for a file nothing had created, so the session exported
+    WAKE_INBOX pointing at nothing and every delivery to it vanished while the caller
+    believed it had worked.
+    """
+    if r.returncode == 0:
+        return r
+    detail = (r.stderr or "").strip()
+    sys.stderr.write(detail + "\n" if detail else f"the host command exited {r.returncode}\n")
+    sys.exit(r.returncode if 0 < r.returncode < 256 else 1)
+
+
 HELP = """\
 usage: wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]
 
@@ -55,8 +70,9 @@ usage: wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]
 
   environment   WAKE_STATE_DIR, WAKE_HOSTOPS   (both read by bin/wake_config.py)
 
-  exit 0 on success; 1 on usage or a hash that is not 6-32 lowercase hex characters. The command
-  it runs on the host decides anything else.
+  exit 0 on success; 1 on usage or a hash that is not 6-32 lowercase hex characters. If the command
+  it runs on the host fails, its stderr is printed and its status is returned; a refused register
+  never prints an inbox path.
 """
 
 
@@ -72,11 +88,13 @@ def main():
         sys.exit("bad inbox hash: expected 6-32 lowercase hex characters")
     if op == "register":
         box, marker, active = q(f"{BASE}/{key}.jsonl"), q(f"{ACTIVE}/{key}.json"), q(ACTIVE)
-        sh(
-            f"mkdir -p {active} 2>/dev/null; find {active} -name '*.json' -mmin +1440 -delete 2>/dev/null; "
-            f"touch {box} {marker}; chmod 660 {box} {marker} 2>/dev/null"
+        checked(
+            sh(
+                f"mkdir -p {active} 2>/dev/null; find {active} -name '*.json' -mmin +1440 -delete 2>/dev/null; "
+                f"touch {box} {marker}; chmod 660 {box} {marker} 2>/dev/null"
+            )
         )
-        sh(f"cat > {marker}", meta)
+        checked(sh(f"cat > {marker}", meta))
         print(f"{BASE}/{key}.jsonl")
         return
     if op == "read":
@@ -85,7 +103,7 @@ def main():
         sys.stdout.write(sh(f"cat {q(key)} 2>/dev/null").stdout)
         return
     if op == "beat":
-        sh(f"cat > {q(f'{ACTIVE}/{key}.json')}", meta)
+        checked(sh(f"cat > {q(f'{ACTIVE}/{key}.json')}", meta))
         return
     sys.exit("unknown op " + op)
 
