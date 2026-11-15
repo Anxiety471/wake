@@ -70,6 +70,7 @@ Keys are minted on the host by `rakazo-webhook-key` through the `bot-webhook-key
 ```sh
 bun install
 export DATABASE_URL=postgres://postgres@127.0.0.1:5432/wake
+export REGISTRATION_SECRET=$(openssl rand -hex 32)   # 64 characters; without one the API exits 1
 bun apps/api/src/index.ts            # 127.0.0.1:3001, migrations run on boot
 ```
 

@@ -25,18 +25,22 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   bash helpers instead of a glob, and `tests/test_ops_scripts.py` fails if a Python helper is
   handed to shellcheck or a shell helper is left out.
 
+### Changed
+
+- **`REGISTRATION_SECRET` needs 32 characters now, and a missing one stops the boot.**
+  `apps/api/src/options.ts` enforced 32 characters on `DASHBOARD_SECRET` and nothing on
+  `REGISTRATION_SECRET`, so the 22-character `<generated, 32+ chars>` in `deploy/README.md`
+  booted a service that answered `POST /agents` with `201` and a token. Both secrets share
+  the floor now, and leaving the registration secret out is a boot error instead of an open
+  registration route: `REGISTRATION_SECRET is not set, so POST /agents would accept anyone`,
+  exit 1. The open case is still there for a dev box behind `WAKE_ALLOW_OPEN_REGISTRATION=1`.
+  **Upgrading:** put a 32+ character secret in `/etc/wake/api.env` before you deploy, or the
+  service will not start. `wake-host-deploy env` refuses a short one before it runs a host
+  command, so a deploy cannot write an env file the service will not start with
+  ([#22](https://github.com/Anxiety471/wake/issues/22)).
+
 ### Fixed
 
-- **`REGISTRATION_SECRET` had no length floor, so the runbook's placeholder was a working
-  secret.** `apps/api/src/options.ts` enforced 32 characters on `DASHBOARD_SECRET` and nothing
-  on `REGISTRATION_SECRET`, so the 22-character `<generated, 32+ chars>` from
-  `deploy/README.md` booted a service that answered `POST /agents` with `201` and a token.
-  Both secrets now share the floor, and a missing one is a boot error instead of an open
-  registration route: `REGISTRATION_SECRET is not set, so POST /agents would accept anyone`,
-  exit 1. The open case is still available for a dev box behind
-  `WAKE_ALLOW_OPEN_REGISTRATION=1`. `wake-host-deploy env` refuses a short secret before it
-  runs a host command, so a deploy cannot write an env file the service will not start with
-  ([#22](https://github.com/Anxiety471/wake/issues/22)).
 - **`env` emptied the API's environment file before it wrote the new one.** The step ran
   `install /dev/null /etc/wake/api.env`, then `tee` into it, so a write that failed or was
   interrupted left the service with an empty file and the previous one gone. It writes

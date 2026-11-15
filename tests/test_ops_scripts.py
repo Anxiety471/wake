@@ -144,6 +144,14 @@ class OpsFilesTestCase(unittest.TestCase):
         self.assertIn("no wake checkout", r.stderr)
         self.assertNotIn("ALL PASS", r.stdout)
 
+    def test_the_e2e_script_refuses_a_short_secret_before_starting_anything(self):
+        # The API exits 1 on a short secret, and the health wait that followed spent 20
+        # seconds before it said so. The length is checked before Postgres is started.
+        r = run("wake-api-e2e", env={"WAKE_E2E_SECRET": "a" * 31})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("at least 32", r.stderr)
+        self.assertNotIn("ALL PASS", r.stdout)
+
     def test_the_registry_default_does_not_follow_the_key_dir(self):
         # bin/wake_config.py derives the registry from WAKE_CONFIG_DIR. A helper that put it under
         # WAKE_KEY_DIR said "no registry" while `wake --list` listed the bots fine.

@@ -72,7 +72,8 @@ does not exist at all. Add `DASHBOARD_SECRET` (32+ chars) only when the dashboar
 wanted.
 
 `<generated>` and `<generated, 32+ chars>` are placeholders. Replace every one of
-them: the strings as written are credentials, not comments. The app enforces a
+them: the strings as written are credentials, not comments. `openssl rand -hex 32`
+writes 64 characters and clears the floor on both secrets. The app enforces a
 32-character floor on `DASHBOARD_SECRET` and on `REGISTRATION_SECRET`
 ([#22](https://github.com/Anxiety471/wake/issues/22)), so the 22-character
 `<generated, 32+ chars>` refuses to boot with
