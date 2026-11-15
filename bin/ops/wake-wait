@@ -12,7 +12,8 @@ USAGE="usage: $PROG <thread-id> [--timeout SECONDS] [--interval N] [--from BOT]
 
   exit 0  answered
        2  no answer within the timeout
-       1  error: bad usage or id, no wake on PATH, unreadable thread store, no such thread
+       1  error: bad usage or id, no wake on PATH, unreadable thread store, or a thread that
+          was never opened (no such thread: a thread exists once something is asked into it)
 
   environment   WAKE_WAIT_TIMEOUT (180)  WAKE_WAIT_INTERVAL (3)  WAKE_WAIT_FROM  WAKE_WAIT_QUIET (0)"
 
@@ -73,7 +74,12 @@ command -v wake >/dev/null || die "wake not found on PATH; run ./install.sh firs
 
 BASE=$(mktemp "${TMPDIR:-/tmp}/wake-wait-base.XXXXXX") || die "cannot create a temporary file"
 ERR=$(mktemp "${TMPDIR:-/tmp}/wake-wait-err.XXXXXX") || die "cannot create a temporary file"
-trap 'rm -f "$BASE" "$ERR"' EXIT INT TERM
+# Only EXIT cleans up. The same command on INT/TERM would delete the baseline snapshot and the
+# loop would carry on without one - and with no baseline every reply in the thread counts as new,
+# so an interrupt would print somebody else's older answer as this wait's answer.
+trap 'rm -f "$BASE" "$ERR"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # What bin/wake's show() prints for a reply record: [2026-11-15T12:00] bot-engineer (reply): text
 # Anchored on the whole prefix, so an ask whose own text contains "(reply):" is not an answer.
