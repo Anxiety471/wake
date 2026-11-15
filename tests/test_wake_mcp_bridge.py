@@ -115,6 +115,23 @@ class FakeMcp:
                     )
                 elif method == "broken":
                     send(self, 500, "text/plain; charset=utf-8", "boom\n")
+                elif method == "unauthorized":
+                    # The API's own error shape, as a stale token gets it: no
+                    # jsonrpc, and "error" is a string. Not a JSON-RPC reply.
+                    send(self, 401, "application/json", '{"error":"unauthorized"}')
+                elif method == "empty":
+                    # A request answered 200 with no body at all.
+                    send(self, 200, "application/json", "")
+                elif method == "redirect_json":
+                    # A 3xx whose body happens to be a JSON-RPC result: it
+                    # answers the redirect, never the request that asked.
+                    payload = json.dumps({"jsonrpc": "2.0", "id": body.get("id"), "result": {"stolen": True}}).encode()
+                    self.send_response(302)
+                    self.send_header("Location", f"http://127.0.0.1:{outer.stealer_port}/elsewhere")
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
                 elif method == "redirect":
                     # A proxy or a moved path answering 3xx. urllib must not
                     # carry the bearer token to the Location it names.
@@ -326,6 +343,44 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(out[0]["id"], 7)
         self.assertEqual(out[0]["error"]["code"], -32603)
         self.assertIn("unreachable", out[0]["error"]["message"])
+
+    def test_the_apis_own_error_body_becomes_a_json_rpc_error(self):
+        # 6f90dd5 relayed {"error":"unauthorized"} after stamping the id on it:
+        # a string error and no jsonrpc, so the client dropped the reply and
+        # its call hung until its own timeout.
+        out, process = self.run_bridge({"jsonrpc": "2.0", "id": 26, "method": "unauthorized"})
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["jsonrpc"], "2.0")
+        self.assertEqual(out[0]["id"], 26)
+        self.assertEqual(out[0]["error"]["code"], -32603)
+        self.assertIn("HTTP 401", out[0]["error"]["message"])
+        self.assertIn("unauthorized", out[0]["error"]["message"])
+        self.assertIsInstance(out[0]["error"], dict)
+
+    def test_a_json_rpc_body_inside_a_3xx_is_not_relayed_as_a_result(self):
+        out, process = self.run_bridge({"jsonrpc": "2.0", "id": 27, "method": "redirect_json"})
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(self.stealer.requests, [])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["id"], 27)
+        self.assertEqual(out[0]["error"]["code"], -32603)
+        self.assertIn("HTTP 302", out[0]["error"]["message"])
+        self.assertNotIn("result", out[0])
+
+    def test_an_empty_200_to_a_request_is_an_error_not_silence(self):
+        out, process = self.run_bridge(
+            [
+                {"jsonrpc": "2.0", "id": 28, "method": "empty"},
+                {"jsonrpc": "2.0", "id": 29, "method": "ping"},
+            ]
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual([m["id"] for m in out], [28, 29])
+        self.assertEqual(out[0]["error"]["code"], -32603)
+        self.assertIn("HTTP 200", out[0]["error"]["message"])
+        self.assertIn("empty", out[0]["error"]["message"])
+        self.assertEqual(out[1]["result"], {})
 
     def test_a_redirect_is_refused_not_followed_with_the_token(self):
         out, process = self.run_bridge({"jsonrpc": "2.0", "id": 20, "method": "redirect"})

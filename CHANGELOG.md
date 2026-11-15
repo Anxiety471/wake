@@ -28,7 +28,10 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   private-bot wall stay the server's — the bridge implements none of them. A `3xx` is refused
   instead of followed (urllib would re-send the bearer token to `Location`), a `429` is answered
   on the asking id instead of `null`, a reply cut short answers `-32603` and leaves the session
-  running, and a server-initiated notification is forwarded verbatim. `WAKE_MCP_API`
+  running, and a server-initiated notification is forwarded verbatim. The API's own REST errors
+  (`{"error":"unauthorized"}`, `{"error":"not found"}`), an empty `200`/`202` to a request and a
+  JSON-RPC-looking body delivered with a `3xx` are reported as `-32603`, never relayed as a reply
+  a client would drop or wait on forever. `WAKE_MCP_API`
   (default `http://127.0.0.1:3001`) names the server — `https` for any non-loopback host, since
   the token is a bearer credential — and `config.env` should be mode 600 (the bridge warns).
   Without a token the binary stays the legacy two-tool helper (`wake_bot`, `wake_list`).

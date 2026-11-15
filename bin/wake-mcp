@@ -70,6 +70,21 @@ def error_body(rid, message):
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32603, "message": message}}
 
 
+def is_reply(document):
+    """The server's JSON-RPC reply, not one of the API's own error bodies.
+
+    A rejected token or a disabled endpoint answers with the REST shape,
+    {"error": "unauthorized"}: no jsonrpc, and "error" is a string. Relayed
+    as-is a conforming client drops it, and its call waits for a reply that
+    has already arrived.
+    """
+    return (
+        isinstance(document, dict)
+        and document.get("jsonrpc") == "2.0"
+        and ("result" in document or "error" in document)
+    )
+
+
 class Transport(Exception):
     """No usable reply. The message is the whole reason, API included."""
 
@@ -168,9 +183,16 @@ def bridge_line(line, state):
         return
     bodies = payloads(content_type, raw)
     if not bodies:
-        if status not in (200, 202) and not notification:
-            emit(error_body(rid, "HTTP " + str(status)))
+        if not notification:
+            # An empty 200/202 used to be silence, and silence is a client
+            # waiting for an answer that will never come.
+            emit(error_body(rid, "HTTP " + str(status) + ": empty reply"))
         return
+    # A 3xx is a statement about where the endpoint is, not a reply: its body
+    # belongs to the redirect even when it is shaped like JSON-RPC. Every other
+    # status may carry a real reply - a 429 does (decided before the body is
+    # parsed), a 401 carries the API's own REST error instead.
+    answered = not 300 <= status < 400
     for body in bodies:
         if notification:
             # A notification is never answered, whatever the server sends back.
@@ -180,11 +202,11 @@ def bridge_line(line, state):
             reply = json.loads(body)
         except ValueError:
             reply = None
-        if isinstance(reply, dict) and "method" in reply:
+        if answered and isinstance(reply, dict) and "method" in reply:
             # A server-initiated message (notifications/progress and friends)
             # belongs to no request: forward it as it came, never as an error.
             emit(reply)
-        elif isinstance(reply, dict) and ("result" in reply or "error" in reply):
+        elif answered and is_reply(reply):
             result = reply.get("result")
             if isinstance(result, dict) and isinstance(result.get("protocolVersion"), str):
                 state["version"] = result["protocolVersion"]
