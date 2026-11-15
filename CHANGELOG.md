@@ -145,6 +145,23 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **`wake-host-deploy` could install a bundle it never built.** `install` took the newest
+  `/tmp/wake-build-*` by mtime, so a stale directory - or one planted by another local user - was
+  installed as root. `build` now records its artifact under `WAKE_DEPLOY_STATE` (0700 directory,
+  0600 pointer, and it must be a private directory of yours) and `install` reads only that record.
+  The same step staged migrations in `/tmp/wake-*.sql` and copied them with a glob, so anything
+  matching the glob became an installed migration while a migration the checkout no longer had
+  stayed forever; they now travel as one base64 tar stream with exact names, a name that is not a
+  migration name is refused, and a `.sql` the checkout no longer has is removed. `user` creates the
+  group before `useradd --gid wake` (which failed on a clean host, at the second documented step),
+  `install --dry-run` no longer exits on an empty `command -v node`, and `env` merges instead of
+  overwriting: lines the operator added stay, and `WAKE_MCP_ENABLED` comes from the environment
+  with a default of false, so a deploy does not republish a halted `/mcp`.
+- **The shellcheck step listed its own targets.** `bin/ops/wake-wait` was not shellchecked the day
+  it landed. CI and the README now filter `bin/ops/wake-*` by shebang, so a new bash helper is
+  covered without an edit, and a test proves the filter picks exactly the bash helpers.
+- **`wake-deploy` now renames each file into place.** A wake running from the prefix could exec a
+  half-written script; it copies to `.new` and `os.replace`s it.
 - **The doorbell's hourly cap keyed on the recipient alone**, so one sender's 30 wakes made another
   sender's first wake to the same bot `rate_limited`: message stored, no ring, and the API has no
   `--force`. The key is now `sender:recipient`: the CLI's number, but a deliberate divergence from

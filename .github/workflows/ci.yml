@@ -79,7 +79,7 @@ jobs:
       - name: ruff format --check
         run: ruff format --check .
       - name: shellcheck
-        run: shellcheck install.sh tests/run.sh scripts/scrub-check.sh bin/ops/wake-api-e2e bin/ops/wake-gate-check bin/ops/wake-keys bin/ops/wake-pg bin/ops/wake-pingall
+        run: shellcheck install.sh tests/run.sh scripts/scrub-check.sh $(grep -lE '^#!/(usr/)?bin/(env )?(ba)?sh' bin/ops/wake-* bin/wake*)
       - name: compileall
         run: |
           python -m compileall -q bin tests

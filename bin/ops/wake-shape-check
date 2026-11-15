@@ -5,9 +5,12 @@ print every command with the gate's verdict.
 
 A gate that refuses a shape turns the call into a silent no-op: wake reads nothing
 back and the message is gone. So a new build of `wake` is checked against the gate
-before it is installed. Nothing here runs a host command, reaches a network or
-touches a real state directory: `subprocess` and `_host_run` are replaced, and the
-state paths point at a scratch directory.
+before it is installed.
+
+The gate itself is executed in this process, with your privileges: `exec_module` runs
+its module-level code, so run this on a gate you trust. What is contained is the wake
+copy - `subprocess` and `_host_run` are replaced, and the state paths point at a
+scratch directory - so no command it builds reaches a host, a network or your state.
 """
 
 import ast

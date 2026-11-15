@@ -276,7 +276,7 @@ Each request also carries an `Idempotency-Key` derived from bot, source, event, 
 tests/run.sh                      # python3 from PATH
 PYTHON=python3.12 tests/run.sh    # a specific interpreter; the bin/ scripts run under it too
 uv run --with ruff ruff check . && uv run --with ruff ruff format --check .
-shellcheck install.sh tests/run.sh scripts/scrub-check.sh bin/ops/wake-api-e2e bin/ops/wake-gate-check bin/ops/wake-keys bin/ops/wake-pg bin/ops/wake-pingall
+shellcheck install.sh tests/run.sh scripts/scrub-check.sh $(grep -lE '^#!/(usr/)?bin/(env )?(ba)?sh' bin/ops/wake-* bin/wake*)
 scripts/scrub-check.sh --history  # fails on IPs other than 127.0.0.1, emails and token-like strings
 
 bun install                       # API and MCP workspace
