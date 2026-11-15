@@ -25,9 +25,14 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   `initialize` has answered), and JSON or single-event SSE replies come back as one line each.
   Notifications are forwarded and never answered; a batch, an unreachable API or a body that is not
   JSON-RPC becomes a JSON-RPC error on the asking id. The tool table, schemas, rate limit, audit and
-  private-bot wall stay the server's — the bridge implements none of them. `WAKE_MCP_API`
-  (default `http://127.0.0.1:3001`) names the server; without a token the binary stays the legacy
-  two-tool helper (`wake_bot`, `wake_list`). Contract: [docs/mcp.md](docs/mcp.md).
+  private-bot wall stay the server's — the bridge implements none of them. A `3xx` is refused
+  instead of followed (urllib would re-send the bearer token to `Location`), a `429` is answered
+  on the asking id instead of `null`, a reply cut short answers `-32603` and leaves the session
+  running, and a server-initiated notification is forwarded verbatim. `WAKE_MCP_API`
+  (default `http://127.0.0.1:3001`) names the server — `https` for any non-loopback host, since
+  the token is a bearer credential — and `config.env` should be mode 600 (the bridge warns).
+  Without a token the binary stays the legacy two-tool helper (`wake_bot`, `wake_list`).
+  Contract: [docs/mcp.md](docs/mcp.md).
 - **Private bots.** `agents.is_private` plus `PUT /agents/:name/private`: a private bot is hidden
   from and unreachable by the public MCP identity (404 for `ask`/`send`, absent from `wake_bots`,
   skipped by a broadcast) while bot-to-bot traffic is unchanged. `GET /agents` reports the flag.
