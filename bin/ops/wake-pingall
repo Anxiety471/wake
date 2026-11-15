@@ -23,8 +23,12 @@ usage: wake-pingall [ALIAS ...]
                 WAKE_PING_TIMEOUT    seconds each ask waits (240)
                 WAKE_PING_MESSAGE    the question (a one-word pong check by default)
 
+  An alias that is not letters, digits, hyphen and underscore is named and skipped - it becomes
+  a file name, and ../x would write outside the log directory - while the rest of the batch runs;
+  the exit code is then 2.
+
   exit 0 when the asks were started, 1 when there is no registry, no open bot, or no wake on
-  PATH, 2 on an alias that is not letters, digits, hyphen and underscore
+  PATH, 2 when an alias was refused (the rest still ran) or none was left to ping
 EOF
 }
 
@@ -49,24 +53,31 @@ else
     }
 fi
 
-# An alias becomes both an argument and a file name ($LOG_DIR/<alias>.log), so it is checked
-# before either: an alias like ../x would write outside the log directory.
-for alias in $LIST; do
-    case $alias in
-        *[!A-Za-z0-9_-]*)
-            echo "bad bot alias '$alias': letters, digits, hyphen and underscore only" >&2
-            exit 2
-            ;;
-    esac
-done
-
 command -v wake >/dev/null || {
     echo "wake not found on PATH; run ./install.sh first" >&2
     exit 1
 }
 
 mkdir -p "$LOG_DIR"
+# An alias becomes both an argument and a file name ($LOG_DIR/<alias>.log), so it is checked
+# before either: an alias like ../x would write outside the log directory. One bad alias is
+# named and skipped, the rest of the batch still runs, and the exit code says one was refused.
+STARTED=""
+REFUSED=0
 for alias in $LIST; do
+    case $alias in
+        *[!A-Za-z0-9_-]*)
+            echo "wake-pingall: bad bot alias '$alias' (letters, digits, hyphen and underscore only); skipped" >&2
+            REFUSED=1
+            continue
+            ;;
+    esac
     nohup wake --ask "$alias" "$MSG" --wait "$WAIT" </dev/null >"$LOG_DIR/$alias.log" 2>&1 &
+    STARTED="$STARTED $alias"
 done
-echo "started: $LIST(logs in $LOG_DIR)"
+[ -n "$STARTED" ] || {
+    echo "wake-pingall: no alias left to ping" >&2
+    exit 2
+}
+echo "started:$STARTED (logs in $LOG_DIR)"
+[ "$REFUSED" = 0 ] || exit 2
