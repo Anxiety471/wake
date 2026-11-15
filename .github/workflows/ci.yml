@@ -79,7 +79,7 @@ jobs:
       - name: ruff format --check
         run: ruff format --check .
       - name: shellcheck
-        run: shellcheck install.sh tests/run.sh scripts/scrub-check.sh
+        run: shellcheck install.sh tests/run.sh scripts/scrub-check.sh bin/ops/wake-*
       - name: compileall
         run: |
           python -m compileall -q bin tests
