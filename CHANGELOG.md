@@ -7,6 +7,10 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **`tests/test_gate_shapes.py` no longer carries one machine's staging directory.**
+  The directory is `WAKE_GATE_STAGE` now (default: unset, so the allow-list tests skip),
+  `WAKE_GATE` still names one artifact, and a test pins the empty case. Where a gate is
+  staged is a property of a machine, never of the repository.
 - **A deploy runbook, a systemd unit and two operator scripts.** `deploy/README.md` runs the
   API on the host: a `wake` service account, `/opt/wake` (bundle, `node`, migrations beside it),
   `/etc/wake/api.env` as `root:wake 640` and an `mcp-token` nobody else can read, a unit that

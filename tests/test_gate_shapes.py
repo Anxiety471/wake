@@ -26,13 +26,18 @@ from unittest import mock
 
 from test_wake import WakeTestCase, slurp, write_exe  # noqa: E402
 
-GATE_STAGE = "/home/operator/shared/ops-review"
+GATE_STAGE = os.environ.get("WAKE_GATE_STAGE", "")
 
 
 def staged_gate():
     """The gate to check against: the newest pinned `rakazo-wake-gate.vN` in the staging
     directory, else the bare name. The bare file is restaged under a running check, so a
-    pinned copy is what the assertions can rely on."""
+    pinned copy is what the assertions can rely on.
+
+    Empty when no staging directory is configured: where a gate lives is a property of
+    one machine, never of the repository."""
+    if not GATE_STAGE:
+        return ""
     best = None
     try:
         names = os.listdir(GATE_STAGE)
@@ -133,9 +138,10 @@ class CommandShapeTests(WakeTestCase):
 class GateAllowListTests(WakeTestCase):
     def setUp(self):
         super().setUp()
-        self.gate_path = os.environ.get("WAKE_GATE", GATE_DEFAULT)
-        if not os.path.exists(self.gate_path):
-            self.skipTest(f"no staged gate at {self.gate_path}: set WAKE_GATE to check wake's commands against it")
+        self.gate_path = os.environ.get("WAKE_GATE") or GATE_DEFAULT
+        if not self.gate_path or not os.path.exists(self.gate_path):
+            where = self.gate_path or "no path configured"
+            self.skipTest(f"no staged gate ({where}): set WAKE_GATE or WAKE_GATE_STAGE to check wake's commands")
 
     def load_gate(self):
         loader = importlib.machinery.SourceFileLoader("wake_gate", self.gate_path)
@@ -202,6 +208,12 @@ class StagedGatePickTests(unittest.TestCase):
     def test_missing_staging_directory_does_not_raise(self):
         with mock.patch.object(sys.modules[__name__], "GATE_STAGE", os.path.join(tempfile.mkdtemp(), "gone")):
             self.assertTrue(staged_gate().endswith("rakazo-wake-gate"))
+
+    def test_no_staging_directory_configured_means_no_gate(self):
+        # Where a gate is staged is a property of one machine, so the repository has no
+        # opinion: without WAKE_GATE_STAGE (or WAKE_GATE) the allow-list tests skip.
+        with mock.patch.object(sys.modules[__name__], "GATE_STAGE", ""):
+            self.assertEqual(staged_gate(), "")
 
 
 if __name__ == "__main__":
