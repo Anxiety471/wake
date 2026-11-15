@@ -22,7 +22,7 @@ NAMES = sorted(n for n in os.listdir(OPS) if not n.endswith(".md"))
 DOCS = (os.path.join(OPS, "README.md"), os.path.join(ROOT, "config.example.env"))
 
 # Paths and names that belong to one operator's machine, never to this repo.
-PERSONAL = ("/home/", "/root/", "/Users/", "/tmp/pgbuild", "example-site", "example-owner", "example-handle")
+PERSONAL = ("/home/", "/root/", "/Users/", "/tmp/pgbuild", "rakazo", "hitori", "Anxiety471")
 
 # A real hostname, which CONTRIBUTING keeps out of these files the same way it keeps out an IP.
 # The TLD list is deliberately short: a placeholder (example.com) is allowed, a live name is not.
