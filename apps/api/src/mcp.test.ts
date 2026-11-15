@@ -429,6 +429,29 @@ test('every call is audited, including a failed one', async () => {
   });
 });
 
+test('wake_inbox_read refuses more ids than it advertises', async () => {
+  const mcp = await identity();
+  const ids = Array.from(
+    { length: 101 },
+    (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+  );
+  const refused = await callTool(mcp.token, 'wake_inbox_read', { ids });
+  expect(refused.status).toBe(200);
+  expect(refused.raw.error?.code).toBe(-32602);
+  expect(refused.raw.error?.message).toContain('at most 100 ids');
+  // Refused in this process: it never reached /inbox/read, so there is no
+  // http_400 audit row to explain.
+  const audited = await admin.query<{ count: string }>(
+    `SELECT count(*)::text AS count FROM mcp_audit WHERE error = 'http_400'`,
+  );
+  expect(audited.rows[0]?.count).toBe('0');
+  // Exactly 100 still goes through.
+  const allowed = await callTool(mcp.token, 'wake_inbox_read', {
+    ids: ids.slice(0, 100),
+  });
+  expect(allowed.raw.error).toBeUndefined();
+});
+
 test('the rate limit answers 429 with retry-after and is audited', async () => {
   const limited = buildApp(databaseUrl, {
     registrationSecret: OPERATOR,
@@ -460,6 +483,13 @@ test('the rate limit answers 429 with retry-after and is audited', async () => {
     const blocked = await call();
     expect(blocked.statusCode).toBe(429);
     expect(blocked.headers['retry-after']).toBe('60');
+    // A JSON-RPC client parses every body it gets, including an error the
+    // transport produced, so the 429 carries a JSON-RPC error, not {"error":…}.
+    expect(blocked.json()).toEqual({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32000, message: 'rate_limited' },
+    });
     const audited = await admin.query<{ error: string; status: number }>(
       `SELECT error, status FROM mcp_audit WHERE error = 'rate_limited'`,
     );
