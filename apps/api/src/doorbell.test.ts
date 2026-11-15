@@ -249,7 +249,7 @@ describe('doorbellPayload', () => {
     });
   });
 
-  test('carries the thread ref and the reply hint for a request', () => {
+  test('an API thread carries an api-thread ref and names the API reply route', () => {
     const payload = doorbellPayload({
       messageId: 'm2',
       from: 'alice',
@@ -259,11 +259,13 @@ describe('doorbellPayload', () => {
       threadId: 'thread-1',
       time: new Date('2026-11-14T16:00:00.000Z'),
     });
-    expect(payload.ref).toBe('thread:thread-1');
+    // The id lives in Postgres; `wake --reply` reads a different store, so the
+    // CLI's prefix and hint were a guaranteed dead end (issue #96).
+    expect(payload.ref).toBe('api-thread:thread-1');
     expect(payload.detail).toBe(`why is CI red?${replyHint('thread-1')}`);
-    expect(payload.detail).toContain(
-      'reply: wake --reply thread-1 "YOUR ANSWER"',
-    );
+    expect(payload.detail).toContain('POST /threads/thread-1/reply');
+    // Not even the words: a routine that greps the detail would run it.
+    expect(payload.detail).not.toContain('wake --reply');
     expect(payload.threadId).toBe('thread-1');
   });
 

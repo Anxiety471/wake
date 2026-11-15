@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import shlex
 import shutil
 import subprocess
@@ -530,6 +531,23 @@ def ask(b, text, wait, level, source, force, no_send=False):
     return 3
 
 
+API_THREAD_ID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def api_thread_refusal(tid):
+    """The API mints UUID thread ids in Postgres; this CLI reads only the shared folder, so its
+    "never opened" text is wrong for one: name the store the id belongs to and the route that
+    can answer it (issue #96). None for a CLI-shaped id, so its message stays as it was."""
+    if not API_THREAD_ID.match(tid):
+        return None
+    return (
+        f"no thread {tid} in the shared-folder store at {THREADS}: that id belongs to a thread the "
+        f"wake API opened, which wake --reply cannot see. Answer it on the API: "
+        f"POST /threads/{tid}/reply with an agent token (MCP clients: the wake_reply tool). "
+        f"CLI threads have ids like 1114-a3f2."
+    )
+
+
 def reply(tid, text, source, notify, force):
     recs = thread_read(tid)
     if recs is None:
@@ -540,9 +558,12 @@ def reply(tid, text, source, notify, force):
     if not recs:
         audit("reply-refused", source, text, tid, rc=4)
         sys.exit(
-            f"no thread {tid}: it was never opened, so there is nothing to answer. "
-            f'A question thread is created by: wake --ask <bot> "<question>" (checked {THREADS}). '
-            f"To reach that sender directly, wake the bot instead."
+            api_thread_refusal(tid)
+            or (
+                f"no thread {tid}: it was never opened, so there is nothing to answer. "
+                f'A question thread is created by: wake --ask <bot> "<question>" (checked {THREADS}). '
+                f"To reach that sender directly, wake the bot instead."
+            )
         )
     head = recs[0]
     owner = head.get("owner") or head.get("from", "")

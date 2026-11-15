@@ -421,6 +421,16 @@ class ThreadTests(WakeTestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("never opened", r.stderr)
 
+    def test_reply_to_an_api_thread_names_the_api_route(self):
+        """A UUID was minted by the API in Postgres, not by --ask: "never opened" hides the one
+        route that can answer it, so the refusal names the store and the route (issue #96)."""
+        tid = "11a793f5-9f12-40c5-8880-19d4fb80431b"
+        r = self.wake("--reply", tid, "x", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(f"POST /threads/{tid}/reply", r.stderr)
+        self.assertIn("wake API", r.stderr)
+        self.assertNotIn("never opened", r.stderr)
+
     def test_reply_lands_in_live_session_inbox(self):
         self.put_key("bot-engineer-0002")
         inbox = os.path.join(self.state, "inbox", "s1.jsonl")

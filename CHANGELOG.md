@@ -68,6 +68,20 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   exported `WAKE_INBOX` pointing at nothing. `register` and `beat` now return the host command's
   status and print its stderr, and a failed `register` prints no path. `read` is unchanged: an
   unreadable inbox still reads as empty, because that is what a quiet inbox looks like.
+
+- **The doorbell no longer sends an API thread's recipient to `wake --reply`, which cannot answer it.**
+  The API copied the CLI's payload wording, so an MCP `wake_ask` arrived as
+  `[thread <uuid>] reply: wake --reply <uuid> "YOUR ANSWER"` with `ref: thread:<uuid>`, and
+  `bin/wake` refused with "no thread ...: it was never opened": the id is in Postgres, and the CLI
+  reads the shared-folder store. The hint now names the route that answers it
+  (`POST /threads/<id>/reply` with an agent token, the same route as the MCP tool `wake_reply`),
+  `ref` is `api-thread:<id>` so a routine that routes on the CLI's `thread:` prefix does not fire
+  the CLI, and `wake --reply <uuid>` names the store and the route instead of claiming the thread
+  was never opened. CLI threads are unchanged: their hint, prefix and refusal are what they were.
+  A recipient still needs an agent token, which the fleet does not deploy yet: that capability is
+  [#93](https://github.com/Anxiety471/wake/issues/93). The false instruction fixed here is
+  [#96](https://github.com/Anxiety471/wake/issues/96).
+
 - **A reserved test address is not a secret, and one branch's fixture failed every branch's scan.**
   `scripts/scrub-check.sh` flagged `user.email=simulation@example.invalid` in
   `tests/test_publish_checklist.py`: an address on an RFC 2606 reserved name, which can never resolve

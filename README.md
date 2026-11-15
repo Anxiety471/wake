@@ -115,7 +115,9 @@ Put each bot's webhook key in `~/.config/wake/<bot-id>.key` (`chmod 600`), or le
 
 ### Every bot needs its own copy
 
-`wake` is only a command. A bot that receives a wake as a webhook run answers a question with `wake --reply <thread-id> "<answer>"`. That only works if `wake` exists **on that bot's own computer**.
+`wake` is only a command. A bot that receives a **CLI** thread as a webhook run answers it with `wake --reply <thread-id> "<answer>"`. That only works if `wake` exists **on that bot's own computer**.
+
+A thread the **API** opened is not in that store: its id lives in the API's Postgres, the doorbell names `POST /threads/<id>/reply`, and its `ref` is `api-thread:<id>` rather than `thread:<id>`. `wake --reply` cannot answer one, and it says so instead of "never opened".
 
 Bots with separate computers do not share a home folder, so installing `wake` on one machine does not install it on another. A bot without it gets "command not found" on `--reply` and will usually answer in its own chat instead. The asker sees no reply on the thread, and the user gets an unexpected message.
 
@@ -123,7 +125,7 @@ Checklist for each bot (do this when you add a bot to `bots.tsv`):
 
 1. Run `./install.sh` on that bot's computer, so `wake` is on its PATH.
 2. Put the keys in `WAKE_KEY_DIR`. Keys are per target bot, so the replying bot needs the key for whichever bot it is answering, not only its own.
-3. Add a rule to the bot's webhook routine: *if `ref` starts with `thread:`, answer only with `wake --reply <id> "<short answer>" --source bot:<alias>` and send no other message.* Without this rule a bot may treat the payload as untrusted text and report in its own chat.
+3. Add a rule to the bot's webhook routine: *if `ref` starts with `thread:`, answer only with `wake --reply <id> "<short answer>" --source bot:<alias>` and send no other message.* Without this rule a bot may treat the payload as untrusted text and report in its own chat. `api-thread:` is the API's prefix, not the CLI's: that thread is answered on the API (`POST /threads/<id>/reply`), never with `wake --reply`.
 4. Verify: run `command -v wake` on that computer, send it `wake --ask <alias> "ping" --wait 60`, and confirm a reply appears with `wake --thread <id>`.
 
 Symptom of a missing install: the thread file shows the ask and the wake, but no `reply` record.
@@ -177,7 +179,7 @@ wake --ask engineer "why does CI fail on main?" --wait 180 # headless: block unt
 wake --ask engineer "..." --no-send                        # record the thread only (dry run)
 ```
 
-The bot receives `<question> [thread <id>] reply: wake --reply <id> "YOUR ANSWER"`.
+The bot receives `<question> [thread <id>] reply: wake --reply <id> "YOUR ANSWER"` for a CLI thread. A thread opened through the API or MCP carries `ref: api-thread:<id>` and the API route instead, because the CLI cannot read that store.
 
 ### `--reply`: answer a thread
 

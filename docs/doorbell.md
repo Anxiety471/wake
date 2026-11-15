@@ -45,8 +45,10 @@ delivery per bot.
 
 ## Payload
 
-The recipient sees the CLI's field names and wording, so an existing routine
-keeps working when the CLI becomes a client of the API:
+The recipient sees the CLI's field names, so a routine that reads them keeps
+working when the CLI becomes a client of the API. The thread wording differs on
+purpose: a CLI thread is answered by the CLI, and an API thread is answered on
+the API, so the two payloads cannot share one hint (issue #96).
 
 ```json
 {
@@ -54,8 +56,8 @@ keeps working when the CLI becomes a client of the API:
   "source": "bot:alice",
   "event": "request",
   "level": "info",
-  "detail": "why is CI red? [thread 4f1c...] reply: wake --reply 4f1c... \"YOUR ANSWER\"",
-  "ref": "thread:4f1c...",
+  "detail": "why is CI red? [thread 4f1c...] reply on the wake API: POST /threads/4f1c.../reply with an agent token (not in the CLI's thread store)",
+  "ref": "api-thread:4f1c...",
   "time": "2026-11-14T16:00:00.000Z",
   "messageId": "9e2b...",
   "threadId": "4f1c...",
@@ -66,18 +68,22 @@ keeps working when the CLI becomes a client of the API:
 
 - `event` is `message` for a plain message, `request` for a thread opened with
   `POST /threads`, and `reply` for `POST /threads/:id/reply`.
-- `ref` starts with `thread:` for a `request`, which is the routing signal a
-  routine uses today; it is empty for a plain message **and for a `reply`**. A
-  reply cannot be answered, so it must not look answerable: a receiver that
-  routes on `ref` alone would otherwise fire `wake --reply` and collect a 409.
-  `threadId` still names the thread for anything that wants to record it.
+- `ref` is `api-thread:<id>` for a `request`; it is empty for a plain message
+  **and for a `reply`**. A reply cannot be answered, so it must not look
+  answerable. The prefix is deliberately not the CLI's `thread:`: that id is in
+  this API's store, and a routine that routes on `thread:` would run
+  `wake --reply`, which reads the CLI's shared-folder store and cannot see it
+  ([#96](https://github.com/Anxiety471/wake/issues/96)). `threadId` still names
+  the thread for anything that wants to record it.
 - `depth` is `0`, the depth the CLI sends for a normal bot, so a receiver that
   exports it as `WAKE_DEPTH` can still send its own wakes (`wake-run` raises it
   to 1, and `wake` refuses at 2).
-- `detail` for a `request` is the body followed by the CLI's reply hint,
-  verbatim. For a `reply` it is `reply on thread <id>: <body>`: the reply wakes
-  the asker, who cannot answer its own ask (`409`), so the reply hint would
-  invite a refused call.
+- `detail` for a `request` is the body followed by the route that answers it,
+  `POST /threads/<id>/reply` with an agent token (the MCP tool `wake_reply` calls
+  the same route). It is not the CLI's hint: `wake --reply` cannot read an API
+  thread, so advertising it was a dead end. For a `reply` the detail is
+  `reply on thread <id>: <body>`: the reply wakes the asker, who cannot answer
+  its own ask (`409`), so a reply hint would invite a refused call.
 - What the payload does **not** carry: the CLI appends ` | host=… user=… cwd=…`
   to `detail`, and the API has no sender working directory, so it sends none of
   that. `time` is ISO 8601 with `Z` (`2026-11-14T16:14:49.244Z`) where the CLI

@@ -263,4 +263,6 @@ quietly answering with two tools, which looks like a working session (issue #76)
   contract for now.
 - **the CLI as an API client**: `bin/wake` still uses the shared-folder store and
   the webhook doorbell. Moving it onto this API is its own step, and the one that
-  retires the shared-folder store.
+  retires the shared-folder store. Until then an API thread is answered on the
+  API (`POST /threads/:id/reply`, tool `wake_reply`); the doorbell says so, and
+  `wake --reply <uuid>` refuses with the same route instead of "never opened".
