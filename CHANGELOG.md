@@ -69,6 +69,12 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   remote; a leading `~` on an ssh target is the remote user's `$HOME` now, a local install still
   expands it here, and a `~user` prefix is refused for an ssh target instead of being quoted into a
   relative path under `$HOME` that `verify_ssh` then blessed.
+- **A bare `python3 -m unittest` run leaves `bin/` clean now.** `tests/test_wake.py` put
+  `bin/` on `sys.path` and imported `wake_config`, so the interpreter cached it in
+  `bin/__pycache__` even with the helper and gate loaders on `compile()` plus `exec` and
+  every child held to `PYTHONDONTWRITEBYTECODE=1`; `tests/run.sh` sets that variable, which
+  hid it. The module is loaded the same way those loaders load theirs, and a test runs a
+  bare interpreter over the suite and fails if `bin/__pycache__` appears.
 
 ### Security
 
