@@ -58,15 +58,20 @@ def problem(path, flag="--help"):
             )
         except subprocess.TimeoutExpired:
             return f"{flag} did not return within 120s"
-    if r.returncode != 0:
-        said = (r.stderr or r.stdout or "").strip()
-        return f"{flag} exited {r.returncode}, not 0: {said[:200]}"
-    lines = (r.stdout or "").strip().splitlines()
-    if not lines:
-        return f"{flag} printed nothing on stdout"
-    expected = "usage: " + path.name
-    if not lines[0].startswith(expected):
-        return f"{flag} printed {lines[0][:80]!r}, not {expected!r}"
+        if r.returncode != 0:
+            said = (r.stderr or r.stdout or "").strip()
+            return f"{flag} exited {r.returncode}, not 0: {said[:200]}"
+        lines = (r.stdout or "").strip().splitlines()
+        if not lines:
+            return f"{flag} printed nothing on stdout"
+        expected = "usage: " + path.name
+        if not lines[0].startswith(expected):
+            return f"{flag} printed {lines[0][:80]!r}, not {expected!r}"
+        # A help path that does work and then prints usage would pass everything above, so the
+        # empty home and cwd are checked too: --help must leave nothing behind.
+        leftovers = sorted(os.listdir(home))
+        if leftovers:
+            return f"{flag} wrote {leftovers[:3]} instead of only answering"
     return None
 
 
@@ -154,6 +159,10 @@ class CommandHelpTestCase(unittest.TestCase):
             wrong_text.write_text("#!/bin/sh\nprintf 'PASS initialize\\n'\n")
             wrong_text.chmod(0o755)
             self.assertIsNotNone(problem(wrong_text), "a command that printed work output passed")
+            wrote_then_helped = Path(tmp) / "selftest-wrote-then-helped"
+            wrote_then_helped.write_text("#!/bin/sh\n: > done\nprintf 'usage: selftest-wrote-then-helped\\n'\n")
+            wrote_then_helped.chmod(0o755)
+            self.assertIsNotNone(problem(wrote_then_helped), "a help path that left a file passed")
 
 
 if __name__ == "__main__":
