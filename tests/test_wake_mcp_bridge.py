@@ -36,6 +36,7 @@ class FakeMcp:
 
     def __init__(self):
         self.requests = []
+        self.stealer_port = None
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -114,6 +115,37 @@ class FakeMcp:
                     )
                 elif method == "broken":
                     send(self, 500, "text/plain; charset=utf-8", "boom\n")
+                elif method == "redirect":
+                    # A proxy or a moved path answering 3xx. urllib must not
+                    # carry the bearer token to the Location it names.
+                    self.send_response(302)
+                    self.send_header("Location", f"http://127.0.0.1:{outer.stealer_port}/elsewhere")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                elif method == "truncated":
+                    # Promises 200 bytes, writes 22, closes: IncompleteRead.
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", "200")
+                    self.end_headers()
+                    self.wfile.write(b'{"jsonrpc":"2.0","id":')
+                    self.wfile.flush()
+                    self.close_connection = True
+                elif method == "progress":
+                    first = json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "notifications/progress",
+                            "params": {"progress": 50},
+                        }
+                    )
+                    second = json.dumps({"jsonrpc": "2.0", "id": body.get("id"), "result": {"ok": True}})
+                    send(
+                        self,
+                        200,
+                        "text/event-stream",
+                        "event: message\ndata: " + first + "\n\nevent: message\ndata: " + second + "\n\n",
+                    )
                 elif method is None or str(method).startswith("notifications/"):
                     send(self, 202, "", "")
                 else:
@@ -138,24 +170,66 @@ class FakeMcp:
         self.thread.join(timeout=5)
 
 
+class Recorder:
+    """A second origin that records every request. Nothing should reach it."""
+
+    def __init__(self):
+        self.requests = []
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def record(self, method):
+                outer.requests.append(
+                    {
+                        "method": method,
+                        "path": self.path,
+                        "headers": {k.lower(): v for k, v in self.headers.items()},
+                    }
+                )
+                send(self, 200, "application/json", '{"jsonrpc":"2.0","id":1,"result":{}}')
+
+            def do_GET(self):
+                self.record("GET")
+
+            def do_POST(self):
+                self.record("POST")
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.port = self.server.server_address[1]
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+
+
 class BridgeTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.fake = FakeMcp()
+        cls.stealer = Recorder()
+        cls.fake.stealer_port = cls.stealer.port
         cls.tmp = tempfile.mkdtemp(prefix="wake-mcp-bridge-")
 
     @classmethod
     def tearDownClass(cls):
         cls.fake.close()
+        cls.stealer.close()
 
     def setUp(self):
         self.fake.requests.clear()
+        self.stealer.requests.clear()
 
-    def env(self, token=TOKEN, api=None):
+    def env(self, token=TOKEN, api=None, config=None):
         environ = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "WAKE_CONFIG_DIR": self.tmp,
-            "WAKE_CONFIG": os.path.join(self.tmp, "missing.env"),
+            "WAKE_CONFIG": config or os.path.join(self.tmp, "missing.env"),
             "WAKE_MCP_API": api or f"http://127.0.0.1:{self.fake.port}",
         }
         if token is not None:
@@ -224,6 +298,7 @@ class BridgeTest(unittest.TestCase):
     def test_a_server_error_body_is_relayed_not_rewrapped(self):
         out, _ = self.run_bridge({"jsonrpc": "2.0", "id": 4, "method": "throttled"})
         self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["id"], 4)
         self.assertEqual(out[0]["error"]["code"], -32000)
         self.assertEqual(out[0]["error"]["message"], "rate_limited")
 
@@ -251,6 +326,78 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(out[0]["id"], 7)
         self.assertEqual(out[0]["error"]["code"], -32603)
         self.assertIn("unreachable", out[0]["error"]["message"])
+
+    def test_a_redirect_is_refused_not_followed_with_the_token(self):
+        out, process = self.run_bridge({"jsonrpc": "2.0", "id": 20, "method": "redirect"})
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(self.stealer.requests, [])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["id"], 20)
+        self.assertEqual(out[0]["error"]["code"], -32603)
+        self.assertIn("HTTP 302", out[0]["error"]["message"])
+        self.assertEqual(len(self.fake.requests), 1)
+        self.assertEqual(self.fake.requests[0]["path"], "/mcp")
+
+    def test_a_rate_limited_reply_answers_on_the_asking_id(self):
+        out, _ = self.run_bridge(
+            [
+                {"jsonrpc": "2.0", "id": 21, "method": "throttled"},
+                {"jsonrpc": "2.0", "id": 22, "method": "ping"},
+            ]
+        )
+        self.assertEqual([m["id"] for m in out], [21, 22])
+        self.assertEqual(out[0]["error"]["message"], "rate_limited")
+        self.assertEqual(out[1]["result"], {})
+
+    def test_a_cut_short_reply_does_not_end_the_session(self):
+        out, process = self.run_bridge(
+            [
+                {"jsonrpc": "2.0", "id": 23, "method": "truncated"},
+                {"jsonrpc": "2.0", "id": 24, "method": "ping"},
+            ]
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual([m["id"] for m in out], [23, 24])
+        self.assertEqual(out[0]["error"]["code"], -32603)
+        self.assertIn("cut the reply short", out[0]["error"]["message"])
+        self.assertEqual(out[1]["result"], {})
+
+    def test_a_server_notification_mid_stream_is_forwarded_verbatim(self):
+        out, _ = self.run_bridge({"jsonrpc": "2.0", "id": 25, "method": "progress"})
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0]["method"], "notifications/progress")
+        self.assertEqual(out[0]["params"]["progress"], 50)
+        self.assertNotIn("error", out[0])
+        self.assertEqual(out[1]["id"], 25)
+        self.assertEqual(out[1]["result"], {"ok": True})
+
+    def test_a_request_with_a_null_id_is_forwarded_not_swallowed(self):
+        out, _ = self.run_bridge('{"jsonrpc":"2.0","id":null,"method":"ping"}')
+        self.assertEqual(len(self.fake.requests), 1)
+        self.assertEqual(len(out), 1)
+        self.assertIsNone(out[0]["id"])
+        self.assertEqual(out[0]["result"], {})
+
+    def test_a_readable_config_file_is_called_out_without_its_token(self):
+        path = os.path.join(self.tmp, "config.env")
+        with open(path, "w") as handle:
+            handle.write("WAKE_MCP_TOKEN=" + TOKEN + "\n")
+        os.chmod(path, 0o644)
+        try:
+            out, process = self.run_bridge([], config=path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertIn("keep the token file at 600", process.stderr)
+        self.assertNotIn(TOKEN, process.stderr)
+        self.assertEqual(out, [])
+
+    def test_plain_http_to_a_remote_host_warns_without_the_token(self):
+        out, process = self.run_bridge([], api="http://wake.example.com:3001")
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertIn("in clear", process.stderr)
+        self.assertNotIn(TOKEN, process.stderr)
+        self.assertEqual(out, [])
 
     def test_without_a_token_it_stays_the_legacy_two_tool_helper(self):
         out, _ = self.run_bridge(

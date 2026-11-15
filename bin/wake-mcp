@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # desc: MCP stdio server for wake. With WAKE_MCP_TOKEN set it is a bridge: every message on stdin goes to POST /mcp and the reply comes back on stdout, so a stdio-only client gets the server's ten thread tools with no second tool table. Without a token it is the legacy two-tool CLI helper (wake_bot, wake_list).
+import http.client
 import json
 import os
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -14,6 +16,22 @@ CFG = wake_config.load()
 TOKEN = (CFG.get("WAKE_MCP_TOKEN") or "").strip()
 API = ((CFG.get("WAKE_MCP_API") or "").strip() or "http://127.0.0.1:3001").rstrip("/")
 TIMEOUT = 60.0
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx is an answer, not an instruction: do not follow it.
+
+    urllib re-sends every header on a redirect, Authorization included, and
+    turns a redirected POST into a GET, so a 301 from a proxy or a moved path
+    would hand the mcp token to whatever host Location names. The doorbell
+    made the same call (redirect: manual).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+OPENER = urllib.request.build_opener(_NoRedirect)
 
 LEGACY_TOOLS = [
     {
@@ -52,8 +70,8 @@ def error_body(rid, message):
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32603, "message": message}}
 
 
-class Unreachable(Exception):
-    pass
+class Transport(Exception):
+    """No usable reply. The message is the whole reason, API included."""
 
 
 def post(message, version):
@@ -71,12 +89,26 @@ def post(message, version):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        with OPENER.open(request, timeout=TIMEOUT) as response:
             return response.status, response.headers.get("content-type", ""), response.read()
     except urllib.error.HTTPError as error:
-        return error.code, error.headers.get("content-type", ""), error.read()
-    except (urllib.error.URLError, OSError) as error:
-        raise Unreachable(str(getattr(error, "reason", error))) from error
+        # A 3xx lands here too: with no redirect handler there is no second request.
+        try:
+            body = error.read()
+        except (http.client.HTTPException, OSError):
+            body = b""
+        received = error.headers.get("content-type", "") if error.headers else ""
+        return error.code, received, body
+    except urllib.error.URLError as error:
+        raise Transport("wake API unreachable at " + API + ": " + str(getattr(error, "reason", error))) from error
+    except http.client.HTTPException as error:
+        # IncompleteRead is an HTTPException, not an OSError: a body cut short by
+        # a proxy or a restarting API used to end the whole client session.
+        raise Transport(
+            "wake API cut the reply short at " + API + ": " + (str(error) or type(error).__name__)
+        ) from error
+    except OSError as error:
+        raise Transport("wake API unreachable at " + API + ": " + str(error)) from error
 
 
 def payloads(content_type, raw):
@@ -97,6 +129,15 @@ def payloads(content_type, raw):
     return out
 
 
+def line_id(line):
+    """Best effort: the id a line asks about, for the crash guard below."""
+    try:
+        message = json.loads(line)
+    except ValueError:
+        return None
+    return message.get("id") if isinstance(message, dict) else None
+
+
 def bridge_line(line, state):
     try:
         message = json.loads(line)
@@ -113,21 +154,25 @@ def bridge_line(line, state):
         )
         return
     rid = message.get("id")
+    # The API tells the two apart the same way: no "id" key is a notification,
+    # while "id": null is a request and gets a null-id answer. MCP ids are
+    # string|number, so null is outside the id space, but silence is worse.
+    notification = "id" not in message
     try:
         status, content_type, raw = post(message, state.get("version"))
-    except Unreachable as failure:
-        if rid is None:
-            note("wake-mcp: wake API unreachable at " + API + ": " + str(failure))
+    except Transport as failure:
+        if notification:
+            note("wake-mcp: " + str(failure))
         else:
-            emit(error_body(rid, "wake API unreachable at " + API + ": " + str(failure)))
+            emit(error_body(rid, str(failure)))
         return
     bodies = payloads(content_type, raw)
     if not bodies:
-        if status not in (200, 202) and rid is not None:
+        if status not in (200, 202) and not notification:
             emit(error_body(rid, "HTTP " + str(status)))
         return
     for body in bodies:
-        if rid is None:
+        if notification:
             # A notification is never answered, whatever the server sends back.
             note("wake-mcp: dropped a reply to a notification: " + body.strip()[:300])
             continue
@@ -135,10 +180,19 @@ def bridge_line(line, state):
             reply = json.loads(body)
         except ValueError:
             reply = None
-        if isinstance(reply, dict) and ("result" in reply or "error" in reply):
+        if isinstance(reply, dict) and "method" in reply:
+            # A server-initiated message (notifications/progress and friends)
+            # belongs to no request: forward it as it came, never as an error.
+            emit(reply)
+        elif isinstance(reply, dict) and ("result" in reply or "error" in reply):
             result = reply.get("result")
             if isinstance(result, dict) and isinstance(result.get("protocolVersion"), str):
                 state["version"] = result["protocolVersion"]
+            if reply.get("id") != rid:
+                # A 429 is decided before the body is parsed, so it carries
+                # id: null. A client matches replies by id: answer on the id
+                # that asked, or the call hangs until its own timeout.
+                reply["id"] = rid
             emit(reply)
         else:
             emit(error_body(rid, "HTTP " + str(status) + ": " + body.strip()[:300]))
@@ -148,8 +202,15 @@ def run_bridge():
     state = {}
     for line in sys.stdin:
         line = line.strip()
-        if line:
+        if not line:
+            continue
+        try:
             bridge_line(line, state)
+        except Exception as error:  # one bad answer must never end the session
+            note("wake-mcp: internal error: " + type(error).__name__ + ": " + str(error))
+            rid = line_id(line)
+            if rid is not None:
+                emit(error_body(rid, "internal bridge error: " + type(error).__name__))
 
 
 def legacy_call(name, arguments):
@@ -219,8 +280,32 @@ def run_legacy():
             )
 
 
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def check_settings():
+    """Warnings only, on stderr: nothing here may print the token."""
+    parts = urllib.parse.urlsplit(API)
+    if parts.scheme == "http" and parts.hostname not in LOOPBACK + (None,):
+        note(
+            "wake-mcp: WAKE_MCP_API is plain http to "
+            + str(parts.hostname)
+            + ", so the token crosses the network in clear; use https or a loopback/tunnel address"
+        )
+    path = os.path.expanduser(
+        os.environ.get("WAKE_CONFIG") or os.path.join(CFG.get("WAKE_CONFIG_DIR") or "", "config.env")
+    )
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        return
+    if mode & 0o077:
+        note("wake-mcp: " + path + " is mode " + format(mode, "o") + "; keep the token file at 600")
+
+
 if __name__ == "__main__":
     if TOKEN:
+        check_settings()
         run_bridge()
     else:
         run_legacy()
