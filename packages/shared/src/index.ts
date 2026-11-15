@@ -1,3 +1,5 @@
+import type { WakeReport } from './wake.js';
+
 export type AgentId = string;
 
 export type RegisteredAgent = {
@@ -30,6 +32,7 @@ export type RevokedAgent = {
 
 export type SentMessage = {
   id: string;
+  wake: WakeReport;
 };
 
 export type InboxMessage = {
@@ -169,3 +172,4 @@ export type HistoryPage = {
 };
 
 export * from './threads.js';
+export * from './wake.js';
