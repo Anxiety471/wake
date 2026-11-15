@@ -1,10 +1,16 @@
 #!/bin/bash
-# desc: copy webhook keys that were minted on the host into this machine's key dir; prints ok/skip/bad per bot and never a key value. Uses WAKE_HOSTOPS, WAKE_HOST_KEY_DIR, WAKE_KEY_DIR, WAKE_REGISTRY
+# desc: copy webhook keys that were minted on the host into this machine's key dir; prints ok/skip/bad/none/err per bot and never a key value. Uses WAKE_HOSTOPS, WAKE_HOST_KEY_DIR, WAKE_KEY_DIR, WAKE_CONFIG_DIR, WAKE_REGISTRY
 set -u
+# The temporary key file must not be readable by anyone else, even for the
+# moment between the fetch and its chmod 600.
+umask 077
 
 HOSTOPS=${WAKE_HOSTOPS:-}
-KEY_DIR=${WAKE_KEY_DIR:-${WAKE_CONFIG_DIR:-$HOME/.config/wake}}
-REG=${WAKE_REGISTRY:-$KEY_DIR/bots.tsv}
+CFG=${WAKE_CONFIG_DIR:-$HOME/.config/wake}
+KEY_DIR=${WAKE_KEY_DIR:-$CFG}
+# The registry sits in the config dir, where bin/wake looks (bin/wake_config.py),
+# so moving the saved keys with WAKE_KEY_DIR never hides it.
+REG=${WAKE_REGISTRY:-$CFG/bots.tsv}
 # Where the host keeps <bot-id>.key: the shared state dir unless told otherwise.
 HOST_KEY_DIR=${WAKE_HOST_KEY_DIR:-${WAKE_STATE_DIR:-/var/lib/wake}}
 
@@ -18,7 +24,8 @@ force=0
 mkdir -p "$KEY_DIR"
 
 tmp=""
-trap '[ -n "$tmp" ] && rm -f "$tmp"' EXIT
+err=""
+trap '[ -n "$tmp" ] && rm -f "$tmp"; [ -n "$err" ] && rm -f "$err"' EXIT
 
 # A bot id is a path component and a shell word on the host, so it is checked first.
 valid_id() {
@@ -29,12 +36,13 @@ valid_id() {
 }
 
 # fetch writes one key to $tmp without printing it: through WAKE_HOSTOPS when that is set,
-# from the key dir directly when wake runs on the host itself.
+# from the key dir directly when wake runs on the host itself. The error text goes to $err so a
+# failed fetch (a dead host, a refused account) is not reported as a bot that has no key.
 fetch() {
     if [ -n "$HOSTOPS" ]; then
-        "$HOSTOPS" "sudo cat $HOST_KEY_DIR/$1.key" </dev/null >"$tmp" 2>/dev/null
+        "$HOSTOPS" "sudo cat $HOST_KEY_DIR/$1.key" </dev/null >"$tmp" 2>"$err"
     else
-        cat "$HOST_KEY_DIR/$1.key" >"$tmp" 2>/dev/null
+        cat "$HOST_KEY_DIR/$1.key" >"$tmp" 2>"$err"
     fi
 }
 
@@ -42,6 +50,7 @@ ok=0
 skip=0
 bad=0
 miss=0
+fail=0
 while IFS="$(printf '\t')" read -r alias id _rest <&3; do
     case ${alias:-} in '' | '#'*) continue ;; esac
     [ -n "${id:-}" ] || continue
@@ -62,11 +71,15 @@ while IFS="$(printf '\t')" read -r alias id _rest <&3; do
         continue
     fi
     tmp="$KEY_DIR/.tmp-$id"
-    if fetch "$id" && [ -s "$tmp" ]; then
+    err="$KEY_DIR/.tmp-$id.err"
+    rc=0
+    fetch "$id" || rc=$?
+    if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then
         chmod 600 "$tmp"
         mv "$tmp" "$dest"
-        rm -f "$tmp"
+        rm -f "$tmp" "$err"
         tmp=""
+        err=""
         if [ -r "$dest" ]; then
             echo "ok    $alias"
             ok=$((ok + 1))
@@ -75,12 +88,27 @@ while IFS="$(printf '\t')" read -r alias id _rest <&3; do
             bad=$((bad + 1))
         fi
     else
-        rm -f "$tmp"
+        why=""
+        # "No such file or directory" is the one failure that means the key really is absent.
+        if [ -s "$err" ] && ! grep -qi "no such file" "$err"; then
+            why=$(head -n 1 "$err")
+        elif [ ! -s "$err" ] && [ "$rc" -ne 0 ]; then
+            why="exit $rc with no message"
+        elif [ "$rc" -eq 0 ]; then
+            why="the host returned an empty key file"
+        fi
+        rm -f "$tmp" "$err"
         tmp=""
-        echo "none  $alias (no key in the host store)"
-        miss=$((miss + 1))
+        err=""
+        if [ -n "$why" ]; then
+            echo "err   $alias (host fetch failed: $why)"
+            fail=$((fail + 1))
+        else
+            echo "none  $alias (no key in the host store)"
+            miss=$((miss + 1))
+        fi
     fi
 done 3<"$REG"
 
-echo "saved $ok, skipped $skip, unreadable $bad, no key $miss"
-[ "$bad" -eq 0 ]
+echo "saved $ok, skipped $skip, unreadable $bad, no key $miss, failed $fail"
+[ "$bad" -eq 0 ] && [ "$fail" -eq 0 ]

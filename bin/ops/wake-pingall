@@ -2,8 +2,9 @@
 # desc: wake --ask every open bot in the registry at once, one log per bot; arguments pick bots by alias instead. Reads WAKE_REGISTRY, WAKE_PING_LOG_DIR, WAKE_PING_TIMEOUT, WAKE_PING_MESSAGE
 set -u
 
-KEY_DIR=${WAKE_KEY_DIR:-${WAKE_CONFIG_DIR:-$HOME/.config/wake}}
-REG=${WAKE_REGISTRY:-$KEY_DIR/bots.tsv}
+CFG=${WAKE_CONFIG_DIR:-$HOME/.config/wake}
+# Same default as bin/wake and wake-keys: the registry lives in the config dir.
+REG=${WAKE_REGISTRY:-$CFG/bots.tsv}
 LOG_DIR=${WAKE_PING_LOG_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/wake/pingall}
 WAIT=${WAKE_PING_TIMEOUT:-240}
 MSG=${WAKE_PING_MESSAGE:-ping test: reply with the word pong only}
