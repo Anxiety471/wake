@@ -393,6 +393,101 @@ test('pruning the audit deletes only rows past the window', async () => {
   expect(again.json<{ deleted: number }>().deleted).toBe(0);
 });
 
+async function insertAuditAged(age: string): Promise<void> {
+  await admin.query(
+    `INSERT INTO mcp_audit
+       (agent_id, method, tool, ok, error, status, duration_ms, remote, created_at)
+     SELECT id, 'initialize', NULL, true, NULL, 200, 1, '127.0.0.1', now() - $1::interval
+     FROM agents WHERE kind = 'mcp'`,
+    [age],
+  );
+}
+
+async function auditAges(): Promise<number[]> {
+  const rows = await admin.query<{ age_days: number }>(
+    `SELECT floor(extract(epoch FROM now() - created_at) / 86400)::int AS age_days
+       FROM mcp_audit
+      ORDER BY created_at`,
+  );
+  return rows.rows.map((row) => row.age_days);
+}
+
+test('the prune window decides what is deleted, not just what is reported', async () => {
+  await provision();
+  // Real ages, not a mocked clock: 200 days, 40 days, and now. Oldest first.
+  await insertAuditAged('200 days');
+  await insertAuditAged('40 days');
+  await insertAuditAged('0 days');
+  expect(await auditAges()).toEqual([200, 40, 0]);
+
+  // Ten years keeps everything.
+  const widest = await app.inject({
+    method: 'POST',
+    url: '/mcp/audit/prune?days=3650',
+    headers: operator(),
+  });
+  expect(widest.statusCode).toBe(200);
+  expect(widest.json<{ deleted: number }>().deleted).toBe(0);
+  expect(await auditAges()).toEqual([200, 40, 0]);
+
+  // The default 90-day window deletes the 200-day row and spares the 40-day one.
+  const byDefault = await app.inject({
+    method: 'POST',
+    url: '/mcp/audit/prune',
+    headers: operator(),
+  });
+  expect(byDefault.statusCode).toBe(200);
+  expect(byDefault.json<{ deleted: number }>().deleted).toBe(1);
+  expect(await auditAges()).toEqual([40, 0]);
+
+  // A 30-day window deletes the row the default spared.
+  const narrow = await app.inject({
+    method: 'POST',
+    url: '/mcp/audit/prune?days=30',
+    headers: operator(),
+  });
+  expect(narrow.statusCode).toBe(200);
+  expect(narrow.json<{ deleted: number }>().deleted).toBe(1);
+  expect(await auditAges()).toEqual([0]);
+});
+
+test('prune refuses a body instead of pruning at the default window', async () => {
+  await provision();
+  await insertAuditAged('200 days');
+
+  // A body is not a second way to say `days`. Both a body that names a window
+  // and an empty one are refused, and nothing is deleted -- ignoring
+  // {"days":30} would have pruned at the 90-day default.
+  for (const payload of [{ days: 30 }, {}]) {
+    const refused = await app.inject({
+      method: 'POST',
+      url: '/mcp/audit/prune',
+      headers: operator(),
+      payload,
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json<{ error: string }>().error).toBe('body not accepted');
+  }
+  // A literal null is a body as well; only no body at all may prune.
+  const nullBody = await app.inject({
+    method: 'POST',
+    url: '/mcp/audit/prune',
+    headers: { ...operator(), 'content-type': 'application/json' },
+    payload: 'null',
+  });
+  expect(nullBody.statusCode).toBe(400);
+  expect(await auditAges()).toEqual([200]);
+
+  // The bare POST a host timer runs is untouched.
+  const bare = await app.inject({
+    method: 'POST',
+    url: '/mcp/audit/prune',
+    headers: operator(),
+  });
+  expect(bare.statusCode).toBe(200);
+  expect(bare.json<{ deleted: number }>().deleted).toBe(1);
+});
+
 test('the prune window is bounded and needs the operator secret', async () => {
   for (const days of ['0', '-1', '3651', '1.5', 'ten']) {
     const refused = await app.inject({
