@@ -25,6 +25,7 @@ import {
 import { registerDashboardRoutes } from './dashboard.js';
 import { readInbox } from './inbox-read.js';
 import { migrate } from './migrate.js';
+import { registerMcpRoutes, type McpConfig } from './mcp.js';
 import { MCP_AGENT_NAME, registerOperatorRoutes } from './operator.js';
 import { inboxLimit, parseCursor, UUID_PATTERN } from './paging.js';
 import { pgField } from './pg.js';
@@ -113,6 +114,7 @@ export type BuildAppOptions = {
   dashboardSecret?: string;
   threadTtlHours?: number | null;
   doorbell?: DoorbellConfig | null;
+  mcp?: McpConfig | null;
 };
 
 type RegisterBody = {
@@ -327,6 +329,7 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
   });
   const logging = options?.logger === true || options?.logStream !== undefined;
   const registrationSecret = options?.registrationSecret;
+  const mcp = options?.mcp ?? null;
   const dashboardSecret = options?.dashboardSecret;
   const doorbell = options?.doorbell ?? null;
   const threadTtlHours =
@@ -1292,6 +1295,16 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
       ttlHours: threadTtlHours,
       doorbell,
     });
+    if (mcp !== null) {
+      // Inside the agent plugin on purpose: /mcp reuses the agent bearer auth,
+      // then narrows it to the one mcp identity.
+      registerMcpRoutes({
+        server: app,
+        routes: agentRoutes,
+        pool,
+        config: mcp,
+      });
+    }
   });
 
   registerOperatorRoutes(
