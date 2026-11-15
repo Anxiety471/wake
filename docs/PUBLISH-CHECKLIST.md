@@ -16,8 +16,8 @@ These are decisions or GitHub settings, not code changes.
 - [ ] **Self-asserted sender labels** (`--source`, `WAKE_SOURCE`). Documented as labels, not proof; confirm.
 - [ ] **`/bots/<id>` working-directory convention** used by `wake --me` and the default sender label is platform-specific. Documented in README with `WAKE_SOURCE` as the alternative; decide whether to make it configurable.
 - [ ] **Working-directory leftovers.** `TASK.md`, `TASK2.md`, `omp.log` and `omp2.log` in the checkout contain private details. They are excluded only through `.git/info/exclude` (local, not part of the repo). Do not `git add -A` with them present; publish from a fresh clone.
-- [ ] **GitHub settings after the repo exists.** Enable private vulnerability reporting (`SECURITY.md` points to it), Dependabot alerts, and branch protection on `main` that requires the CI jobs. Check that `ubuntu-latest` still offers Python 3.9 (end of life since October 2025); drop it from the matrix and the README claim if not.
-- [ ] **Release tag.** After the first push, tag `v0.1.0` to match `VERSION` and `CHANGELOG.md`.
+- [x] **GitHub settings after the repo exists** (applied 2026-11-15): private vulnerability reporting on, Dependabot alerts and security updates on, secret scanning with push protection on, and branch protection on `main` requiring the eight CI jobs (`api (bun)`, `lint`, `secret-scan`, `test (Python 3.9)` to `test (Python 3.13)`) with the administrator able to bypass and force-push and deletion blocked. `ubuntu-latest` still offers Python 3.9 through `actions/setup-python` v6; the v7 bump was closed for that reason, so the matrix and the README claim stay.
+- [ ] **Release tag.** Tag `v0.2.0` on `main` to match `VERSION` and the `CHANGELOG.md` section dated 2026-11-15, then tick this box in the tag's own commit.
 
 ## Done
 
@@ -25,7 +25,7 @@ These are decisions or GitHub settings, not code changes.
 - [x] **Copyright holder.** `LICENSE` names Joshua M. Valderrama.
 - [x] **`wake-inbox-io` arguments.** Hashes must match `[0-9a-f]{6,32}`, `read` only accepts `<inbox dir>/<hash>.jsonl`, and every interpolated value goes through `shlex.quote`. Tests cover shell metacharacters (`x; touch /tmp/pwned`, `$(...)`, backticks), path traversal and guest mode.
 - [x] **`WAKE_REGISTRY_GROUP` default.** Empty by default; `wake --sync` only runs `chgrp` when it is set. Tested.
-- [x] **Version marker.** `VERSION = "0.1.0"` in `bin/wake_config.py`, `wake --version`, `User-Agent: wake-cli/<version>`, MCP `serverInfo.version`, and `CHANGELOG.md`.
+- [x] **Version marker.** `VERSION` in `bin/wake_config.py`, `wake --version`, `User-Agent: wake-cli/<version>`, MCP `serverInfo.version`, and `CHANGELOG.md`.
 - [x] **Python versions.** Tests pass on 3.9, 3.10, 3.11, 3.12 and 3.13 (the `bin/` scripts run under the same interpreter); README claims 3.9+. CI runs the same matrix.
 - [x] **`sg` fallback tests as root.** Skipped with an explicit reason, and `tests/run.sh` prints a note when run as root. CI runs as a non-root user, so both run there.
 - [x] **Name collision.** README notes that `wake` is a generic name and that `install.sh` overwrites same-named files.
