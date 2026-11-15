@@ -615,6 +615,15 @@ class WakeWaitTestCase(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, reply + "\n")
 
+    def test_a_blank_from_in_the_environment_is_refused_too(self):
+        # The variable is the third way in and was never checked: FROM=three spaces made
+        # [ -n "$FROM" ] true, so it waited the whole timeout for a bot with that name.
+        self.stub_rounds([["[2026-11-15T12:00] human:tester (ask): what is the eta"]])
+        r = self.wait("t-1", "--timeout", "1", env={"WAKE_WAIT_FROM": "   ", "WAKE_WAIT_QUIET": "1"})
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("WAKE_WAIT_FROM", r.stderr)
+        self.assertEqual(self.called(), [], "a blank WAKE_WAIT_FROM still went to the thread store")
+
     def test_the_default_timeout_is_180s_and_the_variable_sets_it(self):
         # Proved without waiting: a --from answer that is already there returns at once, so the
         # progress line is the only thing under test.
