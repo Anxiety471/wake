@@ -2,8 +2,11 @@
 
 Native systemd + nginx, no containers. The API runs on the VPS host next to Rakazo,
 listening on loopback only. Nothing in this document touches the CLI store
-(`/var/lib/wake`): the API can be installed, started and stopped without affecting any
-bot until `bin/wake` is switched over to it.
+(`WAKE_STATE_DIR` — `/var/lib/wake` in the checkout, `/var/lib/rakazo-wake` here, because
+this host's `/usr/local/bin/wake` is a copy patched to that path):
+the API can be installed, started and stopped without affecting any bot until
+`bin/wake` is switched over to it. `ls -ld` the path before trusting either name; the
+store and the API's `wake` database are separate.
 
 Every shell step below is safe to re-run; §7 is the re-run path after a code change.
 
@@ -275,8 +278,10 @@ back to an older bundle needs a database restore, not another restart.
 ## Cutover from the CLI store
 
 Nothing above changes how bots work. Each bot runs `bin/wake`, keeps its threads and
-inbox under `WAKE_STATE_DIR` (`/var/lib/wake`) and sends to the webhook prefix in
-`WAKE_API_BASE`; the API is a second, compatible store that no bot reads yet.
+inbox under `WAKE_STATE_DIR` (`/var/lib/rakazo-wake` on this host; the checkout's
+default is `/var/lib/wake`, and the host's copy of `bin/wake` hardcodes the other) and
+sends to the webhook prefix in `WAKE_API_BASE`; the API is a second, compatible store
+that no bot reads yet.
 
 Two facts decide the cutover and neither is a URL edit:
 
