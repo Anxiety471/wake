@@ -40,7 +40,30 @@ def sh(cmd, data=None):
     return subprocess.run([HOSTOPS, cmd], input=data, capture_output=True, text=True)
 
 
+HELP = """\
+usage: wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]
+
+  The host/guest bridge for an agent session's inbox. <hash> is the id the session chose: 6 to
+  32 lowercase hex characters. <inbox> must be $WAKE_STATE_DIR/inbox/<hash>.jsonl.
+
+  register <hash> [json]   make the inbox and its active marker, print the inbox path
+  read <inbox>             print the inbox
+  beat <hash> [json]       refresh the active marker; the JSON is stored beside it
+
+  Markers older than 24 hours are pruned when a session registers. Every write goes through the
+  local path when $WAKE_STATE_DIR/inbox is writable, otherwise over WAKE_HOSTOPS.
+
+  environment   WAKE_STATE_DIR, WAKE_HOSTOPS   (both read by bin/wake_config.py)
+
+  exit 0 on success; 1 on usage or a hash that is not 6-32 lowercase hex characters. The command
+  it runs on the host decides anything else.
+"""
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        print(HELP, end="")
+        return 0
     if len(sys.argv) < 3:
         sys.exit("usage: wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]")
     op, key = sys.argv[1], sys.argv[2]
