@@ -341,13 +341,15 @@ class HostDeployTestCase(unittest.TestCase):
     def test_migrations_arrive_as_one_stream_with_no_tmp_staging(self):
         state = os.path.join(self.dir, "state")
         build = make_build(self.dir)
-        record(state, build)
-        checkout = os.path.join(self.dir, "checkout")
-        migrations = os.path.join(checkout, "apps", "api", "src", "migrations")
+        migrations = os.path.join(build, "migrations")
         os.makedirs(migrations)
         for name in ("001_init.sql", "002_threads.sql"):
             with open(os.path.join(migrations, name), "w", encoding="utf-8") as f:
                 f.write("select 1;\n")
+        record(state, build)
+        # A checkout is named and still ignored: install ships the build's copy, not os.listdir.
+        checkout = os.path.join(self.dir, "checkout")
+        os.makedirs(os.path.join(checkout, "apps", "api", "src", "migrations"))
         env = dict(self.env, WAKE_DEPLOY_STATE=state, WAKE_NODE="/usr/bin/node", WAKE_REPO=checkout)
         r = run("wake-host-deploy", "install", env=env)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -364,13 +366,12 @@ class HostDeployTestCase(unittest.TestCase):
     def test_install_refuses_a_migration_name_it_cannot_trust(self):
         state = os.path.join(self.dir, "state")
         build = make_build(self.dir)
-        record(state, build)
-        checkout = os.path.join(self.dir, "checkout")
-        migrations = os.path.join(checkout, "apps", "api", "src", "migrations")
+        migrations = os.path.join(build, "migrations")
         os.makedirs(migrations)
         with open(os.path.join(migrations, "a b.sql"), "w", encoding="utf-8") as f:
             f.write("select 1;\n")
-        env = dict(self.env, WAKE_DEPLOY_STATE=state, WAKE_NODE="/usr/bin/node", WAKE_REPO=checkout)
+        record(state, build)
+        env = dict(self.env, WAKE_DEPLOY_STATE=state, WAKE_NODE="/usr/bin/node")
         r = run("wake-host-deploy", "install", env=env)
         self.assertEqual(r.returncode, 1)
         self.assertIn("not a migration name", r.stderr)
@@ -588,6 +589,17 @@ done
 printf 'export const built = 1\\n' > "$out"
 """
 
+# A builder that commits while it runs: the artifact then belongs to no commit anyone recorded.
+SHIFTY_BUILDER_STUB = """#!/bin/sh
+printf 'serve(); // shifted during the build\\n' > apps/api/src/index.ts
+git add -A
+git -c user.name=t -c user.email=t@example.invalid commit -q -m 'shifted during the build'
+for a in "$@"; do
+  case "$a" in --outfile=*) out="${a#--outfile=}" ;; esac
+done
+printf 'export const built = 1\\n' > "$out"
+"""
+
 
 class BuildRefTestCase(unittest.TestCase):
     """`build` shipped whatever the shared clone had checked out, and never said which ref.
@@ -629,6 +641,13 @@ class BuildRefTestCase(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout.strip()
 
+    def logged(self):
+        try:
+            with open(self.log, encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            return ""
+
     def commit(self, body, message):
         write(os.path.join(self.repo, "apps", "api", "src", "index.ts"), body)
         self.git("add", "-A")
@@ -660,6 +679,77 @@ class BuildRefTestCase(unittest.TestCase):
         self.assertIn(head, r.stdout, "the artifact must carry the commit it was built from")
         self.assertIn("WAKE_ALLOW_ANY_REF", r.stderr, "an overridden build must say what it did")
 
+    def test_the_override_is_off_when_it_says_off(self):
+        # It was a blacklist: "off" was not in it, so the documented default turned the override on.
+        self.git("checkout", "-q", "-b", "hotfix")
+        head = self.commit("serve(); // hotfix\n", "hotfix")
+        for value in ("off", "OFF", "none", "disabled", "2"):
+            r = run("wake-host-deploy", "build", env=dict(self.env, WAKE_ALLOW_ANY_REF=value))
+            self.assertEqual(r.returncode, 1, f"{value!r}: {r.stdout}{r.stderr}")
+            self.assertIn(head[:12], r.stderr, f"{value!r} did not name the commit it refused")
+            self.assertNotIn("size:", r.stdout, f"{value!r} built anyway")
+
+    def test_untracked_work_hidden_by_a_gitconfig_is_still_refused(self):
+        # `git status --porcelain` honours status.showUntrackedFiles=no, so untracked work
+        # disappeared from the check and the build shipped it under main's name.
+        write(os.path.join(self.repo, "apps", "api", "src", "evil.ts"), "evil();\n")
+        home = tempfile.mkdtemp(prefix="gitconfig-home-")
+        write(os.path.join(home, ".gitconfig"), "[status]\n\tshowUntrackedFiles = no\n")
+        r = run("wake-host-deploy", "build", env=dict(self.env, HOME=home))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("evil.ts", r.stderr, "the hidden file is not named")
+        self.assertNotIn("size:", r.stdout)
+
+    def test_a_tree_that_moves_while_it_is_built_is_not_recorded(self):
+        # build_ref read HEAD, the builder ran, then the commit was recorded: nothing looked in
+        # between, so a builder that commits leaves an artifact stamped with the wrong commit.
+        self.builder = write(os.path.join(self.dir, "shifty-builder"), SHIFTY_BUILDER_STUB, executable=True)
+        env = dict(self.env, WAKE_BUILDER=self.builder, TMPDIR=self.dir)
+        r = run("wake-host-deploy", "build", env=env)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("moved from", r.stderr)
+        self.assertIn(self.main[:12], r.stderr, "the refusal must name the commit it started from")
+        moved = self.git("rev-parse", "HEAD")
+        self.assertIn(moved[:12], r.stderr, "the refusal must name the commit it ended on")
+        self.assertNotIn("size:", r.stdout)
+        self.assertFalse(
+            os.path.exists(os.path.join(env["WAKE_DEPLOY_STATE"], "last-build")),
+            "a moved tree was recorded anyway",
+        )
+        self.assertEqual(
+            [n for n in os.listdir(self.dir) if n.startswith("wake-build-") and n != "wake-build-mine"],
+            [],
+            "the half-built artifact was left in the temp directory",
+        )
+
+    def test_install_ships_the_migrations_the_build_carried(self):
+        # install printed the build's commit and then tarred the live checkout: an uncommitted
+        # .sql added after the build ran against the live database at the next boot.
+        migrations = os.path.join(self.repo, "apps", "api", "src", "migrations")
+        os.makedirs(migrations)
+        write(os.path.join(migrations, "0001_built.sql"), "select 1;\n")
+        self.git("add", "-A")
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "migrations")
+        self.main = self.git("rev-parse", "HEAD")
+        self.git("update-ref", "refs/remotes/origin/main", self.main)
+        r = run("wake-host-deploy", "build", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("migrations: 1", r.stdout)
+        # The checkout moves on after the build: one more migration, and the built one edited.
+        write(os.path.join(migrations, "0002_uncommitted.sql"), "drop table users;\n")
+        write(os.path.join(migrations, "0001_built.sql"), "drop table users; -- edited\n")
+        env = dict(self.env, WAKE_NODE="/usr/bin/node")
+        r = run("wake-host-deploy", "install", env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("install: commit " + self.main, r.stdout)
+        log = self.logged()
+        self.assertIn('case " 0001_built.sql " in', log, "the build's migration is not the one shipped")
+        payload = log.split("base64 -d | sudo -n tar -x --no-same-owner -C /opt/wake/migrations", 1)[1]
+        payload = payload.split("\n--\n", 1)[0]
+        with tarfile.open(fileobj=io.BytesIO(base64.b64decode(payload.strip()))) as tar:
+            self.assertEqual(sorted(tar.getnames()), ["0001_built.sql"], "an uncommitted migration was shipped")
+            self.assertEqual(tar.extractfile("0001_built.sql").read(), b"select 1;\n", "the edited bytes were shipped")
+
     def test_main_is_built_and_the_commit_reaches_install_and_status(self):
         r = run("wake-host-deploy", "build", env=self.env)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -668,9 +758,31 @@ class BuildRefTestCase(unittest.TestCase):
         r = run("wake-host-deploy", "install", env=env)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("install: commit " + self.main, r.stdout)
+        # The commit is written beside the installed file, so status can answer about the host
+        # rather than about what this checkout last built.
+        log = self.logged()
+        self.assertIn("cat > /opt/wake.commit", log)
+        self.assertIn(self.main, log.split("cat > /opt/wake.commit", 1)[1].split("\n--\n", 1)[0])
+        self.assertIn(
+            "install -o root -g wake -m 644 /opt/wake.commit /opt/wake/index.commit", log, "the record is not installed"
+        )
+
+    def test_status_prints_the_commit_beside_the_installed_file(self):
+        # The old line printed the last build's commit from the state directory: build B after
+        # installing A said B while the host ran A. This reads the host instead.
+        state = os.path.join(self.dir, "state")
+        build = make_build(self.dir)
+        record(state, build)
+        answering = write(
+            os.path.join(self.dir, "hostops-answer"),
+            '#!/bin/sh\ncase "$1" in *index.commit*) printf \'%s\\n\' "$STUB_COMMIT" ;; esac\nexit 0\n',
+            executable=True,
+        )
+        env = dict(self.env, WAKE_HOSTOPS=answering, STUB_COMMIT="cafe1234", WAKE_DEPLOY_STATE=state)
         r = run("wake-host-deploy", "status", env=env)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("build commit: " + self.main, r.stdout)
+        self.assertIn("installed commit: cafe1234", r.stdout)
+        self.assertNotIn("build commit:", r.stdout, "status still answers about the checkout")
 
     def test_a_checkout_that_is_not_git_is_refused_unless_overridden(self):
         # A tarball or a copied tree has no ref at all, so the build cannot be named.
