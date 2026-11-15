@@ -15,7 +15,7 @@ export const MAX_TOOL_IDS = 100;
 
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 export const MCP_SERVER_NAME = 'wake';
-export const MCP_SERVER_VERSION = '0.1.0';
+export const MCP_SERVER_VERSION = '0.2.0';
 export const DEFAULT_MCP_RATE_LIMIT_PER_MINUTE = 60;
 export const MAX_MCP_RATE_LIMIT_PER_MINUTE = 6000;
 

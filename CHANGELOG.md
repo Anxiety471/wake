@@ -3,6 +3,8 @@
 All notable changes to this project are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent: wake-cli/<version>`.
 
+## [Unreleased]
+
 ## [0.2.0] - 2026-11-15
 
 ### Changed
