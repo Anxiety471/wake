@@ -167,5 +167,66 @@ class CommandHelpTestCase(unittest.TestCase):
             self.assertIsNotNone(problem(wrote_then_helped), "a help path that left a file passed")
 
 
+def help_output(path, flag="--help"):
+    """What a command prints for its help flag, or "" if it does not answer in time."""
+    with tempfile.TemporaryDirectory() as home:
+        try:
+            r = subprocess.run(
+                [str(path), flag],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                stdin=subprocess.DEVNULL,
+                cwd=home,
+                env=environment(home),
+            )
+        except subprocess.TimeoutExpired:
+            return ""
+    return r.stdout or ""
+
+
+def exit_block(usage):
+    """The lines a usage spends on exit codes: the first that starts with "exit" to a blank line.
+
+    Scoped on purpose. A search over the whole usage reads the 2 in "wake_e2e" as an exit code and
+    passes a text that states none.
+    """
+    lines = usage.splitlines()
+    for start, line in enumerate(lines):
+        if re.match(r"\s*exit\b", line, re.IGNORECASE):
+            block = []
+            for line in lines[start:]:
+                if not line.strip():
+                    break
+                block.append(line)
+            return "\n".join(block)
+    return ""
+
+
+class ExitCodeTest(unittest.TestCase):
+    def test_every_bash_helper_states_every_exit_code_it_uses(self):
+        """A usage text that lists fewer exits than the script can take is how an 0/1-only text
+        survives a script that grew a 2 for bad usage."""
+        problems = []
+        for path in commands():
+            source = path.read_text(errors="replace")
+            if "bash" not in source.splitlines()[0]:
+                continue
+            codes = sorted({int(n) for n in re.findall(r"\bexit\s+(\d+)\b", source)})
+            block = exit_block(help_output(path))
+            for code in codes:
+                if not re.search(rf"(?<!\d){code}(?!\d)", block):
+                    problems.append(f"{path.name} exits {code} but its usage never says so")
+        self.assertEqual(problems, [], "\n".join(problems))
+
+    def test_the_exit_block_is_what_the_check_reads(self):
+        """The check must bite, and must not read a digit that is not an exit code: "wake_e2e"
+        contains a 2, and a whole-usage search passed a text with no exit codes at all."""
+        usage = "usage: wake-e2e\n  wake_e2e needs bun, jq\n\n  exit 0 passed, 1 failed, 2 bad input\n"
+        self.assertIn("2 bad input", exit_block(usage))
+        self.assertNotIn("2", exit_block("usage: wake-e2e\n  wake_e2e needs bun, jq"))
+        self.assertNotIn("wake_e2e", exit_block(usage))
+
+
 if __name__ == "__main__":
     unittest.main()

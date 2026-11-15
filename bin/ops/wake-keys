@@ -35,7 +35,7 @@ usage: wake-keys [--force]
                 WAKE_HOSTOPS         the command that reaches the host, from a guest
 
   exit 0 when every bot was ok, skip or none; 1 when a saved key was bad, a fetch failed, or
-  there is no registry
+  there is no registry; 2 for an argument it does not take
 EOF
 }
 

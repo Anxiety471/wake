@@ -14,6 +14,7 @@ USAGE="usage: $PROG <thread-id> [--timeout SECONDS] [--interval N] [--from BOT]
        2  no answer within the timeout
        1  error: bad usage or id, no wake on PATH, unreadable thread store, or a thread that
           was never opened (no such thread: a thread exists once something is asked into it)
+     130  interrupted (Ctrl-C), 143 on SIGTERM, so a caller can tell a stopped wait from a timeout
 
   environment   WAKE_WAIT_TIMEOUT (180)  WAKE_WAIT_INTERVAL (3)  WAKE_WAIT_FROM  WAKE_WAIT_QUIET (0)"
 
