@@ -46,6 +46,14 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   open bot in the registry at once. `OPS=1 ./install.sh` installs them beside the core scripts,
   `bin/ops/README.md` says what each one needs, and `tests/test_ops_scripts.py` keeps personal
   absolute paths, real addresses and undocumented `WAKE_*` variables out of them.
+- **`wake-wait`.** A fifth operator helper: it blocks until an existing thread has its answer and
+  prints the reply line(s) exactly as `wake --thread <id>` shows them, so a script that asked a bot
+  earlier can wait for the answer instead of re-asking (a second ask is a second question) or
+  polling by hand. `wake-wait <thread-id> [--timeout SECONDS] [--interval N] [--from BOT]`; exit `0`
+  answered, `2` no answer within the timeout, `1` error (bad usage or id, no `wake`, unreadable
+  store, no such thread). Without `--from` only a reply that arrives after the wait starts counts;
+  `--from BOT` also accepts that bot's earlier answer. `WAKE_WAIT_TIMEOUT` (180 s),
+  `WAKE_WAIT_INTERVAL` (3 s), `WAKE_WAIT_FROM` and `WAKE_WAIT_QUIET` tune it.
 - **A deploy runbook, a systemd unit and two operator scripts.** `deploy/README.md` runs the
   API on the host: a `wake` service account, `/opt/wake` (bundle, `node`, migrations beside it),
   `/etc/wake/api.env` as `root:wake 640` and an `mcp-token` nobody else can read, a unit that
