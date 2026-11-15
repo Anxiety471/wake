@@ -472,3 +472,74 @@ test('delivery outcomes are private to the sender', async () => {
   );
   expect(missing.status).toBe(404);
 });
+
+test('one sender exhausting the cap does not silence another sender', async () => {
+  // The cap is 1 per sender and recipient: alice's wake spends alice's budget,
+  // and carol waking the same bot must still ring. Keying on the recipient
+  // alone made this a silent drop, not an error.
+  const capped = buildApp(databaseUrl, {
+    doorbell: parseDoorbell({
+      WAKE_DOORBELL_BOTS: JSON.stringify({
+        bob: { botId: 'cmwbob', secret: SECRET },
+      }),
+      WAKE_DOORBELL_URL: `http://127.0.0.1:${stub.port}/api/v1/bots`,
+      WAKE_DOORBELL_TIMEOUT_MS: '500',
+      WAKE_DOORBELL_MAX_PER_HOUR: '1',
+    }),
+  });
+  try {
+    await capped.ready();
+    await capped.migrationsReady;
+    await admin.query('TRUNCATE agents CASCADE');
+    requests.length = 0;
+    const people: Record<string, RegisteredAgent> = {};
+    for (const name of ['alice', 'carol', 'bob']) {
+      const response = await capped.inject({
+        method: 'POST',
+        url: '/agents',
+        payload: { name },
+      });
+      expect(response.statusCode).toBe(201);
+      people[name] = response.json<RegisteredAgent>();
+    }
+    const tokenOf = (name: string): string => {
+      const agent = people[name];
+      if (agent === undefined) {
+        throw new Error(`missing agent ${name}`);
+      }
+      return agent.token;
+    };
+    const first = await capped.inject({
+      method: 'POST',
+      url: '/messages',
+      headers: bearer(tokenOf('alice')),
+      payload: { to: 'bob', body: 'from alice' },
+    });
+    expect(first.json<SentMessage>().wake.deliveries).toEqual([
+      { agent: 'bob', delivered: true, reason: null, attempts: 1 },
+    ]);
+    const second = await capped.inject({
+      method: 'POST',
+      url: '/messages',
+      headers: bearer(tokenOf('carol')),
+      payload: { to: 'bob', body: 'from carol' },
+    });
+    expect(second.json<SentMessage>().wake.deliveries).toEqual([
+      { agent: 'bob', delivered: true, reason: null, attempts: 1 },
+    ]);
+    expect(requests).toHaveLength(2);
+    // Alice, spent, is refused without a request.
+    const third = await capped.inject({
+      method: 'POST',
+      url: '/messages',
+      headers: bearer(tokenOf('alice')),
+      payload: { to: 'bob', body: 'from alice again' },
+    });
+    expect(third.json<SentMessage>().wake.deliveries).toEqual([
+      { agent: 'bob', delivered: false, reason: 'rate_limited', attempts: 0 },
+    ]);
+    expect(requests).toHaveLength(2);
+  } finally {
+    await capped.close();
+  }
+});
