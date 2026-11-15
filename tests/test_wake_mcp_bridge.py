@@ -292,6 +292,18 @@ class BridgeTest(unittest.TestCase):
             ["wake_ask", "wake_inbox"],
         )
 
+    def test_every_request_names_the_bridge_not_the_interpreter(self):
+        # Cloudflare's bot rule answers 403 (error 1010) to Python-urllib/*, so
+        # the public /mcp refused the bridge while curl reached it. The agent is
+        # the fix; this keeps a later header edit from quietly restoring the
+        # default that only works against a loopback API.
+        out, process = self.run_bridge({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(len(out), 1)
+        headers = self.fake.requests[0]["headers"]
+        self.assertIn("user-agent", headers, "urllib's default agent is what Cloudflare refuses")
+        self.assertRegex(headers["user-agent"], r"^wake-mcp/[0-9]+\.[0-9]+\.[0-9]+$")
+
     def test_a_tool_result_in_an_sse_reply_reaches_the_client(self):
         out, _ = self.run_bridge(
             [

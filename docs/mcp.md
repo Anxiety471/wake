@@ -68,7 +68,9 @@ MCP-Protocol-Version: 2025-06-18        (after initialize; checked when present)
   its own; there is no session to lose and nothing to keep open through the
   proxy.
 - `GET`/`DELETE /mcp` answer `405` with `Allow: POST`: the server never
-  initiates a stream and there is no session to terminate.
+  initiates a stream and there is no session to terminate. Without a valid
+  token they answer `401` first, because authentication runs before the method
+  check: an unauthenticated probe of the path sees `401`, not `405`.
 - JSON-RPC **batching is refused** with `400` (it was removed in 2025-06-18).
 - `notifications/initialized` and `notifications/cancelled` answer `202` with no
   body.
