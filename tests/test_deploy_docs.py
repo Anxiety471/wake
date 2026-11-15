@@ -63,5 +63,35 @@ class SectionNumberingTest(unittest.TestCase):
         self.assertEqual(cited - headings, set())
 
 
+def unpublish_block(text):
+    """The unpublish step, from its heading to the next one."""
+    start = text.index("### 6.3 Unpublish")
+    end = text.index("\n### ", start + 1)
+    return text[start:end]
+
+
+def unpublish_problems(text):
+    block = unpublish_block(text)
+    problems = []
+    if 'cp "/etc/nginx/sites-available/$BACKUP" "/etc/nginx/sites-available/$SITE"' not in block:
+        problems.append("the rollback does not copy $BACKUP over $SITE")
+    if "/sites-available/wake-mcp" in block:
+        problems.append("the rollback hard-codes a site file name")
+    return problems
+
+
+class UnpublishRollbackTest(unittest.TestCase):
+    def test_the_rollback_takes_both_paths_from_the_operators_values(self):
+        """An incident rollback dies at the cp when the name it copies is not the name on the host."""
+        self.assertEqual(unpublish_problems(read()), [])
+
+    def test_a_hard_coded_site_file_name_is_caught(self):
+        literal = read().replace(
+            'cp "/etc/nginx/sites-available/$BACKUP" "/etc/nginx/sites-available/$SITE"',
+            "cp /etc/nginx/sites-available/wake-mcp.bak-2026-11-15 /etc/nginx/sites-available/wake-mcp",
+        )
+        self.assertNotEqual(unpublish_problems(literal), [], "a hard-coded rollback passed")
+
+
 if __name__ == "__main__":
     unittest.main()
