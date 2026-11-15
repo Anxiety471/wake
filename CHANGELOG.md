@@ -7,6 +7,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **`.editorconfig` is guarded, and the binary sniff reads both ends.** The final-newline sweep
+  trusted a file nothing read: deleting `insert_final_newline = true` left the suite green while
+  the editor request told the next contributor something it no longer said. `EditorConfigTest`
+  parses the `[*]` section and requires `insert_final_newline = true` and `charset = utf-8`, so
+  the editor half of the rule cannot rot silently. The sweep's binary sniff also reads the last
+  8000 bytes now, not just the first: a file whose first NUL sits past that window was judged
+  text and reported for its last byte, a false positive waiting for the first asset with a long
+  ASCII header. The unreachable empty-file branch inside the sniff is gone, and a text file
+  larger than the window without a newline is still an offender
+  ([#71](https://github.com/Anxiety471/wake/issues/71)).
+
 - **`wake_fleet`: the routing table inside the MCP session.** The bridge advertised only the
   server's ten thread tools, so a model could see which agents were *registered on the API*
   (`wake_bots`) but not which bots this machine can reach by alias. That knowledge lives in
