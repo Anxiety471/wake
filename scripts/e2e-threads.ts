@@ -102,13 +102,33 @@ const child = Bun.spawn(['bun', 'apps/api/src/index.ts'], {
   stderr: 'pipe',
 });
 
+// Both pipes are drained from the moment the child starts. An unread pipe does not block the
+// child on bun 1.4.4 (measured: 200 MB of child output left the parent holding 219 MB of it),
+// so this is not about a hung API; stderr was read only on the exit-before-health path, so a
+// run that failed later never showed the API's own error. Each stream is read once and awaited
+// in the finally block, which also keeps a broken pipe from surfacing as an unhandled rejection.
+const childOut = new Response(child.stdout).text();
+const childErr = new Response(child.stderr).text();
+
+async function drained(stream: Promise<string>): Promise<string> {
+  try {
+    return await stream;
+  } catch {
+    return '(the child\'s log could not be read)';
+  }
+}
+
+function tail(text: string, lines = 20): string {
+  return text.trimEnd().split('\n').slice(-lines).join('\n');
+}
+
 async function waitForHealth(): Promise<void> {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     // A child that never bound the port exits instead of answering, and without this the
     // loop spent its twenty seconds asking whatever else held the port.
     if (child.exitCode !== null) {
-      const why = (await new Response(child.stderr).text()).trim();
+      const why = (await drained(childErr)).trim();
       throw new Error(`API exited ${child.exitCode} before answering /health: ${why}`);
     }
     try {
@@ -237,6 +257,13 @@ try {
 } finally {
   child.kill();
   await child.exited;
+  const [out, err] = await Promise.all([drained(childOut), drained(childErr)]);
+  if (failures > 0) {
+    // The child's own log, not just its exit status: a route that answers 500 explains itself
+    // there first, and both streams are only worth printing when something failed.
+    console.error(`--- API stdout (last 20 lines) ---\n${tail(out)}`);
+    console.error(`--- API stderr (last 20 lines) ---\n${tail(err)}`);
+  }
 }
 
 if (failures > 0) {

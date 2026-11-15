@@ -70,8 +70,27 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
+
+# What the run needs comes before what it generates. The checkout is the cheapest thing to
+# check, so it goes first: nothing below runs without it.
+[ -d "$REPO/apps/api" ] || { echo "wake-api-e2e: no wake checkout at $REPO (set WAKE_REPO)" >&2; exit 1; }
+# These run before the secret is minted, because openssl is one of them. Minting first meant a
+# host without openssl died inside the assignment with a bare "openssl: command not found" and
+# status 127, and an openssl that printed nothing carried on to the length check as
+# "WAKE_E2E_SECRET is 0 characters" - naming a variable the caller never set.
+for tool in bun jq curl openssl python3; do
+  command -v "$tool" >/dev/null || { echo "wake-api-e2e: $tool not found on PATH" >&2; exit 1; }
+done
+command -v "$PG" >/dev/null || { echo "wake-api-e2e: $PG not found; run OPS=1 ./install.sh or put bin/ops on PATH" >&2; exit 1; }
+
 # A fresh secret every run: 48 hex characters, over the 32 the API requires, and never a literal.
 SECRET=${WAKE_E2E_SECRET:-$(openssl rand -hex 24)}
+# A caller's secret and a failed mint are different mistakes, and the second one used to be
+# reported as the first.
+if [ -z "${WAKE_E2E_SECRET:-}" ] && [ "${#SECRET}" -lt 32 ]; then
+    echo "wake-api-e2e: openssl rand -hex 24 printed ${#SECRET} characters; expected 48" >&2
+    exit 1
+fi
 # The API refuses a short secret at boot, and a boot that never happened used to cost the
 # whole 20-second health wait before anyone learned why. Name the caller's secret here,
 # before Postgres starts, so the run is refused instead of started and abandoned.
@@ -79,13 +98,6 @@ if [ "${#SECRET}" -lt 32 ]; then
     echo "wake-api-e2e: WAKE_E2E_SECRET is ${#SECRET} characters; the API needs at least 32" >&2
     exit 1
 fi
-
-# The checkout is the cheapest thing to check, so it goes first: nothing below runs without it.
-[ -d "$REPO/apps/api" ] || { echo "wake-api-e2e: no wake checkout at $REPO (set WAKE_REPO)" >&2; exit 1; }
-for tool in bun jq curl openssl python3; do
-  command -v "$tool" >/dev/null || { echo "wake-api-e2e: $tool not found on PATH" >&2; exit 1; }
-done
-command -v "$PG" >/dev/null || { echo "wake-api-e2e: $PG not found; run OPS=1 ./install.sh or put bin/ops on PATH" >&2; exit 1; }
 
 cd "$REPO"
 "$PG" dropdb "$DB" >/dev/null 2>&1 || true

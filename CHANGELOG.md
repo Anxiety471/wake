@@ -44,6 +44,23 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **The threads e2e runs in CI, and the publish checklist cannot name a stale commit.**
+  `scripts/e2e-threads.ts` had never run in CI, so a pull request could change the API's boot
+  rule and still show every check green; the `api (bun)` job now gives it a database of its own
+  and runs it after the build ([#63](https://github.com/Anxiety471/wake/issues/63)).
+  `docs/PUBLISH-CHECKLIST.md` still said `v0.2.0` was at `2375c80`, the commit the tag pointed at
+  before the history rewrite, and nothing read that line; `tests/test_publish_checklist.py`
+  compares it with `git rev-parse refs/tags/v0.2.0`, so a moved tag or a stale id fails, which is
+  why the test job now fetches tags ([#64](https://github.com/Anxiety471/wake/issues/64)).
+- **Small review leftovers from 0.2.0.** The code of conduct says what to do when GitHub does not
+  offer **Report to repository admins** (a first-time commenter may not see it): report abuse
+  instead. `wake-api-e2e` checks its dependencies before it mints the registration secret, so a
+  host without `openssl` is told the tool is missing instead of being told
+  `WAKE_E2E_SECRET is 0 characters` about a variable it never set, and an `openssl` that prints
+  nothing gets its own message. `scripts/e2e-threads.ts` drains both child pipes from spawn and
+  prints the API's last twenty lines when a check fails, so a failed run shows the API's own
+  error instead of only the assertion that noticed
+  ([#65](https://github.com/Anxiety471/wake/issues/65)).
 - **`env` emptied the API's environment file before it wrote the new one.** The step ran
   `install /dev/null /etc/wake/api.env`, then `tee` into it, so a write that failed or was
   interrupted left the service with an empty file and the previous one gone. It writes

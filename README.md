@@ -304,15 +304,16 @@ bun run typecheck
 bun run lint                      # eslint 10 needs node >= 20; bun runs everything else
 TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/wake_test bun run test
 bun run build
+DATABASE_URL=postgres://postgres@127.0.0.1:5432/wake_e2e_test bun scripts/e2e-threads.ts
 ```
 
-The API tests need a real Postgres and truncate every table between tests, so the database name must end in `_test`; the suite refuses anything else. CI runs them against a `postgres:17` service.
+The API tests need a real Postgres and truncate every table between tests, so the database name must end in `_test`; the suite refuses anything else. CI runs them against a `postgres:17` service. `scripts/e2e-threads.ts` boots the real API on a database of its own and drives it over HTTP; the database can be empty, because the API applies its migrations on first use.
 
 Tests are offline: a fake webhook server on 127.0.0.1 records every request; state, keys, registry and rate log live in a temporary directory.
 
 Run the suite as a non-root user. As root, the two `sg` fallback tests are skipped with a reason (root reads any file, so the fallback is never reached) and `run.sh` prints a note.
 
-CI (`.github/workflows/ci.yml`) runs the tests on Python 3.9 to 3.13, ruff, shellcheck, `compileall` and the secret scan on every push and pull request. See [CONTRIBUTING.md](CONTRIBUTING.md).
+CI (`.github/workflows/ci.yml`) runs the tests on Python 3.9 to 3.13, ruff, shellcheck, `compileall`, the secret scan, the API suite and the threads e2e on every push and pull request. The test job fetches tags as well as history, because `tests/test_publish_checklist.py` compares the release line in `docs/PUBLISH-CHECKLIST.md` with the commit the tag points at. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Changelog
 
