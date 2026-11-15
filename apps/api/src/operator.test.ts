@@ -468,6 +468,14 @@ test('prune refuses a body instead of pruning at the default window', async () =
     expect(refused.statusCode).toBe(400);
     expect(refused.json<{ error: string }>().error).toBe('body not accepted');
   }
+  // A literal null is a body as well; only no body at all may prune.
+  const nullBody = await app.inject({
+    method: 'POST',
+    url: '/mcp/audit/prune',
+    headers: { ...operator(), 'content-type': 'application/json' },
+    payload: 'null',
+  });
+  expect(nullBody.statusCode).toBe(400);
   expect(await auditAges()).toEqual([200]);
 
   // The bare POST a host timer runs is untouched.
