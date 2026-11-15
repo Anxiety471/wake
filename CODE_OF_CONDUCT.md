@@ -23,8 +23,11 @@ the person.
 
 Do not argue on the thread. Report it privately:
 
-- **Conduct:** use GitHub's [Report abuse](https://github.com/contact/report-abuse)
-  form and name this repository and the account involved.
+- **Conduct:** open the comment, issue or pull request, choose **Report content →
+  Report to repository admins**, and say what happened. That reaches the maintainer
+  privately and with the context. When the maintainer is the problem, escalate to
+  GitHub's [Report abuse](https://github.com/contact/report-abuse) form instead and
+  name this repository and the account involved.
 - **A vulnerability, or a secret pasted into an issue:** use private vulnerability
   reporting as described in [SECURITY.md](SECURITY.md). Never repeat the secret in
   another issue or comment.
