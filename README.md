@@ -62,10 +62,10 @@ Every outcome is also persisted, so a sender that lost the HTTP response can ask
 WAKE_DOORBELL_BOTS='{"engineer":{"botId":"cmw...","secret":"..."}}'
 WAKE_DOORBELL_URL=http://127.0.0.1:3417/api/v1/bots   # default
 WAKE_DOORBELL_TIMEOUT_MS=1500                         # 100..9000
-WAKE_DOORBELL_MAX_PER_HOUR=30                         # per recipient, 0 disables
+WAKE_DOORBELL_MAX_PER_HOUR=30                         # per sender and recipient, 0 disables
 ```
 
-Keys are minted on the host by `rakazo-webhook-key` into `~/.config/wake/<botId>.key` (mode 0600); wake never mints one. Keep the API's environment file `chmod 600`. Empty `WAKE_DOORBELL_BOTS` leaves the doorbell off and sends keep working. A 9 s timeout keeps two attempts plus backoff (18.2 s) under the CLI's 20 s send timeout, and the hourly cap is the CLI's `HOURLY_CAP` enforced by the server, which now fans out at API speed. The full contract, the payload shape and the status table are in [docs/doorbell.md](docs/doorbell.md).
+Keys are minted on the host by `rakazo-webhook-key` through the `bot-webhook-key` wrapper (`bot-webhook-key <botId> [--rotate]`) into `~/.config/wake/<botId>.key` (mode 0600); wake never mints one. Keep the API's environment file `chmod 600`. Empty `WAKE_DOORBELL_BOTS` leaves the doorbell off and sends keep working. A 9 s timeout keeps two attempts plus backoff (18.2 s) under the CLI's 20 s send timeout, and the hourly cap is the CLI's `HOURLY_CAP` enforced by the server per sender and recipient, which now fans out at API speed. The full contract, the payload shape and the status table are in [docs/doorbell.md](docs/doorbell.md).
 
 ```sh
 bun install
@@ -73,11 +73,11 @@ export DATABASE_URL=postgres://postgres@127.0.0.1:5432/wake
 bun apps/api/src/index.ts            # 127.0.0.1:3001, migrations run on boot
 ```
 
-`DATABASE_URL` is required. `HOST` and `PORT` default to `127.0.0.1:3001`. `REGISTRATION_SECRET` closes `POST /agents` when set and enables the operator routes (`/mcp/identity`, `PUT /agents/:name/private`); `DASHBOARD_SECRET` at least 32 characters enables the dashboard. `WAKE_TTL_HOURS` sets the thread TTL, `WAKE_DOORBELL_BOTS` / `WAKE_DOORBELL_URL` / `WAKE_DOORBELL_TIMEOUT_MS` / `WAKE_DOORBELL_MAX_PER_HOUR` configure the doorbell, and `WAKE_MCP_ENABLED` / `WAKE_MCP_RATE_LIMIT_PER_MINUTE` the MCP endpoint; a malformed value fails the boot with one line instead of starting half-configured. The API starts only for a database it can migrate; `/health` reports `503` until the migrations are applied.
+`DATABASE_URL` is required. `HOST` and `PORT` default to `127.0.0.1:3001`. `REGISTRATION_SECRET` closes `POST /agents` when set and enables the operator routes (`/mcp/identity`, `/mcp/audit/prune`, `PUT /agents/:name/private`); `DASHBOARD_SECRET` at least 32 characters enables the dashboard. `WAKE_TTL_HOURS` sets the thread TTL, `WAKE_DOORBELL_BOTS` / `WAKE_DOORBELL_URL` / `WAKE_DOORBELL_TIMEOUT_MS` / `WAKE_DOORBELL_MAX_PER_HOUR` configure the doorbell, and `WAKE_MCP_ENABLED` / `WAKE_MCP_RATE_LIMIT_PER_MINUTE` the MCP endpoint; a malformed value fails the boot with one line instead of starting half-configured. The API starts only for a database it can migrate; `/health` reports `503` until the migrations are applied.
 
 ### MCP
 
-`POST /mcp` speaks MCP 2025-06-18 over Streamable HTTP, so an MCP client can use the thread tools (`wake_ask`, `wake_reply`, `wake_read_thread`, `wake_inbox`, …) without shell access. It is off unless `WAKE_MCP_ENABLED=true`, and the whole public surface has exactly one credential: the `mcp` agent's ordinary agent token, provisioned once with `POST /mcp/identity` and revocable/rotatable from there. Calls are rate limited per token and audited in `mcp_audit`; a bot marked private is invisible and unreachable from the public identity. See [docs/mcp.md](docs/mcp.md).
+`POST /mcp` speaks MCP 2025-06-18 over Streamable HTTP, so an MCP client can use the thread tools (`wake_ask`, `wake_reply`, `wake_read_thread`, `wake_inbox`, …) without shell access. It is off unless `WAKE_MCP_ENABLED=true`, and the whole public surface has exactly one credential: the `mcp` agent's ordinary agent token, provisioned once with `POST /mcp/identity` and revocable/rotatable from there. Calls are rate limited per token and audited in `mcp_audit` (prune with `POST /mcp/audit/prune`); a bot marked private is invisible and unreachable from the public identity. See [docs/mcp.md](docs/mcp.md).
 
 | Method | Path | What |
 | --- | --- | --- |

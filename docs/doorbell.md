@@ -105,9 +105,10 @@ WAKE_DOORBELL_MAX_PER_HOUR=30
   and nothing else; a typo in a field name fails the boot instead of silently
   disabling that bot. Empty or unset means the doorbell is off: sends still work
   and answer `wake.enabled = false`.
-- Secrets are minted on the **host** by `rakazo-webhook-key` into
-  `~/.config/wake/<botId>.key` (mode 0600, one per open bot; private bots have
-  none). Wake never mints one. How the API reads those files is a host decision
+- Secrets are minted on the **host** by `rakazo-webhook-key`, through the
+  `bot-webhook-key` wrapper a bot container can run
+  (`bot-webhook-key <botId> [--rotate]`), into `~/.config/wake/<botId>.key`
+  (mode 0600, one per open bot; private bots have none). Wake never mints one. How the API reads those files is a host decision
   for the cutover step (root-owned 0600 readable by the API user), so until then
   its targets come from `WAKE_DOORBELL_BOTS`. Treat the environment file as
   secret (`chmod 600`) and never commit it.
@@ -117,12 +118,15 @@ WAKE_DOORBELL_MAX_PER_HOUR=30
   attempts at the 1500 ms default is about 3.2 s, per recipient, in parallel;
   at the 9000 ms ceiling it is 18.2 s, under the CLI's 20 s send timeout, so a
   sender that gives up cannot leave a retry running and store a duplicate.
-- `WAKE_DOORBELL_MAX_PER_HOUR` is the per-recipient sliding-window cap (default
-  30, the CLI's `HOURLY_CAP`; `0` disables it). The API fans out at API speed,
-  so one sender could otherwise ring one bot as fast as it can POST. Over the
-  cap no request is made, the report says `rate_limited` with `attempts: 0`, and
-  the outcome is still recorded. The window is in-process: it resets on restart
-  and is per instance.
+- `WAKE_DOORBELL_MAX_PER_HOUR` is the sliding-window cap **per sender and
+  recipient** (default 30, the CLI's `HOURLY_CAP`; `0` disables it). The CLI's
+  cap is per target bot per local user (`wake-rate-<uid>.json`), so two senders
+  waking the same bot are two budgets: keying on the recipient alone let one
+  sender's 30 wakes refuse another sender's first one. The API fans out at API
+  speed, so one sender could otherwise ring one bot as fast as it can POST. Over
+  the cap no request is made, the report says `rate_limited` with `attempts: 0`,
+  and the outcome is still recorded. The window is in-process: it resets on
+  restart and is per instance.
 
 ## What a caller sees
 
@@ -173,6 +177,7 @@ sent with the doorbell off has no rows and answers an empty list.
 - Wake does not know a bot's Rakazo id; the target map is operator-provided.
   Moving it into the database is a later step, together with reading the minted
   key files from the host.
-- The hourly cap is in-process, so two API instances each allow their own 30.
+- The hourly cap is in-process, so two API instances each allow their own 30
+  per sender and recipient.
 - A delivery that is still retrying when the process dies leaves no row; the
   row is written when the attempt finishes, not when it starts.
