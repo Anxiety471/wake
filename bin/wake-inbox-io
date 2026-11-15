@@ -74,7 +74,7 @@ def main():
         box, marker, active = q(f"{BASE}/{key}.jsonl"), q(f"{ACTIVE}/{key}.json"), q(ACTIVE)
         sh(
             f"mkdir -p {active} 2>/dev/null; find {active} -name '*.json' -mmin +1440 -delete 2>/dev/null; "
-            f"touch {box} {marker}; chmod 666 {box} {marker} 2>/dev/null"
+            f"touch {box} {marker}; chmod 660 {box} {marker} 2>/dev/null"
         )
         sh(f"cat > {marker}", meta)
         print(f"{BASE}/{key}.jsonl")

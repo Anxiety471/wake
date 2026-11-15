@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 import types
@@ -173,14 +174,32 @@ class GateAllowListTests(WakeTestCase):
 class InboxIoShapeTests(WakeTestCase):
     def test_register_keeps_the_mode_tail_the_gate_matches_literally(self):
         """The gate's inbox-register route is an exact literal that includes the chmod tail, so
-        dropping it refuses registration on a gated host instead of fixing anything. The store
-        inbox dir is 2770 and the gate never runs this text: it creates both files at 660.
+        dropping it refuses registration on a gated host instead of fixing anything. The tail
+        asks for `660`, and it is still not what sets the mode: the store inbox dir is 2770, and
+        the gate creates both files at 660 itself. `rakazo-wake-gate.v7` accepts this tail;
+        against v6 the allow-list test above fails, which is the order the two artifacts ship
+        in: gate first, client second.
         """
         cmds = exercise_inbox_io(self)
-        reg = [c for c in cmds if "chmod 666" in c]
+        reg = [c for c in cmds if "chmod " in c]
         self.assertEqual(len(reg), 1, cmds)
-        self.assertRegex(reg[0], r"; chmod 666 \S+\.jsonl \S+\.json 2>/dev/null$")
+        self.assertRegex(reg[0], r"; chmod 660 \S+\.jsonl \S+\.json 2>/dev/null$")
         self.assertTrue(reg[0].startswith("mkdir -p "), reg[0])
+
+    def test_register_leaves_both_files_at_660(self):
+        """The tail runs for real on an ungated host, where the registering process owns both
+        files, so the mode it asks for is the mode they get. `666` made an inbox that anyone the
+        directory admits could append to; `660` is owner plus group `wake`, which is every
+        writer a 2770 parent admits. This is the assertion that fails on the old tail.
+        """
+        base = os.path.join(self.state, "inbox")
+        shutil.rmtree(base, ignore_errors=True)
+        r = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env={"WAKE_HOSTOPS": ""})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for path in (os.path.join(base, "abc123.jsonl"), os.path.join(base, "active", "abc123.json")):
+            self.assertTrue(os.path.exists(path), path)
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+            self.assertEqual(mode, 0o660, f"{path} is {mode:o}, not 660")
 
 
 class StagedGatePickTests(unittest.TestCase):

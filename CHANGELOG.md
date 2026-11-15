@@ -206,6 +206,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   alias, with exit 2, and the refusal shipped in #36 (`../escape`, `.hidden`, `a/b`, `/abs`,
   from arguments and from the registry) now has tests.
 
+- **The inbox register no longer asks for a world-writable file.** `wake-inbox-io register`
+  ran `chmod 666` on the inbox and its active marker right after creating them, and on an
+  ungated host the registering process owns both files, so the mode took: a session opened with
+  `wake` on the host left an inbox that any user who could reach the directory could append to.
+  The tail now asks for `660` — owner plus group `wake`, which is every writer the 2770 parent
+  directories admit — and a test asserts the mode the files actually get, not only the string.
+  The host gate matches the register command as an exact literal including this tail, so the
+  gate is widened first: a gate with both routes accepts either client while the fleet's copies
+  are refreshed, and the previous one refuses the new tail
+  ([#89](https://github.com/Anxiety471/wake/issues/89)).
+
 ## [0.2.0] - 2026-11-15
 
 ### Changed
