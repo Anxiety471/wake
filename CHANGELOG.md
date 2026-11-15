@@ -5,6 +5,14 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `0.2.0` note on `wake-pingall` names two cases it never had.** It says `""` and
+  `"   "` printed `started:` and asked nobody. Neither reaches that line: both exit 2 with
+  `wake-pingall: no alias left to ping` and ask no one. Only `"a b"` (which asks two bots,
+  `a` and `b`) and `"--"` (which asks a bot called `--` and writes `--.log`) printed
+  `started:`. Measured on the `0.2.0` code; that section stays as released.
+
 ## [0.2.0] - 2026-11-15
 
 ### Changed
