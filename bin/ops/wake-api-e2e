@@ -34,7 +34,12 @@ case ${1:-} in
         ;;
 esac
 
-set -euo pipefail
+# It takes no arguments: a stray one is a mistake, not a no-op, and it would be paid for by
+# starting Postgres and the API before the mistake showed.
+if [ "$#" -gt 0 ]; then
+    echo "wake-api-e2e takes no arguments; try --help" >&2
+    exit 2
+fi
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 REPO=${WAKE_REPO:-$ROOT}

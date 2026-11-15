@@ -105,6 +105,23 @@ class CommandHelpTestCase(unittest.TestCase):
                     f"{path.name} is not named in the {where} README",
                 )
 
+    def test_a_helper_that_takes_no_option_refuses_one(self):
+        """--help is the only unknown flag that is answered; another one is a mistake, not a no-op."""
+        for name in ("wake-keys", "wake-api-e2e"):
+            path = OPS / name
+            with tempfile.TemporaryDirectory() as home:
+                r = subprocess.run(
+                    [str(path), "--bogus"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    stdin=subprocess.DEVNULL,
+                    cwd=home,
+                    env=environment(home),
+                )
+            self.assertEqual(r.returncode, 2, f"{name} accepted --bogus instead of refusing it: {r.stdout[:120]}")
+            self.assertIn("--help", r.stderr, f"{name} refused --bogus without pointing at --help")
+
     def test_the_check_rejects_a_command_that_ignores_help(self):
         """The assertions above must fail on a command with no help path, or they prove nothing."""
         with tempfile.TemporaryDirectory() as tmp:
