@@ -37,6 +37,12 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   no README names; with only that file on the bytes before this change, 14 checks fail.
   `wake-pingall` also refuses an alias that is not letters, digits, hyphen or underscore, so
   `<log dir>/<alias>.log` cannot be written outside the log directory.
+- **Three agent skills under `skills/`.** `wake-ops` covers the operator helpers (a scratch
+  database, the HTTP end-to-end run, keys, a fleet ping, the two installers and a gate
+  review); `wake-mcp` covers the stdio bridge, the public `/mcp` endpoint and its single
+  identity, including what a 401, a 404 and a 405 mean there; `wake-deploy` covers the
+  order of operations on a host, the one nginx location, the check from outside and an
+  exact rollback. Each is a `SKILL.md` with `name` and `description` frontmatter.
 - **Operator helpers in `bin/ops`.** `wake-pg` runs a throwaway local Postgres for the API tests;
   `wake-api-e2e` starts the real API on a scratch database and proves the public surface over HTTP
   (`/mcp` initialize, ten tools, `wake_ask` and `wake_read_thread`, the inbox, deliveries,
