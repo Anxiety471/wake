@@ -9,6 +9,32 @@ LOG_DIR=${WAKE_PING_LOG_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/wake/pingall}
 WAIT=${WAKE_PING_TIMEOUT:-240}
 MSG=${WAKE_PING_MESSAGE:-ping test: reply with the word pong only}
 
+usage() {
+    cat <<'EOF'
+usage: wake-pingall [ALIAS ...]
+
+  Asks every open bot in the registry at once, in the background, one log per bot. Aliases
+  given as arguments pick the bots instead. It starts the asks and returns: it does not wait
+  for the answers, and the logs are where the answers land.
+
+  environment   WAKE_REGISTRY        the bot registry ($WAKE_CONFIG_DIR/bots.tsv)
+                WAKE_CONFIG_DIR      default ~/.config/wake
+                WAKE_PING_LOG_DIR    where <alias>.log goes ($XDG_CACHE_HOME/wake/pingall)
+                WAKE_PING_TIMEOUT    seconds each ask waits (240)
+                WAKE_PING_MESSAGE    the question (a one-word pong check by default)
+
+  exit 0 when the asks were started, 1 when there is no registry, no open bot, or no wake on
+  PATH, 2 on an alias that is not letters, digits, hyphen and underscore
+EOF
+}
+
+case ${1:-} in
+    -h | --help)
+        usage
+        exit 0
+        ;;
+esac
+
 if [ "$#" -gt 0 ]; then
     LIST=$*
 else
@@ -22,6 +48,17 @@ else
         exit 1
     }
 fi
+
+# An alias becomes both an argument and a file name ($LOG_DIR/<alias>.log), so it is checked
+# before either: an alias like ../x would write outside the log directory.
+for alias in $LIST; do
+    case $alias in
+        *[!A-Za-z0-9_-]*)
+            echo "bad bot alias '$alias': letters, digits, hyphen and underscore only" >&2
+            exit 2
+            ;;
+    esac
+done
 
 command -v wake >/dev/null || {
     echo "wake not found on PATH; run ./install.sh first" >&2

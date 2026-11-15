@@ -325,7 +325,31 @@ def check_settings():
         note("wake-mcp: " + path + " is mode " + format(mode, "o") + "; keep the token file at 600")
 
 
+HELP = """\
+usage: wake-mcp [--help]
+
+  The MCP stdio server. With WAKE_MCP_TOKEN set it is a bridge: every JSON-RPC message on stdin
+  goes to POST $WAKE_MCP_API/mcp with that bearer, and the answer comes back on stdout. A
+  stdio-only client gets the server's ten thread tools, with the same rate limit, audit and
+  private-bot wall as an HTTP client.
+  Without a token it keeps the legacy two-tool mode (wake_bot, wake_list), which shells out to
+  wake.
+
+  A redirect is never followed: urllib re-sends Authorization on one, so a 3xx would hand the
+  token to whatever host Location names. A stale or rotated token, a disabled /mcp endpoint and a
+  503 all arrive as a JSON-RPC error on the asking id, never as a dropped message.
+
+  stdout carries JSON-RPC only; warnings go to stderr and never include the token.
+
+  environment   WAKE_MCP_TOKEN   the mcp identity's token (unset: legacy mode)
+                WAKE_MCP_API     API base (http://127.0.0.1:3001); https for any other host
+"""
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        print(HELP, end="")
+        sys.exit(0)
     if TOKEN:
         check_settings()
         run_bridge()
