@@ -270,6 +270,39 @@ class OpsBehaviourTestCase(unittest.TestCase):
         self.assertEqual(oct(os.stat(saved).st_mode & 0o777), "0o600")
         self.assertEqual(sorted(os.listdir(key_dir)), ["bot-coordinator-0001.key"])
 
+    def test_wake_pingall_skips_a_bad_alias_and_still_pings_the_rest(self):
+        # An alias becomes a file name, so ../x must not run - but one bad alias must not hold the
+        # batch hostage either. It is named and skipped, the rest go out, and the exit code says one
+        # was refused.
+        home = tempfile.mkdtemp(prefix="ping-")
+        bindir = os.path.join(home, "bin")
+        os.makedirs(bindir)
+        asks = os.path.join(home, "asks")
+        fake = os.path.join(bindir, "wake")
+        with open(fake, "w", encoding="utf-8") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> ' + shlex.quote(asks) + "\n")
+        os.chmod(fake, 0o755)
+        logs = os.path.join(home, "logs")
+        env = {
+            "PATH": bindir + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
+            "WAKE_PING_LOG_DIR": logs,
+        }
+        r = run("wake-pingall", "bad.alias", "good-bot", env=env)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("bad.alias", r.stderr)
+        self.assertIn("skipped", r.stderr)
+        self.assertIn("started: good-bot", r.stdout)
+        self.assertNotIn("bad.alias", r.stdout)
+        self.assertEqual(sorted(os.listdir(logs)), ["good-bot.log"])
+        for _ in range(40):  # the asks are started in the background
+            if os.path.exists(asks):
+                break
+            time.sleep(0.05)
+        with open(asks, encoding="utf-8") as f:
+            sent = f.read()
+        self.assertIn("--ask good-bot", sent)
+        self.assertNotIn("bad.alias", sent)
+
     def test_wake_pingall_refuses_an_empty_registry(self):
         home = tempfile.mkdtemp(prefix="ping-")
         reg = os.path.join(home, "bots.tsv")
@@ -474,6 +507,26 @@ class WakeWaitTestCase(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, reply + "\n")
         self.assertEqual(r.stderr, "")
+
+    def test_an_empty_from_is_refused_instead_of_switching_the_rule(self):
+        # An empty alias used to mean "any new reply" silently, and a blank one waited the whole
+        # timeout for a bot whose name is three spaces. The flags are the only place this is
+        # refused; an empty WAKE_WAIT_FROM is the ordinary unset case and stays legal.
+        for form in (["--from="], ["--from", ""], ["--from=   "], ["--from", "   "]):
+            with self.subTest(form=form):
+                self.stub_rounds([["[2026-11-15T12:00] human:tester (ask): what is the eta"]])
+                r = self.wait("t-1", *form, "--timeout", "1")
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn("--from needs a bot alias", r.stderr)
+                self.assertEqual(self.called(), [], "a refused --from still went to the thread store")
+
+    def test_an_empty_from_in_the_environment_is_the_unset_case(self):
+        ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
+        reply = "[2026-11-15T12:01] bot-engineer (reply): tomorrow"
+        self.stub_rounds([[ask], [ask, reply]])
+        r = self.wait("t-1", "--timeout", "5", "--interval", "1", env={"WAKE_WAIT_FROM": "", "WAKE_WAIT_QUIET": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, reply + "\n")
 
     def test_the_default_timeout_is_180s_and_the_variable_sets_it(self):
         # Proved without waiting: a --from answer that is already there returns at once, so the
