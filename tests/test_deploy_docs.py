@@ -63,6 +63,58 @@ class SectionNumberingTest(unittest.TestCase):
         self.assertEqual(cited - headings, set())
 
 
+def update_block(text):
+    """§7, from its heading to the next top-level one."""
+    start = text.index("## 7. Update")
+    end = text.index("\n## ", start + 1)
+    return text[start:end]
+
+
+def rollback_problems(text):
+    """What the §7 restore must say, and the one thing it must not.
+
+    `pg_restore -c` drops only the objects the archive holds, so anything a later migration
+    added survives the restore and the schema does not go back to the older shape. Dropping and
+    recreating the database is the exact form, and it is also the destructive one: it discards
+    everything written after the dump, which the runbook has to say out loud.
+    """
+    block = update_block(text)
+    problems = []
+    # The flag combination, not the two words: §7 itself explains why `pg_restore -c` alone is
+    # not a rollback, and a guard that reads prose as a command would fail on its own advice.
+    if "pg_restore -c -d" in block:
+        problems.append("§7 restores with -c, which keeps objects the dump does not have")
+    for needed in ("dropdb wake", "createdb -O wake wake", "pg_restore -d wake", "pg_restore -l"):
+        if needed not in block:
+            problems.append(f"§7 no longer says {needed!r}")
+    if "discard" not in block.lower():
+        problems.append("§7 does not say that the restore discards what was written after the dump")
+    return problems
+
+
+class RollbackRestoreTest(unittest.TestCase):
+    def test_the_rollback_restores_the_dump_exactly(self):
+        self.assertEqual(rollback_problems(read()), [])
+
+    def test_each_part_of_the_exact_restore_is_required(self):
+        # The prose can be rewritten; the steps cannot go missing, and the destructive part has
+        # to stay in plain words next to them.
+        for needed in ("dropdb wake", "createdb -O wake wake", "pg_restore -d wake", "pg_restore -l"):
+            with self.subTest(removed=needed):
+                self.assertNotEqual(rollback_problems(read().replace(needed, "removed")), [])
+
+    def test_the_old_compress_restore_is_caught(self):
+        # The shape this replaced: one `pg_restore -c` line and no drop.
+        old = read().replace("sudo -u postgres pg_restore -d wake <", "sudo -u postgres pg_restore -c -d wake <")
+        problems = rollback_problems(old)
+        self.assertNotEqual(problems, [])
+        self.assertTrue(any("-c" in problem for problem in problems), problems)
+
+    def test_a_restore_that_forgets_the_data_loss_is_caught(self):
+        text = read().replace("is discarded with the old", "goes away with the old")
+        self.assertTrue(any("discard" in problem for problem in rollback_problems(text)))
+
+
 def unpublish_block(text):
     """The unpublish step, from its heading to the next one."""
     start = text.index("### 6.3 Unpublish")

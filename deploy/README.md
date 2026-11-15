@@ -320,10 +320,32 @@ sudo systemctl start wake-api
 
 Migrations run at boot and only forward: a restart applies what is new, and going
 back to an older bundle needs a database restore, not another restart. That is
-what the `pg_dump` above is for: with the service stopped,
-`sudo -u postgres pg_restore -c -d wake < /var/backups/wake/<file>.dump` restores
-the dump taken before the redeploy (the shell opens the root-only file, so the
-redirect is what lets postgres read it).
+what the `pg_dump` above is for. Read the dump, then put the database back to
+exactly what it holds:
+
+```sh
+sudo systemctl stop wake-api
+sudo pg_restore -l /var/backups/wake/<file>.dump | less  # lists the archive; no database is touched
+sudo -u postgres dropdb wake
+sudo -u postgres createdb -O wake wake
+sudo -u postgres pg_restore -d wake < /var/backups/wake/<file>.dump
+sudo systemctl start wake-api
+# §5
+```
+
+`pg_restore -c` on its own is not a rollback. `-c` drops only the objects the
+archive contains, so a table or a column added by a migration applied *after* that
+dump is not in the archive, survives the restore, and the schema does not return to
+the older shape - the rows come back, the shape does not. Dropping the database and
+creating it again is what makes the restore exact. The shell opens the dump for the
+last line, which is why the redirect, and not a flag, is what lets postgres read a
+file inside the root-only backup directory.
+
+The restore is destructive and that is the point: everything written after the dump
+- threads, inbox rows, deliveries and audit entries - is discarded with the old
+database. Take the dump before the redeploy, and check it with `pg_restore -l`
+before dropping anything, because `dropdb` is the one step here that cannot be
+undone.
 
 ## Cutover from the CLI store
 
