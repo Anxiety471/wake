@@ -8,6 +8,30 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import wake_config  # noqa: E402
 
+HELP = """\
+usage: wake-hook claude-code Stop|StopFailure | wake-hook codex '<json>'
+
+  Turns a coding-agent hook event into a wake to WAKE_BOT. The hook JSON comes from stdin
+  (claude-code) or from the last argument (codex); the message is the run's last assistant
+  line, cut to 160 characters and prefixed with the harness and the repository name.
+
+  claude-code Stop          a turn finished: wake at level ok
+  claude-code StopFailure   the run failed: wake at level error
+  codex '<json>'            notify JSON; the event name comes from hook_event_name or type
+
+  A Stop hook whose JSON says stop_hook_active is ignored, so a continued turn is reported once.
+
+  environment   WAKE_HOOK   off (unset): nothing wakes; errors: only failures wake; all: every event
+                WAKE_BOT    the bot a wake goes to (coordinator)
+
+  With WAKE_HOOK off this exits 0 and does nothing, which is the default. --help is answered
+  before that check, so the hook can explain itself while it is off.
+"""
+
+if any(a in ("-h", "--help") for a in sys.argv[1:]):
+    print(HELP, end="")
+    sys.exit(0)
+
 mode = os.environ.get("WAKE_HOOK", "")
 if mode not in ("1", "errors", "all"):
     sys.exit(0)
