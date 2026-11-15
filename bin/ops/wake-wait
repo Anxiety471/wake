@@ -1,0 +1,160 @@
+#!/bin/bash
+# desc: block until a thread gets a new reply (or one from --from BOT), print it and exit 0; 2 on timeout, 1 on error, so a script that asked earlier waits instead of asking twice. WAKE_WAIT_TIMEOUT, WAKE_WAIT_INTERVAL, WAKE_WAIT_FROM, WAKE_WAIT_QUIET
+set -u
+
+PROG=wake-wait
+USAGE="usage: $PROG <thread-id> [--timeout SECONDS] [--interval N] [--from BOT]
+
+  Blocks until <thread-id> has a reply that was not there when it started, prints that reply
+  (from its line to the end of the thread, so a multi-line answer is not cut) and exits 0.
+  With --from BOT, a reply from that bot counts even if it predates the wait, and a reply
+  from anyone else never does. It never sends anything and never opens a thread.
+
+  exit 0  answered
+       2  no answer within the timeout
+       1  error: bad usage or id, no wake on PATH, unreadable thread store, or a thread that
+          was never opened (no such thread: a thread exists once something is asked into it)
+
+  environment   WAKE_WAIT_TIMEOUT (180)  WAKE_WAIT_INTERVAL (3)  WAKE_WAIT_FROM  WAKE_WAIT_QUIET (0)"
+
+die() {
+    printf '%s: %s\n' "$PROG" "$*" >&2
+    exit 1
+}
+
+ID=''
+TIMEOUT=${WAKE_WAIT_TIMEOUT:-180}
+INTERVAL=${WAKE_WAIT_INTERVAL:-3}
+FROM=${WAKE_WAIT_FROM:-}
+QUIET=${WAKE_WAIT_QUIET:-0}
+
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        -h | --help)
+            printf '%s\n' "$USAGE"
+            exit 0
+            ;;
+        --timeout)
+            [ "$#" -ge 2 ] || die "--timeout needs a number of seconds"
+            TIMEOUT=$2
+            shift 2
+            ;;
+        --timeout=*) TIMEOUT=${1#*=}; shift ;;
+        --interval)
+            [ "$#" -ge 2 ] || die "--interval needs a number of seconds"
+            INTERVAL=$2
+            shift 2
+            ;;
+        --interval=*) INTERVAL=${1#*=}; shift ;;
+        --from)
+            [ "$#" -ge 2 ] || die "--from needs a bot alias"
+            FROM=$2
+            shift 2
+            ;;
+        --from=*) FROM=${1#*=}; shift ;;
+        -*) die "unknown option $1" ;;
+        *)
+            [ -z "$ID" ] || die "one thread id at a time; got $ID and $1 -- usage: $PROG <thread-id> [--timeout SECONDS] [--interval N] [--from BOT]"
+            ID=$1
+            shift
+            ;;
+    esac
+done
+
+[ -n "$ID" ] || die "no thread id; $USAGE"
+case $ID in
+    # The same rule bin/wake applies to a thread id before it becomes a path component.
+    */* | *..*) die "bad thread id; pass the id that wake --ask printed, with no path in it" ;;
+esac
+case $TIMEOUT in '' | *[!0-9]*) die "the timeout must be a number of seconds, not '$TIMEOUT'" ;; esac
+case $INTERVAL in '' | *[!0-9]* | 0) die "the interval must be a positive number of seconds, not '$INTERVAL'" ;; esac
+case $QUIET in 0 | 1) ;; *) die "WAKE_WAIT_QUIET must be 0 or 1, not '$QUIET'" ;; esac
+
+command -v wake >/dev/null || die "wake not found on PATH; run ./install.sh first"
+
+BASE=$(mktemp "${TMPDIR:-/tmp}/wake-wait-base.XXXXXX") || die "cannot create a temporary file"
+ERR=$(mktemp "${TMPDIR:-/tmp}/wake-wait-err.XXXXXX") || die "cannot create a temporary file"
+# Only EXIT cleans up. The same command on INT/TERM would delete the baseline snapshot and the
+# loop would carry on without one - and with no baseline every reply in the thread counts as new,
+# so an interrupt would print somebody else's older answer as this wait's answer.
+trap 'rm -f "$BASE" "$ERR"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# What bin/wake's show() prints for a reply record: [2026-11-15T12:00] bot-engineer (reply): text
+# Anchored on the whole prefix, so an ask whose own text contains "(reply):" is not an answer.
+# The same pattern is written into MATCH below and deliberately not passed with -v: gawk
+# unescapes a -v value and mawk does not, so the anchor survives on one and not the other.
+# test_the_two_reply_patterns_cannot_drift keeps the two copies identical.
+REPLY='^\[[^]]*\] [^ ]+ \(reply\): '
+
+# Print the thread from the first qualifying reply to its end, and say whether there was one.
+# shellcheck disable=SC2016  # an awk program: $0, $1 and the rest are awk's, not the shell's
+#   author empty: a reply line that is not in the baseline snapshot (a new one)
+#   author set:   a reply line by that author, whatever its age
+MATCH='
+BEGIN {
+    while ((getline line < base) > 0) old[line] = 1
+    want = tolower(author)
+    gsub(/^(bot:|bot-|human:)/, "", want)
+}
+{
+    if (found) { print; next }
+    if ($0 !~ /^\[[^]]*\] [^ ]+ \(reply\): /) next
+    who = $0
+    sub(/^\[[^]]*\] /, "", who)
+    sub(/ \(reply\):.*$/, "", who)
+    gsub(/^(bot:|bot-|human:)/, "", who)
+    who = tolower(who)
+    if (want != "") qualified = (who == want)
+    else qualified = !($0 in old)
+    if (qualified) { found = 1; print }
+}
+END { exit(found ? 0 : 1) }
+'
+
+say() { [ "$QUIET" = 1 ] || printf '%s\n' "$*" >&2; }
+
+# The first poll doubles as the baseline, so a reply that was already there is not "new".
+first=1
+deadline=$(($(date +%s) + TIMEOUT))
+if [ -n "$FROM" ]; then
+    say "$PROG: waiting up to ${TIMEOUT}s for a reply from $FROM on thread $ID"
+else
+    say "$PROG: waiting up to ${TIMEOUT}s for a new reply on thread $ID"
+fi
+
+while :; do
+    out=$(wake --thread "$ID" 2>"$ERR") || {
+        if grep -q '^no thread ' "$ERR" 2>/dev/null; then
+            die "$ID was never opened, so nothing can answer it; a thread is created by: wake --ask <bot> \"<question>\""
+        elif grep -q 'cannot read the thread store' "$ERR" 2>/dev/null; then
+            die "the thread store cannot be read, so waiting will not help: $(head -n 1 "$ERR")"
+        fi
+        die "wake --thread $ID failed: $(head -n 1 "$ERR")"
+    }
+    if [ "$first" = 1 ]; then
+        printf '%s\n' "$out" | grep -E "$REPLY" >"$BASE" 2>/dev/null || :
+        first=0
+    fi
+    answer=$(printf '%s\n' "$out" | awk -v base="$BASE" -v author="$FROM" "$MATCH")
+    if [ -n "$answer" ]; then
+        printf '%s\n' "$answer"
+        exit 0
+    fi
+    now=$(date +%s)
+    if [ "$now" -ge "$deadline" ]; then
+        if [ -n "$FROM" ]; then
+            say "$PROG: no reply from $FROM on thread $ID after ${TIMEOUT}s; read it later with: wake --thread $ID"
+        else
+            say "$PROG: no new reply on thread $ID after ${TIMEOUT}s; if the answer was already there, add --from <bot> or read it with: wake --thread $ID"
+        fi
+        exit 2
+    fi
+    left=$((deadline - now))
+    if [ "$left" -lt "$INTERVAL" ]; then
+        sleep "$left"
+    else
+        sleep "$INTERVAL"
+    fi
+done
