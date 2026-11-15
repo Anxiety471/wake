@@ -72,9 +72,12 @@ the API, so the two payloads cannot share one hint (issue #96).
   **and for a `reply`**. A reply cannot be answered, so it must not look
   answerable. The prefix is deliberately not the CLI's `thread:`: that id is in
   this API's store, and a routine that routes on `thread:` would run
-  `wake --reply`, which reads the CLI's shared-folder store and cannot see it
-  ([#96](https://github.com/Anxiety471/wake/issues/96)). `threadId` still names
-  the thread for anything that wants to record it.
+  `wake --reply` against a folder that does not hold it
+  ([#96](https://github.com/Anxiety471/wake/issues/96)). A bot with
+  `WAKE_AGENT_TOKEN` and `WAKE_API` set can still answer one with
+  `wake --reply <id>`: the CLI posts to the same route as that bot instead of
+  reading the store. `threadId` still names the thread for anything that wants to
+  record it.
 - `depth` is `0`, the depth the CLI sends for a normal bot, so a receiver that
   exports it as `WAKE_DEPTH` can still send its own wakes (`wake-run` raises it
   to 1, and `wake` refuses at 2).

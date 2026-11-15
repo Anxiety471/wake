@@ -78,9 +78,14 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   `ref` is `api-thread:<id>` so a routine that routes on the CLI's `thread:` prefix does not fire
   the CLI, and `wake --reply <uuid>` names the store and the route instead of claiming the thread
   was never opened. CLI threads are unchanged: their hint, prefix and refusal are what they were.
-  A recipient still needs an agent token, which the fleet does not deploy yet: that capability is
-  [#93](https://github.com/Anxiety471/wake/issues/93). The false instruction fixed here is
-  [#96](https://github.com/Anxiety471/wake/issues/96).
+  **The CLI can answer one now**: with `WAKE_AGENT_TOKEN` (this bot's own token from `POST
+  /agents`) and `WAKE_API` (the API root) set, `wake --reply <uuid>` posts to
+  `POST /threads/<id>/reply` as this bot, prints the new `seq` and surfaces the API's refusal
+  verbatim; with neither set it names the missing setting instead of claiming the thread never
+  existed. The shared `mcp` token is not a substitute: it is the asker of every thread it opened,
+  and the route answers `409 the asker cannot answer its own ask` (`threads.ts`). Deploying a
+  per-bot token to the fleet is [#93](https://github.com/Anxiety471/wake/issues/93); the false
+  instruction fixed here is [#96](https://github.com/Anxiety471/wake/issues/96).
 
 - **A reserved test address is not a secret, and one branch's fixture failed every branch's scan.**
   `scripts/scrub-check.sh` flagged `user.email=simulation@example.invalid` in

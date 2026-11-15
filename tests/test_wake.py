@@ -92,6 +92,53 @@ class FakeWebhook:
         return self.requests
 
 
+class FakeWakeApi:
+    """Records every POST /threads/<id>/reply; answers 201 with seq 2, or the status set per id."""
+
+    def __init__(self):
+        self.requests = []
+        self.status = {}
+        self.error = {}
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                m = re.match(r"^/threads/([^/]+)/reply$", self.path)
+                tid = m.group(1) if m else None
+                outer.requests.append(
+                    {"path": self.path, "thread": tid, "headers": dict(self.headers), "json": json.loads(body or b"{}")}
+                )
+                code = outer.status.get(tid, 201) if tid else 404
+                if code == 201:
+                    payload = {
+                        "threadId": tid,
+                        "messageId": "message-2",
+                        "seq": 2,
+                        "createdAt": "2026-11-16T04:00:00+08:00",
+                        "status": "answered",
+                    }
+                else:
+                    payload = {"error": outer.error.get(tid, "refused")}
+                out = json.dumps(payload).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
 def write_exe(path, body):
     with open(path, "w") as f:
         f.write(textwrap.dedent(body).lstrip())
@@ -112,6 +159,7 @@ class WakeTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="wake-test-")
         self.hook = FakeWebhook()
+        self.api = FakeWakeApi()
         self.cfg = os.path.join(self.tmp, "config")
         self.keys = os.path.join(self.tmp, "keys")
         self.state = os.path.join(self.tmp, "state")
@@ -142,6 +190,7 @@ class WakeTestCase(unittest.TestCase):
 
     def tearDown(self):
         self.hook.close()
+        self.api.close()
         for root, _dirs, files in os.walk(self.tmp):
             for n in files:
                 path = os.path.join(root, n)
@@ -608,6 +657,50 @@ class ReplyGuardTests(WakeTestCase):
         self.assertEqual(rows[1]["source"], "bot:engineer")
         self.assertEqual(rows[2]["rc"], 4)
         self.assertNotIn("PWNED", json.dumps(rows))  # never carries key material, only the text it was given
+
+
+class ApiThreadReplyTests(WakeTestCase):
+    """An id the API minted is not in the shared folder, so --reply answers it on the API (issue #96)."""
+
+    UUID = "11a793f5-9f12-40c5-8880-19d4fb80431b"
+
+    def api_env(self, token="bob-agent-token", base=None):
+        env = {"WAKE_SOURCE": "bot:engineer", "WAKE_API": self.api.base if base is None else base}
+        if token is not None:
+            env["WAKE_AGENT_TOKEN"] = token
+        return env
+
+    def test_reply_to_an_api_thread_posts_the_answer(self):
+        r = self.wake("--reply", self.UUID, "the answer", env=self.api_env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("seq 2", r.stdout)
+        [req] = self.api.requests
+        self.assertEqual(req["thread"], self.UUID)
+        self.assertEqual(req["headers"]["Authorization"], "Bearer bob-agent-token")
+        self.assertEqual(req["headers"]["User-Agent"], "wake-cli/" + wake_config.VERSION)
+        self.assertEqual(req["json"], {"body": "the answer"})
+
+    def test_reply_to_an_api_thread_writes_no_flat_record(self):
+        """A record under threads/ would be a second copy that the asker never reads."""
+        self.wake("--reply", self.UUID, "the answer", env=self.api_env())
+        threads = os.path.join(self.state, "threads")
+        self.assertEqual(os.listdir(threads) if os.path.isdir(threads) else [], [])
+
+    def test_reply_without_a_token_names_the_setting_that_is_missing(self):
+        r = self.wake("--reply", self.UUID, "x", env=self.api_env(token=None))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stderr)
+        self.assertIn(f"POST /threads/{self.UUID}/reply", r.stderr)
+        self.assertEqual(self.api.requests, [])
+
+    def test_reply_surfaces_the_api_refusal(self):
+        """The route refuses the asker of an ask; the CLI repeats that instead of inventing a store error."""
+        self.api.status[self.UUID] = 409
+        self.api.error[self.UUID] = "the asker cannot answer its own ask"
+        r = self.wake("--reply", self.UUID, "x", env=self.api_env())
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("409", r.stderr)
+        self.assertIn("the asker cannot answer its own ask", r.stderr)
 
 
 class DirectoryTests(WakeTestCase):

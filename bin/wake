@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -536,16 +537,69 @@ API_THREAD_ID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a
 
 def api_thread_refusal(tid):
     """The API mints UUID thread ids in Postgres; this CLI reads only the shared folder, so its
-    "never opened" text is wrong for one: name the store the id belongs to and the route that
-    can answer it (issue #96). None for a CLI-shaped id, so its message stays as it was."""
+    "never opened" text is wrong for one: name the store the id belongs to, the route that can
+    answer it, and the setting this shell is missing when it cannot (issue #96). None for a
+    CLI-shaped id, so that message stays as it was."""
     if not API_THREAD_ID.match(tid):
         return None
+    token = (CFG.get("WAKE_AGENT_TOKEN") or "").strip()
+    base = (CFG.get("WAKE_API") or "").strip()
+    missing = [
+        name
+        for name, value in (
+            ("WAKE_AGENT_TOKEN (the token of this bot)", token),
+            ("WAKE_API (for example http://127.0.0.1:3001)", base),
+        )
+        if not value
+    ]
+    why = ""
+    if missing:
+        them = "them" if len(missing) > 1 else "it"
+        why = (
+            f" This shell has no {' and '.join(missing)}, so wake cannot answer there either; set {them} in config.env."
+        )
     return (
         f"no thread {tid} in the shared-folder store at {THREADS}: that id belongs to a thread the "
-        f"wake API opened, which wake --reply cannot see. Answer it on the API: "
-        f"POST /threads/{tid}/reply with an agent token (MCP clients: the wake_reply tool). "
+        f"wake API opened, which that store cannot show. Answer it on the API: "
+        f"POST /threads/{tid}/reply with an agent token (MCP clients: the wake_reply tool).{why} "
         f"CLI threads have ids like 1114-a3f2."
     )
+
+
+def api_reply(tid, text):
+    """Answer an API thread on the API, as this bot. (None, None) when this CLI holds no credential
+    for it, so the caller can name what is missing instead of guessing.
+
+    The shared `mcp` token cannot stand in: it is one identity, the route refuses the asker of an
+    ask (apps/api/src/threads.ts), and every MCP-born thread has that identity as its asker. Only
+    this bot's own token can answer a thread it is the recipient of.
+    """
+    token = (CFG.get("WAKE_AGENT_TOKEN") or "").strip()
+    base = (CFG.get("WAKE_API") or "").strip().rstrip("/")
+    if not token or not base:
+        return None, None
+    req = urllib.request.Request(
+        f"{base}/threads/{urllib.parse.quote(tid)}/reply",
+        data=json.dumps({"body": text}).encode(),
+        method="POST",
+        headers={
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json",
+            "User-Agent": "wake-cli/" + wake_config.VERSION,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status, json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode()
+        try:
+            message = json.loads(raw).get("error") or raw
+        except (ValueError, AttributeError):
+            message = raw
+        return e.code, message[:300]
+    except urllib.error.URLError as e:
+        sys.exit(f"cannot reach the wake API at {base} to answer {tid}: {e.reason}")
 
 
 def reply(tid, text, source, notify, force):
@@ -556,6 +610,18 @@ def reply(tid, text, source, notify, force):
             f"check WAKE_HOSTOPS (guest) and that the directory is readable."
         )
     if not recs:
+        # An id the API minted belongs to the API's store, not this folder: answer it there when
+        # this bot holds its own token, and name the setting that is missing when it does not.
+        if API_THREAD_ID.match(tid):
+            status, answer = api_reply(tid, text)
+            if status is not None:
+                if status == 201:
+                    seq = answer.get("seq", "?") if isinstance(answer, dict) else "?"
+                    audit("reply", source, text, tid, "api", 0)
+                    print(f"replied on thread {tid} through the wake API (seq {seq}): {text}")
+                    return 0
+                audit("reply-refused", source, text, tid, "api", 7)
+                sys.exit(f"the wake API refused the reply to {tid}: {status} {answer}")
         audit("reply-refused", source, text, tid, rc=4)
         sys.exit(
             api_thread_refusal(tid)
