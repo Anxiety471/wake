@@ -7,6 +7,10 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **`tests/test_gate_shapes.py` no longer carries one machine's staging directory.**
+  The directory is `WAKE_GATE_STAGE` now (default: unset, so the allow-list tests skip),
+  `WAKE_GATE` still names one artifact, and a test pins the empty case. Where a gate is
+  staged is a property of a machine, never of the repository.
 - **`--help` on every command, including the installer.** Seven commands treated the flag as
   data: `wake-api-e2e --help` ran the whole end-to-end suite, `wake-pingall --help` asked a bot
   named `--help` a question, `wake-mcp --help` started the stdio server, `wake-keys --help` ran
