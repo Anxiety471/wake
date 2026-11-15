@@ -141,11 +141,13 @@ test('migration creates agents, messages, and per-recipient receipts', async () 
     'agents',
     'dashboard_notices',
     'dashboard_sessions',
+    'mcp_audit',
     'message_receipts',
     'messages',
     'schema_migrations',
     'thread_participants',
     'threads',
+    'wake_deliveries',
   ]);
 
   const columns = await admin.query<{
@@ -161,6 +163,8 @@ test('migration creates agents, messages, and per-recipient receipts', async () 
   expect(columns.rows).toEqual([
     { table_name: 'agents', column_name: 'created_at' },
     { table_name: 'agents', column_name: 'id' },
+    { table_name: 'agents', column_name: 'is_private' },
+    { table_name: 'agents', column_name: 'kind' },
     { table_name: 'agents', column_name: 'last_seen_at' },
     { table_name: 'agents', column_name: 'name' },
     { table_name: 'agents', column_name: 'pending_expires_at' },

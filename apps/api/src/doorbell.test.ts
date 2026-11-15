@@ -7,6 +7,7 @@ import {
   parseDoorbell,
   parseDoorbellTargets,
   parseDoorbellTimeout,
+  parseDoorbellMaxPerHour,
   notifyMessage,
   parseDoorbellUrl,
   replyHint,
@@ -80,6 +81,7 @@ function settings(
     timeoutMs: 500,
     attempts: 2,
     backoffMs: 1,
+    maxPerHour: 0,
     ...overrides,
   };
 }
@@ -116,6 +118,18 @@ describe('parseDoorbell', () => {
     expect(parseDoorbell({})).toBeNull();
     expect(parseDoorbell({ WAKE_DOORBELL_BOTS: '   ' })).toBeNull();
     expect(parseDoorbell({ WAKE_DOORBELL_BOTS: '{}' })).toBeNull();
+  });
+
+  test('a disabled doorbell ignores a stale URL and timeout', () => {
+    // The doorbell is off, so nothing reads these; a leftover bad value must
+    // not break the boot of a server that will never ring.
+    expect(
+      parseDoorbell({
+        WAKE_DOORBELL_BOTS: '{}',
+        WAKE_DOORBELL_URL: 'not a url',
+        WAKE_DOORBELL_TIMEOUT_MS: '0',
+      }),
+    ).toBeNull();
   });
 
   test('reads a target and lowercases the agent name', () => {
@@ -188,11 +202,23 @@ describe('parseDoorbell', () => {
     expect(() => parseDoorbellUrl('not a url')).toThrow(ConfigError);
   });
 
-  test('bounds the timeout', () => {
+  test('bounds the timeout under the CLI send timeout', () => {
     expect(parseDoorbellTimeout(undefined)).toBe(1500);
     expect(parseDoorbellTimeout('250')).toBe(250);
-    for (const raw of ['0', '99', '10001', '1.5', '-1', 'ten']) {
+    // 2 x 9 s + 200 ms stays under bin/wake's 20 s urllib timeout.
+    expect(parseDoorbellTimeout('9000')).toBe(9000);
+    for (const raw of ['0', '99', '9001', '10000', '1.5', '-1', 'ten']) {
       expect(() => parseDoorbellTimeout(raw)).toThrow(ConfigError);
+    }
+  });
+
+  test('bounds the per-recipient hourly cap', () => {
+    expect(parseDoorbellMaxPerHour(undefined)).toBe(30);
+    expect(parseDoorbellMaxPerHour('0')).toBe(0);
+    expect(parseDoorbellMaxPerHour('7')).toBe(7);
+    expect(parseDoorbellMaxPerHour('10000')).toBe(10000);
+    for (const raw of ['-1', '10001', '1.5', 'ten']) {
+      expect(() => parseDoorbellMaxPerHour(raw)).toThrow(ConfigError);
     }
   });
 });
@@ -251,7 +277,10 @@ describe('doorbellPayload', () => {
       threadId: 'thread-1',
       time: new Date('2026-11-14T16:00:00.000Z'),
     });
-    expect(payload.ref).toBe('thread:thread-1');
+    // A reply cannot be answered, so it carries no thread ref: a receiver that
+    // routes on `ref` must not fire wake --reply into a 409.
+    expect(payload.ref).toBe('');
+    expect(payload.threadId).toBe('thread-1');
     expect(payload.detail).toBe('reply on thread thread-1: because billing');
     // wake --reply from the asker is a 409: the asker cannot answer its own ask.
     expect(payload.detail).not.toContain('wake --reply');
@@ -407,6 +436,50 @@ describe('ringDoorbell', () => {
     }
   });
 
+  test('does not follow a redirect: a 3xx is a rejected configuration', async () => {
+    const stub = startStub(() => ({
+      status: 302,
+      body: '',
+    }));
+    try {
+      const attempt = await ringDoorbell(settings(stub.url), TARGET, {
+        idempotencyKey: 'k',
+        body: wakeBody(),
+      });
+      expect(attempt).toEqual({
+        delivered: false,
+        reason: 'rejected',
+        attempts: 1,
+        status: 302,
+      });
+      expect(stub.requests).toHaveLength(1);
+    } finally {
+      stub.close();
+    }
+  });
+
+  test('refuses an oversized response body instead of reading it all', async () => {
+    const stub = startStub(() => ({
+      status: 200,
+      body: JSON.stringify({ ok: true, padding: 'x'.repeat(64 * 1024) }),
+    }));
+    try {
+      const attempt = await ringDoorbell(settings(stub.url), TARGET, {
+        idempotencyKey: 'k',
+        body: wakeBody(),
+      });
+      expect(attempt).toEqual({
+        delivered: false,
+        reason: 'bad_response',
+        attempts: 1,
+        status: 200,
+      });
+      expect(stub.requests).toHaveLength(1);
+    } finally {
+      stub.close();
+    }
+  });
+
   test('treats a 200 that is not a delivery as undelivered', async () => {
     for (const body of ['not json', JSON.stringify({ ok: false })]) {
       const stub = startStub(() => ({ status: 200, body }));
@@ -496,6 +569,29 @@ describe('notifyMessage', () => {
     };
   }
 
+  function recordingPool(
+    recipients: Array<{ id: string; name: string }>,
+    options?: { failInsert?: boolean },
+  ): { pool: Pick<Pool, 'query'>; writes: Array<{ values: unknown[] }> } {
+    const writes: Array<{ values: unknown[] }> = [];
+    const pool = {
+      query: (text: string, values?: unknown[]) => {
+        if (text.includes('FROM message_receipts')) {
+          return Promise.resolve({ rows: recipients });
+        }
+        if (text.includes('INSERT INTO wake_deliveries')) {
+          if (options?.failInsert === true) {
+            return Promise.reject(new Error('insert failed'));
+          }
+          writes.push({ values: values ?? [] });
+          return Promise.resolve({ rows: [] });
+        }
+        return Promise.reject(new Error(`unexpected query: ${text}`));
+      },
+    } as unknown as Pick<Pool, 'query'>;
+    return { pool, writes };
+  }
+
   const message = {
     messageId: '11111111-1111-1111-1111-111111111111',
     from: 'alice',
@@ -531,6 +627,8 @@ describe('notifyMessage', () => {
     expect(await notifyMessage(pool, config, message, log)).toEqual({
       enabled: true,
       deliveries: [],
+      // Not "nobody had a target": the recipients could not be read at all.
+      error: 'recipients_unreadable',
     });
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({
@@ -540,7 +638,7 @@ describe('notifyMessage', () => {
     });
   });
 
-  test('rings only recipients that have a target', async () => {
+  test('rings only recipients that have a target and records the outcome', async () => {
     const stub = startStub(() => ({
       status: 200,
       body: JSON.stringify({ ok: true, seq: 1 }),
@@ -556,10 +654,10 @@ describe('notifyMessage', () => {
       if (config === null) {
         throw new Error('expected a doorbell config');
       }
-      const pool = {
-        query: () =>
-          Promise.resolve({ rows: [{ name: 'bob' }, { name: 'carol' }] }),
-      } as unknown as Pick<Pool, 'query'>;
+      const { pool, writes } = recordingPool([
+        { id: '22222222-2222-2222-2222-222222222222', name: 'bob' },
+        { id: '33333333-3333-3333-3333-333333333333', name: 'carol' },
+      ]);
       const report = await notifyMessage(pool, config, message, log);
       expect(report).toEqual({
         enabled: true,
@@ -569,6 +667,16 @@ describe('notifyMessage', () => {
       });
       expect(stub.requests).toHaveLength(1);
       expect(stub.requests[0]?.path).toBe('/api/v1/bots/cmwbot123/webhook');
+      // Carol has no target, so only bob's outcome is written.
+      expect(writes).toHaveLength(1);
+      expect(writes[0]?.values).toEqual([
+        message.messageId,
+        '22222222-2222-2222-2222-222222222222',
+        true,
+        null,
+        1,
+        200,
+      ]);
       expect(lines).toHaveLength(1);
       expect(lines[0]).toMatchObject({
         level: 'info',
@@ -576,6 +684,154 @@ describe('notifyMessage', () => {
         delivered: true,
       });
       expect(JSON.stringify(lines)).not.toContain(SECRET);
+    } finally {
+      stub.close();
+    }
+  });
+
+  test('records an undelivered outcome with its reason and status', async () => {
+    const stub = startStub(() => ({
+      status: 401,
+      body: JSON.stringify({ error: 'unauthorized' }),
+    }));
+    try {
+      const { log } = capture();
+      const config = parseDoorbell({
+        WAKE_DOORBELL_BOTS: JSON.stringify({
+          bob: { botId: 'cmwbot123', secret: SECRET },
+        }),
+        WAKE_DOORBELL_URL: stub.url,
+      });
+      if (config === null) {
+        throw new Error('expected a doorbell config');
+      }
+      const { pool, writes } = recordingPool([
+        { id: '22222222-2222-2222-2222-222222222222', name: 'bob' },
+      ]);
+      const report = await notifyMessage(pool, config, message, log);
+      expect(report.deliveries[0]).toMatchObject({
+        agent: 'bob',
+        delivered: false,
+        reason: 'unauthorized',
+        attempts: 1,
+      });
+      expect(writes[0]?.values).toEqual([
+        message.messageId,
+        '22222222-2222-2222-2222-222222222222',
+        false,
+        'unauthorized',
+        1,
+        401,
+      ]);
+    } finally {
+      stub.close();
+    }
+  });
+
+  test('caps wakes per recipient per hour without making a request', async () => {
+    const stub = startStub(() => ({
+      status: 200,
+      body: JSON.stringify({ ok: true, seq: 1 }),
+    }));
+    try {
+      const { log, lines } = capture();
+      const config = parseDoorbell({
+        WAKE_DOORBELL_BOTS: JSON.stringify({
+          bob: { botId: 'cmwbot123', secret: SECRET },
+        }),
+        WAKE_DOORBELL_URL: stub.url,
+        WAKE_DOORBELL_MAX_PER_HOUR: '1',
+      });
+      if (config === null) {
+        throw new Error('expected a doorbell config');
+      }
+      const { pool, writes } = recordingPool([
+        { id: '22222222-2222-2222-2222-222222222222', name: 'bob' },
+      ]);
+      const at = (iso: string) => new Date(iso);
+      const first = await notifyMessage(
+        pool,
+        config,
+        message,
+        log,
+        at('2026-11-15T00:00:00.000Z'),
+      );
+      expect(first.deliveries).toEqual([
+        { agent: 'bob', delivered: true, reason: null, attempts: 1 },
+      ]);
+      const second = await notifyMessage(
+        pool,
+        config,
+        message,
+        log,
+        at('2026-11-15T00:30:00.000Z'),
+      );
+      expect(second.deliveries).toEqual([
+        { agent: 'bob', delivered: false, reason: 'rate_limited', attempts: 0 },
+      ]);
+      // One request, then nothing: the cap makes no network call at all.
+      expect(stub.requests).toHaveLength(1);
+      expect(writes[1]?.values).toEqual([
+        message.messageId,
+        '22222222-2222-2222-2222-222222222222',
+        false,
+        'rate_limited',
+        0,
+        null,
+      ]);
+      expect(
+        lines.some(
+          (line) =>
+            line['level'] === 'warn' &&
+            line['reason'] === 'rate_limited' &&
+            line['attempts'] === 0,
+        ),
+      ).toBe(true);
+      // One hour and a millisecond later the window has moved and bob rings again.
+      const third = await notifyMessage(
+        pool,
+        config,
+        message,
+        log,
+        at('2026-11-15T01:00:00.001Z'),
+      );
+      expect(third.deliveries[0]?.delivered).toBe(true);
+      expect(stub.requests).toHaveLength(2);
+    } finally {
+      stub.close();
+    }
+  });
+
+  test('a failed outcome write is logged and never fails the send', async () => {
+    const stub = startStub(() => ({
+      status: 200,
+      body: JSON.stringify({ ok: true, seq: 1 }),
+    }));
+    try {
+      const { log, lines } = capture();
+      const config = parseDoorbell({
+        WAKE_DOORBELL_BOTS: JSON.stringify({
+          bob: { botId: 'cmwbot123', secret: SECRET },
+        }),
+        WAKE_DOORBELL_URL: stub.url,
+      });
+      if (config === null) {
+        throw new Error('expected a doorbell config');
+      }
+      const { pool } = recordingPool(
+        [{ id: '22222222-2222-2222-2222-222222222222', name: 'bob' }],
+        { failInsert: true },
+      );
+      const report = await notifyMessage(pool, config, message, log);
+      expect(report.deliveries).toEqual([
+        { agent: 'bob', delivered: true, reason: null, attempts: 1 },
+      ]);
+      expect(
+        lines.some(
+          (line) =>
+            line['message'] === undefined && line['error'] === 'insert failed',
+        ),
+      ).toBe(true);
     } finally {
       stub.close();
     }
