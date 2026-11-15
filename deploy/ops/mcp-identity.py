@@ -25,7 +25,13 @@ def registration_secret():
     with open(ENV) as handle:
         for line in handle:
             if line.startswith("REGISTRATION_SECRET="):
-                return line.split("=", 1)[1].strip()
+                value = line.split("=", 1)[1].strip()
+                # systemd strips one layer of matching quotes from an EnvironmentFile,
+                # so the API accepts REGISTRATION_SECRET="..." while a literal reader
+                # keeps the quotes and every call answers 401 with no hint at why.
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                    value = value[1:-1]
+                return value
     sys.exit("REGISTRATION_SECRET missing from env")
 
 

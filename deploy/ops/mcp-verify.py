@@ -43,9 +43,25 @@ def check_url():
     sys.exit(f"refusing {URL}: https, or http on this machine only")
 
 
+def read_token():
+    """The token, or a local error naming the file.
+
+    A missing file used to traceback, and an empty one sent a bare `Bearer ` and
+    reported the server's 401, which reads as an auth failure; both are local.
+    """
+    try:
+        with open(TOKEN_FILE) as handle:
+            token = handle.read().strip()
+    except OSError as error:
+        sys.exit(f"cannot read {TOKEN_FILE}: {error.strerror}; run mcp-identity.py create")
+    if not token:
+        sys.exit(f"{TOKEN_FILE} is empty; run mcp-identity.py create")
+    return token
+
+
 def post(payload, protocol_version=None):
     headers = {
-        "authorization": "Bearer " + open(TOKEN_FILE).read().strip(),
+        "authorization": "Bearer " + TOKEN,
         "content-type": "application/json",
         "accept": "application/json, text/event-stream",
         "user-agent": "wake-verify/1",
@@ -87,6 +103,7 @@ def fail(raw):
 
 
 check_url()
+TOKEN = read_token()
 
 status, raw = post(
     {

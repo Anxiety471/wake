@@ -97,6 +97,14 @@ def mcp_answer(method, path, body):
     return 200, JSON, out
 
 
+def header(request, name):
+    """One request header, case-insensitively; urllib capitalizes what it sends."""
+    for key, value in request["headers"].items():
+        if key.lower() == name:
+            return value
+    return None
+
+
 class OpsTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="wake-ops-")
@@ -137,6 +145,7 @@ class IdentityTestCase(OpsTestCase):
         self.assertEqual((request["method"], request["path"]), ("DELETE", "/mcp/identity"))
         self.assertEqual(request["body"], b"")
         self.assertNotIn("content-type", {name.lower() for name in request["headers"]})
+        self.assertEqual(header(request, "x-registration-secret"), "stub-registration-secret-0123456789")
         self.assertIn("200", result.stdout)
         self.assertIn("tokenRevoked", result.stdout)
 
@@ -174,6 +183,23 @@ class IdentityTestCase(OpsTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("500", result.stdout)
         self.assertNotIn("Traceback", result.stderr)
+
+    def test_a_quoted_secret_is_unquoted_the_way_systemd_does_it(self):
+        with open(self.env_file, "w") as handle:
+            handle.write('REGISTRATION_SECRET="quoted-secret-0123456789abcdef"\n')
+        result = self.run_script(IDENTITY, "revoke")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [request] = self.stub.requests
+        self.assertEqual(header(request, "x-registration-secret"), "quoted-secret-0123456789abcdef")
+
+    def test_create_on_an_existing_identity_surfaces_the_409_and_writes_nothing(self):
+        self.stub.responder = lambda method, path, body: (409, JSON, b'{"error":"name already registered"}')
+        result = self.run_script(IDENTITY, "create")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("409", result.stdout)
+        self.assertIn("name already registered", result.stdout)
+        self.assertFalse(os.path.exists(self.token_file))
+        self.assertFalse(os.path.exists(self.token_file + ".new"))
 
 
 class VerifyTestCase(OpsTestCase):
@@ -217,6 +243,22 @@ class VerifyTestCase(OpsTestCase):
         self.assertIn("tools/list: 200 count=10", result.stdout)
         self.assertIn("wake_bots: 200 isError=False", result.stdout)
         self.assertNotIn("stub-token-1", result.stdout + result.stderr)
+
+    def test_a_missing_token_file_names_it_and_sends_nothing(self):
+        self.assertFalse(os.path.exists(self.token_file))
+        result = self.run_script(VERIFY, self.stub.base + "/mcp")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("cannot read", result.stderr)
+        self.assertIn(self.token_file, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.stub.requests, [])
+
+    def test_an_empty_token_file_sends_nothing(self):
+        self.token("\n")
+        result = self.run_script(VERIFY, self.stub.base + "/mcp")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is empty", result.stderr)
+        self.assertEqual(self.stub.requests, [])
 
 
 if __name__ == "__main__":
