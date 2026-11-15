@@ -39,8 +39,10 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 - **Doorbell hardening.** The timeout ceiling drops to 9 s, so two attempts plus backoff (18.2 s)
   stay under the CLI's 20 s send timeout. Responses are read to 16 KiB and redirects are not
   followed (a 3xx is `rejected`, never retried). A per sender and recipient hourly cap
-  (`WAKE_DOORBELL_MAX_PER_HOUR`, default 30 = the CLI's `HOURLY_CAP`, 0 disables) stops one
-  sender ringing one bot at API speed; over the cap makes no request and reports `rate_limited`.
+  (`WAKE_DOORBELL_MAX_PER_HOUR`, default 30, the CLI's `HOURLY_CAP` number, 0 disables) stops
+  one sender ringing one bot at API speed; over the cap makes no request and reports
+  `rate_limited`. The scope is deliberately narrower than the CLI's, whose single bucket per
+  target bot is shared by every sender on the machine.
   An empty target map is checked before the URL/timeout are parsed, so a stale bad value cannot
   break the boot of a doorbell that is off. `WAKE_DOORBELL_TIMEOUT_MS` now accepts 100..9000.
 - **A reply wake carries `ref: ""`.** It cannot be answered, so it must not look answerable; a
@@ -94,8 +96,10 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 - **The doorbell's hourly cap keyed on the recipient alone**, so one sender's 30 wakes made another
   sender's first wake to the same bot `rate_limited`: message stored, no ring, and the API has no
-  `--force`. The key is now `sender:recipient`, which is the CLI's own scope (per target bot per
-  local user). A test with the cap at 1 fails on the old bytes and passes here.
+  `--force`. The key is now `sender:recipient`: the CLI's number, but a deliberate divergence from
+  its scope, because the CLI's bucket is one per target bot shared by every sender on the machine
+  (all bots run as one uid, `wake-rate-<uid>.json`). A test with the cap at 1 fails on the old bytes
+  and passes here.
 - **The MCP 429 body was `{"error":"rate_limited"}`, not JSON-RPC.** It now carries a JSON-RPC error
   object with code `-32000`, so a client that parses every body as JSON-RPC never meets a bare
   error, while the status stays `429` with `Retry-After: 60`.
