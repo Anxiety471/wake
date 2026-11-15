@@ -7,6 +7,10 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **`tests/test_gate_shapes.py` no longer carries one machine's staging directory.**
+  The directory is `WAKE_GATE_STAGE` now (default: unset, so the allow-list tests skip),
+  `WAKE_GATE` still names one artifact, and a test pins the empty case. Where a gate is
+  staged is a property of a machine, never of the repository.
 - **Operator helpers in `bin/ops`.** `wake-pg` runs a throwaway local Postgres for the API tests;
   `wake-api-e2e` starts the real API on a scratch database and proves the public surface over HTTP
   (`/mcp` initialize, ten tools, `wake_ask` and `wake_read_thread`, the inbox, deliveries,
