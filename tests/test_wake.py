@@ -937,6 +937,42 @@ class InboxIoFailureTests(WakeTestCase):
         self.assertEqual(r.stdout, "", "a refused register still printed an inbox path")
         self.assertFalse(os.path.exists(os.path.join(self.state, "inbox", "abc123.jsonl")))
 
+    def test_register_fails_when_the_marker_write_is_refused(self):
+        """The second host command is checked too, not only mkdir, touch and chmod.
+
+        This stub runs the first command and refuses only the `cat > <marker>` that follows it.
+        With the check on the first call alone the bridge would still exit 0 and print an inbox
+        path for a session whose marker holds nothing.
+        """
+        calls = os.path.join(self.tmp, "host-calls")
+        inbox = os.path.join(self.state, "inbox")
+        hostops = os.path.join(self.fakebin, "hostops-second")
+        write_exe(
+            hostops,
+            f"""
+            #!/bin/sh
+            n=$(cat {calls} 2>/dev/null || echo 0)
+            n=$((n + 1))
+            echo "$n" > {calls}
+            if [ "$n" -ge 2 ]; then
+                echo "the gate refused: cat > {inbox}/active/abc123.json" >&2
+                exit 75
+            fi
+            bash -c "$1"
+            # What a guest shell sees after the host made the files: the directory exists, the
+            # guest cannot write it, so the next call must take the host path again.
+            chmod 0500 {inbox}
+            """,
+        )
+        self.addCleanup(os.chmod, inbox, 0o700)
+        r = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env={"WAKE_HOSTOPS": hostops})
+        self.assertEqual(r.returncode, 75, (r.stdout, r.stderr))
+        self.assertIn("the gate refused", r.stderr)
+        self.assertEqual(r.stdout, "", "a register whose marker write failed still printed an inbox path")
+        self.assertEqual(slurp(calls).strip(), "2", "the stub never reached the marker write")
+        marker = os.path.join(self.state, "inbox", "active", "abc123.json")
+        self.assertEqual(slurp(marker), "", "the refused marker write still landed")
+
     def test_beat_fails_when_the_host_refuses_it(self):
         inbox = os.path.join(self.state, "inbox")
         os.makedirs(os.path.join(inbox, "active"))
