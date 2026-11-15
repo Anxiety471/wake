@@ -1,7 +1,10 @@
 #!/usr/bin/env bun
 // End-to-end check for the thread API over real HTTP against a real Postgres.
 // Usage: DATABASE_URL=postgres://... bun scripts/e2e-threads.ts
-// Starts the API on 127.0.0.1:3188, drives it with fetch, kills it at the end.
+// Starts the API on 127.0.0.1:3188 (E2E_PORT moves it), drives it with fetch, kills it at
+// the end. It mints its own registration secret: the API refuses to boot without one, and
+// refuses POST /agents without the header once it has one.
+import { randomBytes } from 'node:crypto';
 import { Client } from 'pg';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -10,9 +13,12 @@ if (databaseUrl === undefined || databaseUrl === '') {
   process.exit(1);
 }
 
-const port = 3188;
+const port = Number(process.env.E2E_PORT ?? '3188');
 const base = `http://127.0.0.1:${port}`;
 const stamp = Date.now();
+// 32 hex characters, per run, never a literal. The API reads REGISTRATION_SECRET at boot
+// and wants x-registration-secret on every operator route once it has one.
+const registrationSecret = randomBytes(16).toString('hex');
 const paceMs = Number(process.env.E2E_PACE_MS ?? '0');
 let failures = 0;
 
@@ -39,8 +45,9 @@ async function call(
   path: string,
   token?: string,
   body?: unknown,
+  extraHeaders?: Record<string, string>,
 ): Promise<Answer> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...(extraHeaders ?? {}) };
   if (token !== undefined) {
     headers.authorization = `Bearer ${token}`;
   }
@@ -85,7 +92,12 @@ async function retire(
 
 const child = Bun.spawn(['bun', 'apps/api/src/index.ts'], {
   cwd: `${import.meta.dir}/..`,
-  env: { ...process.env, DATABASE_URL: databaseUrl, PORT: String(port) },
+  env: {
+    ...process.env,
+    DATABASE_URL: databaseUrl,
+    PORT: String(port),
+    REGISTRATION_SECRET: registrationSecret,
+  },
   stdout: 'pipe',
   stderr: 'pipe',
 });
@@ -93,6 +105,12 @@ const child = Bun.spawn(['bun', 'apps/api/src/index.ts'], {
 async function waitForHealth(): Promise<void> {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
+    // A child that never bound the port exits instead of answering, and without this the
+    // loop spent its twenty seconds asking whatever else held the port.
+    if (child.exitCode !== null) {
+      const why = (await new Response(child.stderr).text()).trim();
+      throw new Error(`API exited ${child.exitCode} before answering /health: ${why}`);
+    }
     try {
       const response = await fetch(`${base}/health`);
       if (response.status === 200) {
@@ -114,7 +132,9 @@ try {
     role: string,
   ): Promise<{ token: string; name: string }> => {
     const name = `e2e-${role}-${stamp}`;
-    const created = await call('POST', '/agents', undefined, { name });
+    const created = await call('POST', '/agents', undefined, { name }, {
+      'x-registration-secret': registrationSecret,
+    });
     assert(`registered ${name}`, created.status === 201, created);
     return { token: created.json.token as string, name };
   };
