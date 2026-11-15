@@ -162,12 +162,18 @@ def sql_name(variable, value):
     return value
 
 
-def step_db():
+def db_password():
+    """The one rule for the password: env builds a URL from it, db quotes it into SQL."""
     password = os.environ.get("WAKE_DB_PASSWORD")
     if not password:
         sys.exit("wake-host-deploy: WAKE_DB_PASSWORD is not in the environment")
     if not password.isalnum():
         sys.exit("wake-host-deploy: WAKE_DB_PASSWORD has non-alphanumerics, which the quoting path does not cover")
+    return password
+
+
+def step_db():
+    password = db_password()
     role = sql_name("WAKE_DB_ROLE", DB_ROLE)
     name = sql_name("WAKE_DB_NAME", DB_NAME)
     body = (
@@ -319,8 +325,14 @@ def step_install():
 
 
 def merge_env(existing, values):
-    """Keep every line the operator added; set the keys we own; no duplicates."""
+    """Keep every line the operator added; set the keys we own; no duplicates.
+
+    Every value is checked here, where the lines are written, so a key nobody names is covered
+    too: WAKE_MCP_ENABLED used to accept "true\\\\nINJECTED_EVIL=1" and add that line to the file.
+    """
     managed = dict(values)
+    for key, value in managed.items():
+        no_control(key, value)
     lines = []
     seen = set()
     for line in existing.splitlines():
@@ -339,11 +351,19 @@ def merge_env(existing, values):
     return "\n".join(line for line in lines if line.strip() != "") + "\n"
 
 
+def no_control(name, value):
+    """An environment file is lines: a value with a newline would add one of its own."""
+    bad = next((c for c in value if ord(c) < 0x20 or ord(c) == 0x7F), None)
+    if bad is not None:
+        sys.exit(f"wake-host-deploy: {name} has a control character ({bad!r}), which would break the environment file")
+
+
 def step_env():
-    password = os.environ.get("WAKE_DB_PASSWORD")
+    password = db_password()
     secret = os.environ.get("WAKE_REGISTRATION_SECRET")
-    if not (password and secret):
-        sys.exit("wake-host-deploy: WAKE_DB_PASSWORD and WAKE_REGISTRATION_SECRET are both required")
+    if not secret:
+        sys.exit("wake-host-deploy: WAKE_REGISTRATION_SECRET is not in the environment")
+    no_control("WAKE_REGISTRATION_SECRET", secret)
     values = {
         "DATABASE_URL": f"postgres://{DB_ROLE}:{password}@{DB_HOST}:{DB_PORT}/{DB_NAME}",
         "HOST": BIND,
@@ -353,6 +373,9 @@ def step_env():
         # that was halted on purpose.
         "WAKE_MCP_ENABLED": os.environ.get("WAKE_MCP_ENABLED", "false"),
     }
+    # merge_env refuses these too; checked here so a refusal costs no host command at all.
+    for key, value in values.items():
+        no_control(key, value)
     existing = ""
     if not DRY:
         existing = host(f"{priv('cat')} {ENV_FILE} 2>/dev/null || true")

@@ -211,6 +211,41 @@ class DeployTestCase(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("`local` or `ssh:DEST`", r.stderr)
 
+    def test_an_ssh_prefix_tilde_belongs_to_the_remote_shell(self):
+        # expanduser() ran once for every target, so `ssh:DEST` with the default prefix was
+        # installed into this machine's home path on the remote.
+        env = {"HOME": "/home/someone-else"}
+        r = run("wake-deploy", "ssh:test-host", "--dry-run", env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('"$HOME"/.local/bin', r.stdout)
+        self.assertNotIn("/home/someone-else", r.stdout, "this machine's home was sent to the remote")
+
+    def test_a_local_prefix_still_expands_here(self):
+        env = {"HOME": self.dir}
+        r = run("wake-deploy", "local", "--dry-run", env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(os.path.join(self.dir, ".local", "bin"), r.stdout)
+
+    def test_a_prefix_for_another_users_home_is_refused_on_an_ssh_target(self):
+        # shell_path quoted it, so ~root/.local/bin was created as a relative path under $HOME on
+        # the remote and verify_ssh blessed it, because it built the same quoted string.
+        r = run("wake-deploy", "ssh:test-host", "--prefix", "~root/.local/bin", "--dry-run")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("another user's home", r.stderr)
+        self.assertNotIn("~root", r.stdout, "an unresolvable ~user path was sent to the remote")
+
+    def test_a_local_prefix_for_another_users_home_still_expands_here(self):
+        r = run("wake-deploy", "local", "--prefix", "~root/.local/bin", "--dry-run")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("~root", r.stdout, "a local ~user path was left unexpanded")
+
+    def test_a_literal_prefix_this_machine_cannot_expand_is_refused(self):
+        # expanduser leaves an unknown ~user alone, and install_local would create a literal
+        # "~no-such-user" directory under the working directory.
+        r = run("wake-deploy", "local", "--prefix", "~no-such-user-wake/bin", "--dry-run")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("cannot resolve", r.stderr)
+
 
 class HostDeployTestCase(unittest.TestCase):
     def setUp(self):
@@ -383,6 +418,22 @@ class HostDeployTestCase(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("plain identifier", r.stderr)
 
+    def test_a_secret_with_a_newline_is_refused_before_the_host_is_touched(self):
+        # REGISTRATION_SECRET=<value> is one line; a newline in the value writes a second one.
+        r = run("wake-host-deploy", "env", env=dict(self.env, WAKE_REGISTRATION_SECRET="abc\ndef"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("control character", r.stderr)
+        self.assertFalse(self.logged(), "a host command ran before the secret was checked")
+
+    def test_env_refuses_a_password_that_the_db_step_would_refuse(self):
+        # env built DATABASE_URL from any value, while db refused a non-alphanumeric one, so the
+        # two steps could not both succeed with the same password.
+        for bad in ("abc\ndef", "pass-word"):
+            r = run("wake-host-deploy", "env", env=dict(self.env, WAKE_DB_PASSWORD=bad))
+            self.assertEqual(r.returncode, 1, bad)
+            self.assertIn("non-alphanumerics", r.stderr)
+            self.assertFalse(self.logged(), "a host command ran before the password was checked")
+
     def test_the_unit_runs_the_installed_copy_and_hardens_it(self):
         r = run("wake-host-deploy", "unit", env=self.env)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -408,6 +459,16 @@ class HostDeployTestCase(unittest.TestCase):
         r = run("wake-shape-check", "--help", env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("usage: wake-shape-check", r.stdout)
+
+    def test_a_managed_value_with_a_newline_is_refused_before_the_host_is_touched(self):
+        # merge_env checked nothing: WAKE_MCP_ENABLED accepted "true\nINJECTED_EVIL=1" and the
+        # second line went into api.env.
+        bad = "true\nINJECTED_EVIL=1"
+        r = run("wake-host-deploy", "env", env=dict(self.env, WAKE_MCP_ENABLED=bad))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("control character", r.stderr)
+        self.assertNotIn("INJECTED_EVIL", r.stdout + r.stderr)
+        self.assertFalse(self.logged(), "a host command ran before the value was checked")
 
 
 class NoBytecodeInTheTreeTests(unittest.TestCase):

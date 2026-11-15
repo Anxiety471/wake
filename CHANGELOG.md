@@ -44,6 +44,16 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   covered without an edit, and a test proves the filter picks exactly the bash helpers.
 - **`wake-deploy` now renames each file into place.** A wake running from the prefix could exec a
   half-written script; it copies to `.new` and `os.replace`s it.
+- **`wake-host-deploy env` writes only values the `db` step would accept, and `wake-deploy` leaves
+  `~` to the remote shell.** `WAKE_DB_PASSWORD` is held to the one alphanumeric rule both steps
+  share now, so a password `db` refuses can no longer be written into `api.env`, and every value
+  the `env` step writes is refused a control character: `WAKE_MCP_ENABLED="true\nINJECTED_EVIL=1"`
+  used to add that line to the file because only two named values were checked. Both are refused
+  before any host command runs. Separately, `wake-deploy` expanded `~` in the prefix once for every
+  target, so `ssh:DEST` with the default prefix installed into *this* machine's home path on the
+  remote; a leading `~` on an ssh target is the remote user's `$HOME` now, a local install still
+  expands it here, and a `~user` prefix is refused for an ssh target instead of being quoted into a
+  relative path under `$HOME` that `verify_ssh` then blessed.
 
 ### Security
 
