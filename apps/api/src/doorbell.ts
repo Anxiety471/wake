@@ -397,8 +397,82 @@ export type NotifyMessage = {
   threadId: string | null;
 };
 
+type Recipient = {
+  id: string;
+  name: string;
+};
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+// One row per recipient that was rung, so a sender that lost the HTTP response
+// can read the outcome later. A retry of the same message upserts the same row.
+export async function recordDelivery(
+  pool: Pick<Pool, 'query'>,
+  input: {
+    messageId: string;
+    agentId: string;
+    delivered: boolean;
+    reason: WakeDeliveryReason | null;
+    attempts: number;
+    status: number | null;
+  },
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO wake_deliveries
+       (message_id, agent_id, delivered, reason, attempts, status)
+     VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6)
+     ON CONFLICT (message_id, agent_id) DO UPDATE
+     SET delivered = EXCLUDED.delivered,
+         reason = EXCLUDED.reason,
+         attempts = EXCLUDED.attempts,
+         status = EXCLUDED.status,
+         updated_at = clock_timestamp()`,
+    [
+      input.messageId,
+      input.agentId,
+      input.delivered,
+      input.reason,
+      input.attempts,
+      input.status,
+    ],
+  );
+}
+
+async function persist(
+  pool: Pick<Pool, 'query'>,
+  log: DoorbellLogger,
+  input: {
+    messageId: string;
+    agent: Recipient;
+    delivered: boolean;
+    reason: WakeDeliveryReason | null;
+    attempts: number;
+    status: number | null;
+  },
+): Promise<void> {
+  try {
+    await recordDelivery(pool, {
+      messageId: input.messageId,
+      agentId: input.agent.id,
+      delivered: input.delivered,
+      reason: input.reason,
+      attempts: input.attempts,
+      status: input.status,
+    });
+  } catch (error) {
+    // The wake already happened; losing its row is a reporting gap, not a
+    // reason to fail a send whose message is committed.
+    log.warn(
+      {
+        messageId: input.messageId,
+        agent: input.agent.name,
+        error: messageOf(error),
+      },
+      'delivery outcome not recorded',
+    );
+  }
 }
 
 // Rings every configured recipient of a committed message. Never throws: the
@@ -414,26 +488,28 @@ export async function notifyMessage(
   if (config === null) {
     return { enabled: false, deliveries: [] };
   }
-  let recipients: string[];
+  let recipients: Recipient[];
   try {
-    const result = await pool.query<{ name: string }>(
-      `SELECT a.name
+    const result = await pool.query<{ id: string; name: string }>(
+      `SELECT a.id, a.name
        FROM message_receipts r
        JOIN agents a ON a.id = r.agent_id
        WHERE r.message_id = $1::uuid
        ORDER BY a.name ASC`,
       [message.messageId],
     );
-    recipients = result.rows.map((row) => row.name);
+    recipients = result.rows.map((row) => ({ id: row.id, name: row.name }));
   } catch (error) {
     log.warn(
       { messageId: message.messageId, error: messageOf(error) },
       'doorbell recipients unreadable',
     );
-    return { enabled: true, deliveries: [] };
+    // Not the same as "no recipient had a target": report the ambiguity
+    // instead of letting the caller believe the doorbell found nobody.
+    return { enabled: true, deliveries: [], error: 'recipients_unreadable' };
   }
   const rung = recipients.flatMap((agent) => {
-    const target = config.targets.get(agent.toLowerCase());
+    const target = config.targets.get(agent.name.toLowerCase());
     return target === undefined ? [] : [{ agent, target }];
   });
   const deliveries = await Promise.all(
@@ -442,7 +518,7 @@ export async function notifyMessage(
         doorbellPayload({
           messageId: message.messageId,
           from: message.from,
-          to: agent,
+          to: agent.name,
           body: message.body,
           event: message.event,
           threadId: message.threadId,
@@ -457,7 +533,7 @@ export async function notifyMessage(
       });
       const fields = {
         messageId: message.messageId,
-        agent,
+        agent: agent.name,
         botId: target.botId,
         delivered: outcome.delivered,
         reason: outcome.reason,
@@ -469,8 +545,16 @@ export async function notifyMessage(
       } else {
         log.warn(fields, 'wake undelivered');
       }
-      return {
+      await persist(pool, log, {
+        messageId: message.messageId,
         agent,
+        delivered: outcome.delivered,
+        reason: outcome.reason,
+        attempts: outcome.attempts,
+        status: outcome.status,
+      });
+      return {
+        agent: agent.name,
         delivered: outcome.delivered,
         reason: outcome.reason,
         attempts: outcome.attempts,
@@ -479,6 +563,22 @@ export async function notifyMessage(
   );
   return { enabled: true, deliveries };
 }
+
+export const wakeDeliveryReasonSchema = {
+  type: ['string', 'null'],
+  enum: [
+    'no_routine',
+    'unauthorized',
+    'payload_too_large',
+    'rate_limited',
+    'rejected',
+    'bad_response',
+    'server_error',
+    'network',
+    'timeout',
+    null,
+  ],
+} as const;
 
 export const wakeReportSchema = {
   type: 'object',
@@ -495,10 +595,11 @@ export const wakeReportSchema = {
         properties: {
           agent: { type: 'string' },
           delivered: { type: 'boolean' },
-          reason: { type: ['string', 'null'] },
+          reason: wakeDeliveryReasonSchema,
           attempts: { type: 'integer' },
         },
       },
     },
+    error: { type: 'string', enum: ['recipients_unreadable'] },
   },
 } as const;
