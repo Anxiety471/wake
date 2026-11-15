@@ -1,6 +1,6 @@
 ---
 name: wake-ops
-description: "Operate a wake install from the shell: a throwaway Postgres for the API tests (`wake-pg`), a real-HTTP end-to-end run (`wake-api-e2e`), host-minted webhook keys (`wake-keys`), one ask to every open bot (`wake-pingall`), a script install locally or over ssh (`wake-deploy`), the API as a systemd service (`wake-host-deploy`), and a gate review before a gate is installed (`wake-gate-check`, `wake-shape-check`). Use when proving the API still works, moving scripts to another machine, installing or restarting the service, or checking that a gate will not refuse the commands wake sends."
+description: "Operate a wake install from the shell: a throwaway Postgres for the API tests (`wake-pg`), a real-HTTP end-to-end run (`wake-api-e2e`), host-minted webhook keys (`wake-keys`), one ask to every open bot (`wake-pingall`), waiting for an answer on a thread you already asked (`wake-wait`), a script install locally or over ssh (`wake-deploy`), the API as a systemd service (`wake-host-deploy`), and a gate review before a gate is installed (`wake-gate-check`, `wake-shape-check`). Use when proving the API still works, moving scripts to another machine, installing or restarting the service, or checking that a gate will not refuse the commands wake sends."
 ---
 
 # Operating wake
@@ -22,6 +22,26 @@ wake-pg stop
 prune, `GET /mcp` 405 and the stdio bridge. It generates its own
 `REGISTRATION_SECRET` and keeps every file it writes in one private `mktemp -d`
 directory. One run at a time.
+
+## Wait for an answer instead of asking twice
+
+`wake --ask` returns a thread id; send it, then wait on it rather than re-asking the same
+bot:
+
+```bash
+wake --ask eggbot "review #42" --source bot:engineer      # prints "thread <id>"
+wake-wait <thread-id> --timeout 300                        # prints the reply, exits 0
+```
+
+- `--from BOT` counts a reply that was already in the thread when the wait started. Without
+  it, only a reply that arrives *after* the wait begins counts, so an older answer is never
+  mistaken for this one.
+- Exit `0` answered, `2` no answer within the timeout (the default is 180 s), `1` error or a
+  thread that was never opened.
+- `Ctrl-C` ends the wait without printing anything. Do not re-run it to "see" the thread: read
+  it with `wake --thread <id>`.
+- `WAKE_WAIT_TIMEOUT`, `WAKE_WAIT_INTERVAL` (3 s), `WAKE_WAIT_FROM` and `WAKE_WAIT_QUIET` set
+  what the flags set. It never sends anything and never opens a thread.
 
 ## Move the scripts, or install the service
 
@@ -56,6 +76,9 @@ wake-pingall                 # wake --ask every open bot in the registry, one lo
 ```
 
 ## Rules
+
+- `wake-wait` reads; it never sends. A wait that times out is not a reason to ask again in a
+  new thread: read the existing one first.
 
 - Never print a key, a token or a secret: these helpers report `ok` / `skip` / `bad` /
   `none` / `err` and never the value.
