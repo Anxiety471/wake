@@ -11,6 +11,8 @@ VERSION = "0.1.0"
 
 DEFAULTS = {
     "WAKE_API_BASE": "",  # e.g. https://bots.example.com/api/v1/bots ; POST {base}/{bot-id}/webhook
+    "WAKE_MCP_API": "http://127.0.0.1:3001",  # API base for the wake-mcp stdio bridge: POST {api}/mcp
+    "WAKE_MCP_TOKEN": "",  # the mcp identity's token; empty leaves wake-mcp the legacy two-tool helper
     "WAKE_STATE_DIR": "/var/lib/wake",  # shared threads/ and inbox/ live here (on the host)
     "WAKE_HOSTOPS": "",  # executable: runs its one argument as a shell command on the host, stdin passed through
     "WAKE_KEY_HELPER": "wake-webhook-key",  # creates/rotates webhook keys: has-key ID | ID [--rotate] | enable-bot ID
