@@ -9,6 +9,7 @@ Nothing here needs a network, a database or a real host. Run with the rest:
 python3 -m unittest discover -s tests
 """
 
+import fnmatch
 import os
 import re
 import subprocess
@@ -22,6 +23,13 @@ DOCS = (os.path.join(OPS, "README.md"), os.path.join(ROOT, "config.example.env")
 
 # Paths and names that belong to one operator's machine, never to this repo.
 PERSONAL = ("/home/", "/root/", "/Users/", "/tmp/pgbuild", "rakazo", "hitori", "Anxiety471")
+
+# A real hostname, which CONTRIBUTING keeps out of these files the same way it keeps out an IP.
+# The TLD list is deliberately short: a placeholder (example.com) is allowed, a live name is not.
+HOSTNAME = re.compile(
+    r"\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+"
+    r"(?:com|net|org|io|dev|app|co|me|xyz|cloud|trade|internal|local|lan|corp|host|site|info|biz|gov|edu)\b"
+)
 
 
 def text(path):
@@ -91,6 +99,70 @@ class OpsFilesTestCase(unittest.TestCase):
         self.assertIn("no wake checkout", r.stderr)
         self.assertNotIn("ALL PASS", r.stdout)
 
+    def test_the_registry_default_does_not_follow_the_key_dir(self):
+        # bin/wake_config.py derives the registry from WAKE_CONFIG_DIR. A helper that put it under
+        # WAKE_KEY_DIR said "no registry" while `wake --list` listed the bots fine.
+        for name in ("wake-keys", "wake-pingall"):
+            with self.subTest(name=name):
+                self.assertIn("REG=${WAKE_REGISTRY:-$CFG/bots.tsv}", read(name))
+
+    def test_the_e2e_script_keeps_its_files_in_a_private_temp_dir(self):
+        body = read("wake-api-e2e")
+        self.assertIn("umask 077", body, "files must be private from the moment they are created")
+        self.assertIn("mktemp -d", body, "each run needs its own directory")
+        self.assertRegex(body, r'(?m)^  rm -rf "\$WORK"$', "the directory must be removed on exit")
+        self.assertNotRegex(
+            body, r"/tmp/e2e-", "a fixed /tmp name is back: world-readable, never removed, a symlink target"
+        )
+        self.assertNotRegex(body, r"/tmp/wake-e2e-", "a fixed /tmp name is back")
+
+    def test_no_file_carries_a_real_hostname(self):
+        # Placeholders are fine (docs use bots.example.com); a live-looking name is not.
+        allowed = (".example.com", ".example.net", ".example.org")
+        exact = {"example.com", "example.net", "example.org", "semver.org"}
+        paths = [os.path.join(OPS, n) for n in NAMES] + [os.path.join(OPS, "README.md")] + list(DOCS)
+        for path in paths:
+            body = text(path)
+            for hit in sorted({m.group(0) for m in HOSTNAME.finditer(body)}):
+                with self.subTest(path=os.path.basename(path), hit=hit):
+                    self.assertTrue(
+                        hit in exact or hit.endswith(allowed),
+                        f"{os.path.basename(path)} carries the hostname {hit!r}",
+                    )
+
+    def test_the_hostname_guard_is_not_a_no_op(self):
+        for sample in ("bots.example.com", "host.example.com", "wake.internal", "h.some-hospital.org"):
+            with self.subTest(sample=sample):
+                self.assertRegex(sample, HOSTNAME)
+
+    def test_ci_and_readme_shellcheck_every_ops_script(self):
+        ci_lines = text(os.path.join(ROOT, ".github/workflows/ci.yml")).splitlines()
+        readme_lines = text(os.path.join(ROOT, "README.md")).splitlines()
+        ci = [line for line in ci_lines if "shellcheck " in line]
+        dev = [line for line in readme_lines if line.strip().startswith("shellcheck ")]
+        self.assertEqual(len(ci), 1, "expected one shellcheck line in ci.yml")
+        self.assertEqual(len(dev), 1, "expected one shellcheck line in README.md")
+        ci_words = ci[0].split("shellcheck", 1)[1].split()
+        self.assertEqual(ci_words, dev[0].split("shellcheck", 1)[1].split(), "ci.yml and README name different targets")
+        globs = [w for w in ci_words if w.startswith("bin/ops/")]
+        self.assertTrue(globs, "the helpers are still not shellchecked")
+        for name in NAMES:
+            with self.subTest(name=name):
+                self.assertTrue(
+                    any(fnmatch.fnmatch("bin/ops/" + name, g) for g in globs), f"{name} is not shellchecked"
+                )
+
+    def test_the_e2e_script_checks_every_tool_it_runs(self):
+        body = read("wake-api-e2e")
+        tools = set(re.search(r"for tool in ([^;]+);", body).group(1).split())
+        self.assertTrue({"bun", "jq", "curl", "openssl"} <= tools)
+        self.assertIn("python3", tools, "python3 builds the 101-id body but is never checked")
+        rows = text(os.path.join(OPS, "README.md")).splitlines()
+        row = next(line for line in rows if line.startswith("| `wake-api-e2e` |"))
+        for tool in sorted(tools):
+            with self.subTest(tool=tool):
+                self.assertIn(f"`{tool}`", row, f"the Needs column omits {tool}")
+
 
 class OpsBehaviourTestCase(unittest.TestCase):
     def test_wake_pg_prints_usage_for_an_unknown_command(self):
@@ -155,6 +227,38 @@ class OpsBehaviourTestCase(unittest.TestCase):
         r = run("wake-pingall", env={"WAKE_REGISTRY": reg, "WAKE_PING_LOG_DIR": home})
         self.assertEqual(r.returncode, 1)
         self.assertIn("no open bots", r.stderr)
+
+    def test_wake_keys_finds_the_registry_when_the_key_dir_moves(self):
+        home = tempfile.mkdtemp(prefix="cfg-")
+        cfg = os.path.join(home, "cfg")
+        keys = os.path.join(home, "keys")
+        store = os.path.join(home, "host-keys")
+        for d in (cfg, keys, store):
+            os.makedirs(d)
+        with open(os.path.join(cfg, "bots.tsv"), "w", encoding="utf-8") as f:
+            f.write("coordinator\tbot-coordinator-0001\tCoordinator\topen\tplan\n")
+        r = run("wake-keys", env={"WAKE_CONFIG_DIR": cfg, "WAKE_KEY_DIR": keys, "WAKE_HOST_KEY_DIR": store})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("no registry", r.stderr)
+        self.assertIn("none  coordinator", r.stdout)
+
+    def test_wake_keys_reports_a_failed_host_fetch_as_an_error(self):
+        home = tempfile.mkdtemp(prefix="keys-")
+        reg = os.path.join(home, "bots.tsv")
+        with open(reg, "w", encoding="utf-8") as f:
+            f.write("coordinator\tbot-coordinator-0001\tCoordinator\topen\tplan\n")
+        hostops = os.path.join(home, "hostops")
+        with open(hostops, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\necho 'ssh: connect to host: Connection refused' >&2\nexit 255\n")
+        os.chmod(hostops, 0o755)
+        r = run(
+            "wake-keys",
+            env={"WAKE_REGISTRY": reg, "WAKE_KEY_DIR": os.path.join(home, "keys"), "WAKE_HOSTOPS": hostops},
+        )
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("err   coordinator", r.stdout)
+        self.assertIn("Connection refused", r.stdout)
+        self.assertNotIn("none  coordinator", r.stdout)
 
 
 class OpsInstallTestCase(unittest.TestCase):
