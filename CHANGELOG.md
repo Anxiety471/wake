@@ -7,6 +7,9 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **A code of conduct.** [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) says what is expected in
+  issues and reviews, and where to report conduct privately without committing an email
+  address. `SECURITY.md` now names 0.2.x as the supported line.
 - **The other four operator helpers, generalised.** `wake-gate-check` reviews a gate artifact
   (hash, size, its selftest, an adversarial harness, an e2e run in a copied checkout) and
   `wake-shape-check` checks every command a wake copy builds against that gate's matcher, so a
