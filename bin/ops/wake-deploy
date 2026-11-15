@@ -116,9 +116,23 @@ def verify_local(prefix):
     return ""
 
 
+def other_users_home(path):
+    """A `~user/...` path, which only the remote shell can expand into that user's home."""
+    return path.startswith("~") and path != "~" and not path.startswith("~/")
+
+
+def shell_path(path):
+    """A path as the target shell reads it: a leading ~ is the *remote* user's home."""
+    if path == "~":
+        return '"$HOME"'
+    if path.startswith("~/"):
+        return '"$HOME"/' + shlex.quote(path[2:])
+    return shlex.quote(path)
+
+
 def install_ssh(files, dest, prefix, dry, sudo):
     pre = "sudo -n " if sudo else ""
-    quoted = shlex.quote(prefix)
+    quoted = shell_path(prefix)
     command = f"{pre}install -d -m 755 {quoted} && {pre}tar -x -f - -C {quoted}"
     if dry:
         print(f"  ssh {dest} {command}")
@@ -130,7 +144,7 @@ def install_ssh(files, dest, prefix, dry, sudo):
 
 
 def verify_ssh(dest, prefix):
-    wake = shlex.quote(os.path.join(prefix, "wake"))
+    wake = shell_path(os.path.join(prefix, "wake"))
     r = subprocess.run(
         ["ssh", *SSH_OPTS, dest, f"{wake} --help >/dev/null && echo ok"],
         capture_output=True,
@@ -192,17 +206,33 @@ def main(argv):
             return 2
     if not targets:
         targets = [t.strip() for t in env("WAKE_DEPLOY_TARGETS", "local").split(",") if t.strip()]
+    if any(t != "local" for t in targets) and other_users_home(prefix):
+        print(
+            f"wake-deploy: --prefix {prefix!r} names another user's home, which only the remote "
+            "shell can expand; use ~/... for the remote user's home, or an absolute path",
+            file=sys.stderr,
+        )
+        return 2
 
-    prefix = os.path.expanduser(prefix)
+    # Expanding ~ once for every target sent this machine's home to an ssh host; local
+    # installs still want it expanded, so each branch asks for the path it needs.
+    local_prefix = os.path.expanduser(prefix)
+    if any(t == "local" for t in targets) and local_prefix.startswith("~"):
+        print(
+            f"wake-deploy: --prefix {prefix!r} names a home this machine cannot resolve; "
+            "pass the absolute path instead",
+            file=sys.stderr,
+        )
+        return 2
     root = repo_root()
     files = payload(root)
     print(f"source: {root} ({len(files)} files)")
     failures = []
     for target in targets:
         if target == "local":
-            install_local(files, prefix, dry)
+            install_local(files, local_prefix, dry)
             if not dry:
-                problem = verify_local(prefix)
+                problem = verify_local(local_prefix)
                 print("verified" if not problem else f"NOT VERIFIED: {problem}")
                 if problem:
                     failures.append(problem)
