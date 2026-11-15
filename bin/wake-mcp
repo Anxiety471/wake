@@ -1,14 +1,39 @@
 #!/usr/bin/env python3
-# desc: tiny MCP stdio server exposing wake as tools (wake_bot, wake_list) so an agent can wake a bot mid-task. Not registered anywhere by default.
+# desc: MCP stdio server for wake. With WAKE_MCP_TOKEN set it is a bridge: every message on stdin goes to POST /mcp and the reply comes back on stdout, so a stdio-only client gets the server's ten thread tools with no second tool table. Without a token it is the legacy two-tool CLI helper (wake_bot, wake_list).
+import http.client
 import json
 import os
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import wake_config  # noqa: E402
 
-TOOLS = [
+CFG = wake_config.load()
+TOKEN = (CFG.get("WAKE_MCP_TOKEN") or "").strip()
+API = ((CFG.get("WAKE_MCP_API") or "").strip() or "http://127.0.0.1:3001").rstrip("/")
+TIMEOUT = 60.0
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx is an answer, not an instruction: do not follow it.
+
+    urllib re-sends every header on a redirect, Authorization included, and
+    turns a redirected POST into a GET, so a 301 from a proxy or a moved path
+    would hand the mcp token to whatever host Location names. The doorbell
+    made the same call (redirect: manual).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+OPENER = urllib.request.build_opener(_NoRedirect)
+
+LEGACY_TOOLS = [
     {
         "name": "wake_bot",
         "description": "Wake one of the registered bots (see wake_list) with a short message. Use level error for failures, info for a request, ok for a quiet note. Private bots are refused.",
@@ -31,59 +56,278 @@ TOOLS = [
 ]
 
 
-def call(name, a):
-    if name == "wake_list":
-        cmd = ["wake", "--list"]
-    elif name == "wake_bot":
-        cmd = [
-            "wake",
-            str(a["bot"]),
-            str(a["message"])[:500],
-            "--source",
-            "harness:mcp",
-            "--level",
-            a.get("level", "info"),
-        ]
-        if a.get("ref"):
-            cmd += ["--ref", str(a["ref"])]
-    else:
-        return "unknown tool", True
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    return (r.stdout + r.stderr).strip() or "(no output)", r.returncode != 0
-
-
-def reply(i, result=None, error=None):
-    m = {"jsonrpc": "2.0", "id": i}
-    m.update({"error": error} if error else {"result": result})
-    sys.stdout.write(json.dumps(m) + "\n")
+def emit(message):
+    sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")
     sys.stdout.flush()
 
 
-for line in sys.stdin:
+def note(text):
+    sys.stderr.write(text.rstrip() + "\n")
+    sys.stderr.flush()
+
+
+def error_body(rid, message):
+    return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32603, "message": message}}
+
+
+def is_reply(document):
+    """The server's JSON-RPC reply, not one of the API's own error bodies.
+
+    A rejected token or a disabled endpoint answers with the REST shape,
+    {"error": "unauthorized"}: no jsonrpc, and "error" is a string. Relayed
+    as-is a conforming client drops it, and its call waits for a reply that
+    has already arrived.
+    """
+    return (
+        isinstance(document, dict)
+        and document.get("jsonrpc") == "2.0"
+        and ("result" in document or "error" in document)
+    )
+
+
+class Transport(Exception):
+    """No usable reply. The message is the whole reason, API included."""
+
+
+def post(message, version):
+    headers = {
+        "authorization": "Bearer " + TOKEN,
+        "content-type": "application/json",
+        "accept": "application/json, text/event-stream",
+    }
+    if version:
+        headers["mcp-protocol-version"] = version
+    request = urllib.request.Request(
+        API + "/mcp",
+        data=json.dumps(message).encode(),
+        headers=headers,
+        method="POST",
+    )
     try:
-        m = json.loads(line)
-    except Exception:
-        continue
-    i, method = m.get("id"), m.get("method")
-    if i is None:
-        continue
-    if method == "initialize":
-        reply(
-            i,
-            {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "wake", "version": wake_config.VERSION},
-            },
-        )
-    elif method == "tools/list":
-        reply(i, {"tools": TOOLS})
-    elif method == "tools/call":
-        p = m.get("params", {})
+        with OPENER.open(request, timeout=TIMEOUT) as response:
+            return response.status, response.headers.get("content-type", ""), response.read()
+    except urllib.error.HTTPError as error:
+        # A 3xx lands here too: with no redirect handler there is no second request.
         try:
-            text, err = call(p.get("name"), p.get("arguments") or {})
-        except Exception as e:
-            text, err = str(e), True
-        reply(i, {"content": [{"type": "text", "text": text}], "isError": err})
+            body = error.read()
+        except (http.client.HTTPException, OSError):
+            body = b""
+        received = error.headers.get("content-type", "") if error.headers else ""
+        return error.code, received, body
+    except urllib.error.URLError as error:
+        raise Transport("wake API unreachable at " + API + ": " + str(getattr(error, "reason", error))) from error
+    except http.client.HTTPException as error:
+        # IncompleteRead is an HTTPException, not an OSError: a body cut short by
+        # a proxy or a restarting API used to end the whole client session.
+        raise Transport(
+            "wake API cut the reply short at " + API + ": " + (str(error) or type(error).__name__)
+        ) from error
+    except OSError as error:
+        raise Transport("wake API unreachable at " + API + ": " + str(error)) from error
+
+
+def payloads(content_type, raw):
+    """The reply as JSON-RPC documents: a JSON body, or the data of one SSE event."""
+    text = raw.decode("utf-8", "replace")
+    if "text/event-stream" not in content_type:
+        return [text] if text.strip() else []
+    out = []
+    data = []
+    for line in text.splitlines():
+        if line.startswith("data:"):
+            data.append(line[5:].lstrip())
+        elif not line.strip() and data:
+            out.append("\n".join(data))
+            data = []
+    if data:
+        out.append("\n".join(data))
+    return out
+
+
+def line_id(line):
+    """Best effort: the id a line asks about, for the crash guard below."""
+    try:
+        message = json.loads(line)
+    except ValueError:
+        return None
+    return message.get("id") if isinstance(message, dict) else None
+
+
+def bridge_line(line, state):
+    try:
+        message = json.loads(line)
+    except ValueError:
+        emit({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}})
+        return
+    if isinstance(message, list):
+        emit(
+            {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32600, "message": "batching is not supported"},
+            }
+        )
+        return
+    rid = message.get("id")
+    # The API tells the two apart the same way: no "id" key is a notification,
+    # while "id": null is a request and gets a null-id answer. MCP ids are
+    # string|number, so null is outside the id space, but silence is worse.
+    notification = "id" not in message
+    try:
+        status, content_type, raw = post(message, state.get("version"))
+    except Transport as failure:
+        if notification:
+            note("wake-mcp: " + str(failure))
+        else:
+            emit(error_body(rid, str(failure)))
+        return
+    bodies = payloads(content_type, raw)
+    if not bodies:
+        if not notification:
+            # An empty 200/202 used to be silence, and silence is a client
+            # waiting for an answer that will never come.
+            emit(error_body(rid, "HTTP " + str(status) + ": empty reply"))
+        return
+    # A 3xx is a statement about where the endpoint is, not a reply: its body
+    # belongs to the redirect even when it is shaped like JSON-RPC. Every other
+    # status may carry a real reply - a 429 does (decided before the body is
+    # parsed), a 401 carries the API's own REST error instead.
+    answered = not 300 <= status < 400
+    for body in bodies:
+        if notification:
+            # A notification is never answered, whatever the server sends back.
+            note("wake-mcp: dropped a reply to a notification: " + body.strip()[:300])
+            continue
+        try:
+            reply = json.loads(body)
+        except ValueError:
+            reply = None
+        if answered and isinstance(reply, dict) and "method" in reply:
+            # A server-initiated message (notifications/progress and friends)
+            # belongs to no request: forward it as it came, never as an error.
+            emit(reply)
+        elif answered and is_reply(reply):
+            result = reply.get("result")
+            if isinstance(result, dict) and isinstance(result.get("protocolVersion"), str):
+                state["version"] = result["protocolVersion"]
+            if reply.get("id") != rid:
+                # A 429 is decided before the body is parsed, so it carries
+                # id: null. A client matches replies by id: answer on the id
+                # that asked, or the call hangs until its own timeout.
+                reply["id"] = rid
+            emit(reply)
+        else:
+            emit(error_body(rid, "HTTP " + str(status) + ": " + body.strip()[:300]))
+
+
+def run_bridge():
+    state = {}
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            bridge_line(line, state)
+        except Exception as error:  # one bad answer must never end the session
+            note("wake-mcp: internal error: " + type(error).__name__ + ": " + str(error))
+            rid = line_id(line)
+            if rid is not None:
+                emit(error_body(rid, "internal bridge error: " + type(error).__name__))
+
+
+def legacy_call(name, arguments):
+    if name == "wake_list":
+        command = ["wake", "--list"]
+    elif name == "wake_bot":
+        command = [
+            "wake",
+            str(arguments["bot"]),
+            str(arguments["message"])[:500],
+            "--source",
+            "harness:mcp",
+            "--level",
+            arguments.get("level", "info"),
+        ]
+        if arguments.get("ref"):
+            command += ["--ref", str(arguments["ref"])]
     else:
-        reply(i, error={"code": -32601, "message": "method not found"})
+        return "unknown tool", True
+    result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    return (result.stdout + result.stderr).strip() or "(no output)", result.returncode != 0
+
+
+def run_legacy():
+    for line in sys.stdin:
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        rid, method = message.get("id"), message.get("method")
+        if rid is None:
+            continue
+        if method == "initialize":
+            emit(
+                {
+                    "jsonrpc": "2.0",
+                    "id": rid,
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "wake", "version": wake_config.VERSION},
+                    },
+                }
+            )
+        elif method == "tools/list":
+            emit({"jsonrpc": "2.0", "id": rid, "result": {"tools": LEGACY_TOOLS}})
+        elif method == "tools/call":
+            params = message.get("params", {})
+            try:
+                text, failed = legacy_call(params.get("name"), params.get("arguments") or {})
+            except Exception as error:  # the tool call is the boundary, not a crash
+                text, failed = str(error), True
+            emit(
+                {
+                    "jsonrpc": "2.0",
+                    "id": rid,
+                    "result": {"content": [{"type": "text", "text": text}], "isError": failed},
+                }
+            )
+        else:
+            emit(
+                {
+                    "jsonrpc": "2.0",
+                    "id": rid,
+                    "error": {"code": -32601, "message": "method not found"},
+                }
+            )
+
+
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def check_settings():
+    """Warnings only, on stderr: nothing here may print the token."""
+    parts = urllib.parse.urlsplit(API)
+    if parts.scheme == "http" and parts.hostname not in LOOPBACK + (None,):
+        note(
+            "wake-mcp: WAKE_MCP_API is plain http to "
+            + str(parts.hostname)
+            + ", so the token crosses the network in clear; use https or a loopback/tunnel address"
+        )
+    path = os.path.expanduser(
+        os.environ.get("WAKE_CONFIG") or os.path.join(CFG.get("WAKE_CONFIG_DIR") or "", "config.env")
+    )
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        return
+    if mode & 0o077:
+        note("wake-mcp: " + path + " is mode " + format(mode, "o") + "; keep the token file at 600")
+
+
+if __name__ == "__main__":
+    if TOKEN:
+        check_settings()
+        run_bridge()
+    else:
+        run_legacy()
