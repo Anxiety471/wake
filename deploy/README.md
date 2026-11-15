@@ -269,9 +269,9 @@ unpublished.
 - Cloudflare fronts that hostname and refuses the literal `Python-urllib`
   User-Agent with `error code: 1010`, before nginx is reached. Any named
   User-Agent passes, which is why the scripts send `wake-verify/1`. A dedicated
-  `wake.example.com` record needs a working Cloudflare token; the local one
-  currently fails `user/tokens/verify` with 401. That is the Cloudflare Manager's
-  item, not a change in this repo.
+  `wake.example.com` record needs a working Cloudflare token; the one on the deploy
+  host currently fails `user/tokens/verify` with 401. That is an infrastructure item
+  outside this repo.
 - `mcp_audit.remote` records `127.0.0.1`, the proxy, until `trustProxy` is enabled.
   Every request is one row; prune with `POST /mcp/audit/prune?days=90` and the
   registration secret.

@@ -5,6 +5,20 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ## [Unreleased]
 
+### Changed
+
+- **The tree names examples, not anyone's infrastructure.** The example config, the README
+  table, the deploy runbook and the MCP verify default no longer carry a real state
+  directory, webhook domain or nginx file name; the runbook's rollback and verify steps
+  are otherwise unchanged. `tests/test_public_defaults.py` allowlists the hosts a public
+  repository may name (loopback, the example domains, the repository itself), so a real
+  hostname fails the suite instead of shipping.
+
+### Security
+
+- **Site names, an owner's domain and a personal path are out of the tree.** They were
+  documentation only; no code path changed.
+
 ### Added
 
 - **`tests/test_gate_shapes.py` no longer carries one machine's staging directory.**
