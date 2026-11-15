@@ -7,6 +7,18 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **A deploy runbook, a systemd unit and two operator scripts.** `deploy/README.md` runs the
+  API on the host: a `wake` service account, `/opt/wake` (bundle, `node`, migrations beside it),
+  `/etc/wake/api.env` as `root:wake 640` and an `mcp-token` nobody else can read, a unit that
+  restarts and stops cleanly, and `POST /mcp` published by one nginx `location = /mcp` — an exact
+  match, so the loopback-only operator routes (`/mcp/identity`, `/mcp/identity/rotate`,
+  `DELETE /mcp/identity`, `/mcp/audit/prune`) stay off the internet. `deploy/ops/mcp-identity.py`
+  provisions, rotates, revokes or shows the single public identity and never prints the token
+  (0600, written beside its target and renamed into place); `deploy/ops/mcp-verify.py` drives
+  initialize, tools/list and one tools/call over HTTPS, refusing redirects so the bearer cannot be
+  re-sent to another host, and prints the status before parsing a body. Both are pinned by
+  `tests/test_deploy_ops.py` against a stub that answers Fastify's rules, and
+  `tests/test_deploy_docs.py` keeps the published snippet an exact match with a bounded body.
 - **The MCP endpoint (Switchboard merge step 3).** `POST /mcp` speaks MCP 2025-06-18 over
   Streamable HTTP, off unless `WAKE_MCP_ENABLED=true`. Ten tools are thin wrappers over the API
   (`wake_ask`, `wake_reply`, `wake_read_thread`, `wake_thread_read`, `wake_threads`, `wake_inbox`,
