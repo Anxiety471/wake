@@ -7,6 +7,45 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **The MCP endpoint (Switchboard merge step 3).** `POST /mcp` speaks MCP 2025-06-18 over
+  Streamable HTTP, off unless `WAKE_MCP_ENABLED=true`. Ten tools are thin wrappers over the API
+  (`wake_ask`, `wake_reply`, `wake_read_thread`, `wake_thread_read`, `wake_threads`, `wake_inbox`,
+  `wake_inbox_read`, `wake_bots`, `wake_send`, `wake_search`): each dispatches through
+  `app.inject` with the caller's own bearer, so auth, schemas and thread rules stay the routes'
+  own. Stateless (no session id), JSON answers with a one-event SSE fallback, `GET`/`DELETE` 405,
+  batching refused, protocol version checked. The whole public surface has one credential: the
+  `mcp` agent's ordinary agent token, provisioned/rotated/revoked with `POST /mcp/identity`,
+  `POST /mcp/identity/rotate` and `DELETE /mcp/identity` behind `x-registration-secret`; a bot
+  token is refused with 401. Calls are rate limited per token
+  (`WAKE_MCP_RATE_LIMIT_PER_MINUTE`, default 60, in-process) and audited in `mcp_audit` (method,
+  tool, ok, error, status, duration, remote; no bodies or tokens). Contract:
+  [docs/mcp.md](docs/mcp.md).
+- **Private bots.** `agents.is_private` plus `PUT /agents/:name/private`: a private bot is hidden
+  from and unreachable by the public MCP identity (404 for `ask`/`send`, absent from `wake_bots`,
+  skipped by a broadcast) while bot-to-bot traffic is unchanged. `GET /agents` reports the flag.
+- **Delivery outcomes.** `wake_deliveries` records one row per rung recipient as each delivery
+  finishes, and `GET /messages/:id/deliveries` lets the sender read them back (`delivered`,
+  `reason`, `attempts`, last HTTP `status`, time). Sender only; anyone else gets the same 404 as a
+  missing id.
+- **A report that admits it does not know.** If the recipients cannot be read at all, the `wake`
+  report now says `error: "recipients_unreadable"` instead of the `deliveries: []` that means "no
+  recipient had a target".
+
+### Changed
+
+- **Doorbell hardening.** The timeout ceiling drops to 9 s, so two attempts plus backoff (18.2 s)
+  stay under the CLI's 20 s send timeout. Responses are read to 16 KiB and redirects are not
+  followed (a 3xx is `rejected`, never retried). A per-recipient hourly cap
+  (`WAKE_DOORBELL_MAX_PER_HOUR`, default 30 = the CLI's `HOURLY_CAP`, 0 disables) stops one
+  sender ringing one bot at API speed; over the cap makes no request and reports `rate_limited`.
+  An empty target map is checked before the URL/timeout are parsed, so a stale bad value cannot
+  break the boot of a doorbell that is off. `WAKE_DOORBELL_TIMEOUT_MS` now accepts 100..9000.
+- **A reply wake carries `ref: ""`.** It cannot be answered, so it must not look answerable; a
+  receiver that routes on `ref` no longer fires `wake --reply` into a guaranteed 409. `threadId`
+  still names the thread.
+- **Key issuance wording corrected.** Keys are minted by the host's `rakazo-webhook-key`, not by a
+  human rotating them in Rakazo.
+
 - **The doorbell (Switchboard merge step 2).** A committed message rings the recipient bot's
   Rakazo webhook (`POST /api/v1/bots/<botId>/webhook`) from the API server, never the CLI, so the
   per-bot webhook secret stays server-side. `POST /messages`, `POST /threads` and

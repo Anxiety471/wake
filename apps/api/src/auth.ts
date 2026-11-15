@@ -1,6 +1,8 @@
 export type AuthenticatedAgent = {
   id: string;
   name: string;
+  // 'mcp' is the single public MCP identity; it can never reach a private bot.
+  kind: 'bot' | 'mcp';
 };
 
 export function caller(request: {

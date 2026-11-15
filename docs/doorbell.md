@@ -66,8 +66,11 @@ keeps working when the CLI becomes a client of the API:
 
 - `event` is `message` for a plain message, `request` for a thread opened with
   `POST /threads`, and `reply` for `POST /threads/:id/reply`.
-- `ref` starts with `thread:` for thread messages, which is the routing signal a
-  routine uses today; it is empty for a plain message.
+- `ref` starts with `thread:` for a `request`, which is the routing signal a
+  routine uses today; it is empty for a plain message **and for a `reply`**. A
+  reply cannot be answered, so it must not look answerable: a receiver that
+  routes on `ref` alone would otherwise fire `wake --reply` and collect a 409.
+  `threadId` still names the thread for anything that wants to record it.
 - `depth` is `0`, the depth the CLI sends for a normal bot, so a receiver that
   exports it as `WAKE_DEPTH` can still send its own wakes (`wake-run` raises it
   to 1, and `wake` refuses at 2).
@@ -81,7 +84,12 @@ keeps working when the CLI becomes a client of the API:
   sends `+0800`; both parse.
 - The payload is capped at Rakazo's 64 KiB limit and refused locally
   (`payload_too_large`, no request) rather than sent and rejected. A wake that
-  needs 64 KiB is a bug: send a summary and the ids.
+  needs 64 KiB is a bug: send a summary and the ids. In practice the 8,192 B
+  body limit on every write route makes that refusal unreachable; it stays as a
+  guard in case that limit moves.
+- The API reads at most 16 KiB of the response and does not follow redirects.
+  A 3xx is a configuration error (`http://` instead of `https://`) and is
+  reported as `rejected`, never retried.
 
 ## Configuration
 
@@ -89,6 +97,7 @@ keeps working when the CLI becomes a client of the API:
 WAKE_DOORBELL_BOTS={"engineer":{"botId":"cmw...","secret":"..."},"docs":{"botId":"cmw...","secret":"..."}}
 WAKE_DOORBELL_URL=http://127.0.0.1:3417/api/v1/bots
 WAKE_DOORBELL_TIMEOUT_MS=1500
+WAKE_DOORBELL_MAX_PER_HOUR=30
 ```
 
 - `WAKE_DOORBELL_BOTS` is a JSON object keyed by agent name (case-insensitive,
@@ -96,14 +105,24 @@ WAKE_DOORBELL_TIMEOUT_MS=1500
   and nothing else; a typo in a field name fails the boot instead of silently
   disabling that bot. Empty or unset means the doorbell is off: sends still work
   and answer `wake.enabled = false`.
-- Secrets are issued by the **human** Rakazo account (`bots.rotateWebhookSecret`
-  then `bots.revealWebhookSecret`, which records a `credential.revealed` security
-  event), so provisioning is an operator action. Wake never mints one. Treat the
-  environment file as secret (`chmod 600`) and never commit it.
+- Secrets are minted on the **host** by `rakazo-webhook-key` into
+  `~/.config/wake/<botId>.key` (mode 0600, one per open bot; private bots have
+  none). Wake never mints one. How the API reads those files is a host decision
+  for the cutover step (root-owned 0600 readable by the API user), so until then
+  its targets come from `WAKE_DOORBELL_BOTS`. Treat the environment file as
+  secret (`chmod 600`) and never commit it.
 - `WAKE_DOORBELL_URL` defaults to loopback on the host that runs Rakazo.
-- `WAKE_DOORBELL_TIMEOUT_MS` bounds one attempt (100–10000 ms). A send waits for
+- `WAKE_DOORBELL_TIMEOUT_MS` bounds one attempt (100–9000 ms). A send waits for
   the delivery, so the worst case is `attempts × timeout` plus backoff: two
-  attempts at 1500 ms is about 3.2 s, per recipient, in parallel.
+  attempts at the 1500 ms default is about 3.2 s, per recipient, in parallel;
+  at the 9000 ms ceiling it is 18.2 s, under the CLI's 20 s send timeout, so a
+  sender that gives up cannot leave a retry running and store a duplicate.
+- `WAKE_DOORBELL_MAX_PER_HOUR` is the per-recipient sliding-window cap (default
+  30, the CLI's `HOURLY_CAP`; `0` disables it). The API fans out at API speed,
+  so one sender could otherwise ring one bot as fast as it can POST. Over the
+  cap no request is made, the report says `rate_limited` with `attempts: 0`, and
+  the outcome is still recorded. The window is in-process: it resets on restart
+  and is per instance.
 
 ## What a caller sees
 
@@ -120,13 +139,40 @@ delivery is never an error for the send: the message is already committed, and
 turning that into a 5xx would make the sender retry and duplicate it. The
 delivery log line carries `messageId`, `agent`, `botId`, `delivered`, `reason`,
 `attempts` and `status`; the secret is never logged. `attempts` is the number of
-attempts made, so `0` means the payload was refused locally and nothing was sent.
+attempts made, so `0` means the payload was refused locally or the hourly cap
+stopped it and nothing was sent.
+
+If the recipients cannot be read at all, the report says so instead of
+pretending nobody had a target:
+
+```json
+{"enabled": true, "deliveries": [], "error": "recipients_unreadable"}
+```
+
+## Reading an outcome back
+
+Every rung recipient gets one row in `wake_deliveries`, written as the delivery
+finishes, so a sender that lost the HTTP response can ask later:
+
+```
+GET /messages/<id>/deliveries      (bearer: the sender's own token)
+{"messageId": "9e2b...", "deliveries": [
+  {"agent": "bob", "delivered": false, "reason": "timeout",
+   "attempts": 2, "status": null, "at": "2026-11-14T16:00:03.120Z"}
+]}
+```
+
+Only the sender can read them; any other caller, and an id that does not exist,
+answer `404 {"error":"not found"}`, so message ids cannot be probed. A message
+sent with the doorbell off has no rows and answers an empty list.
 
 ## Known gaps
 
-- Delivery outcomes live in the response and the log, not in a table, so a
-  sender that lost the response cannot ask later what happened.
 - `GET /threads/:id` has no `unread` field (pre-existing, not part of the
   doorbell).
 - Wake does not know a bot's Rakazo id; the target map is operator-provided.
-  Step 3 decides whether that moves into the database.
+  Moving it into the database is a later step, together with reading the minted
+  key files from the host.
+- The hourly cap is in-process, so two API instances each allow their own 30.
+- A delivery that is still retrying when the process dies leaves no row; the
+  row is written when the attempt finishes, not when it starts.

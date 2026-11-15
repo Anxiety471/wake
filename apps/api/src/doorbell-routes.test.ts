@@ -63,6 +63,9 @@ function doorbell(agents: { name: string; botId: string }[]) {
     WAKE_DOORBELL_BOTS: JSON.stringify(bots),
     WAKE_DOORBELL_URL: `http://127.0.0.1:${stub.port}/api/v1/bots`,
     WAKE_DOORBELL_TIMEOUT_MS: '500',
+    // The cap is exercised on its own in doorbell.test.ts; these tests send
+    // more than 30 messages to bob across the file.
+    WAKE_DOORBELL_MAX_PER_HOUR: '0',
   });
 }
 
@@ -167,6 +170,18 @@ async function inbox(token: string): Promise<InboxPage> {
 
 function delivered(agent: string): WakeReport['deliveries'][number] {
   return { agent, delivered: true, reason: null, attempts: 1 };
+}
+
+async function deliveries(
+  token: string,
+  messageId: string,
+): Promise<{ status: number; body: unknown }> {
+  const response = await app.inject({
+    method: 'GET',
+    url: `/messages/${messageId}/deliveries`,
+    headers: bearer(token),
+  });
+  return { status: response.statusCode, body: response.json() };
 }
 
 test('a sent message wakes the recipient through the doorbell', async () => {
@@ -295,7 +310,9 @@ test('a reply wakes the asker', async () => {
   expect(payload).toMatchObject({
     depth: 0,
     event: 'reply',
-    ref: `thread:${thread.threadId}`,
+    // Informational: no thread ref, so a ref-routing receiver cannot try to
+    // answer an answer.
+    ref: '',
     from: 'bob',
     to: 'alice',
     // The asker cannot answer its own ask (409), so a reply carries the form
@@ -340,6 +357,13 @@ test('with no doorbell configured a send still answers and rings nothing', async
     const sent: SentMessage = response.json();
     expect(sent.wake).toEqual({ enabled: false, deliveries: [] });
     expect(requests).toHaveLength(0);
+    const none = await plain.inject({
+      method: 'GET',
+      url: `/messages/${sent.id}/deliveries`,
+      headers: bearer(alice.token),
+    });
+    expect(none.statusCode).toBe(200);
+    expect(none.json()).toEqual({ messageId: sent.id, deliveries: [] });
   } finally {
     await plain.close();
   }
@@ -384,4 +408,67 @@ test('an ask rings the doorbell even when the pool has one connection', async ()
   } finally {
     await single.close();
   }
+});
+
+test('the sender can read what the doorbell did, with status and attempts', async () => {
+  const alice = await register('alice');
+  await register('bob');
+  const sent = await send(alice.token, { to: 'bob', body: 'did it land?' });
+  const got = await deliveries(alice.token, sent.id);
+  expect(got.status).toBe(200);
+  expect(got.body).toEqual({
+    messageId: sent.id,
+    deliveries: [
+      {
+        agent: 'bob',
+        delivered: true,
+        reason: null,
+        attempts: 1,
+        status: 200,
+        at: expect.any(String),
+      },
+    ],
+  });
+});
+
+test('an undelivered wake is persisted with its reason and last status', async () => {
+  stubReply = { status: 503, body: JSON.stringify({ error: 'unavailable' }) };
+  const alice = await register('alice');
+  await register('bob');
+  const sent = await send(alice.token, { to: 'bob', body: 'still there?' });
+  expect(sent.wake.deliveries[0]).toMatchObject({
+    delivered: false,
+    reason: 'server_error',
+    attempts: 2,
+  });
+  const got = await deliveries(alice.token, sent.id);
+  expect(got.body).toEqual({
+    messageId: sent.id,
+    deliveries: [
+      {
+        agent: 'bob',
+        delivered: false,
+        reason: 'server_error',
+        attempts: 2,
+        status: 503,
+        at: expect.any(String),
+      },
+    ],
+  });
+});
+
+test('delivery outcomes are private to the sender', async () => {
+  const alice = await register('alice');
+  const bob = await register('bob');
+  const sent = await send(alice.token, { to: 'bob', body: 'mine' });
+  // A recipient asking about someone else's message gets the same answer as a
+  // message that does not exist, so ids cannot be probed.
+  const stranger = await deliveries(bob.token, sent.id);
+  expect(stranger.status).toBe(404);
+  expect(stranger.body).toEqual({ error: 'not found' });
+  const missing = await deliveries(
+    alice.token,
+    '00000000-0000-4000-8000-000000000000',
+  );
+  expect(missing.status).toBe(404);
 });
