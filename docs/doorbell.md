@@ -119,14 +119,16 @@ WAKE_DOORBELL_MAX_PER_HOUR=30
   at the 9000 ms ceiling it is 18.2 s, under the CLI's 20 s send timeout, so a
   sender that gives up cannot leave a retry running and store a duplicate.
 - `WAKE_DOORBELL_MAX_PER_HOUR` is the sliding-window cap **per sender and
-  recipient** (default 30, the CLI's `HOURLY_CAP`; `0` disables it). The CLI's
-  cap is per target bot per local user (`wake-rate-<uid>.json`), so two senders
-  waking the same bot are two budgets: keying on the recipient alone let one
-  sender's 30 wakes refuse another sender's first one. The API fans out at API
-  speed, so one sender could otherwise ring one bot as fast as it can POST. Over
-  the cap no request is made, the report says `rate_limited` with `attempts: 0`,
-  and the outcome is still recorded. The window is in-process: it resets on
-  restart and is per instance.
+  recipient** (default 30, the CLI's `HOURLY_CAP` number; `0` disables it). This
+  is a **deliberate divergence** from the CLI, not parity: the CLI's cap is one
+  bucket per target bot shared by every sender on the machine, because all bots
+  run as the same uid and share `wake-rate-<uid>.json` (`bin/wake:373`). The API
+  fans out at API speed and can tell senders apart, so each sender gets its own
+  budget: keying on the recipient alone let one sender's 30 wakes refuse another
+  sender's first one. The aggregate ceiling for one bot is therefore 30 per
+  sender, not 30 in total. Over the cap no request is made, the report says
+  `rate_limited` with `attempts: 0`, and the outcome is still recorded. The
+  window is in-process: it resets on restart and is per instance.
 
 ## What a caller sees
 
@@ -179,5 +181,9 @@ sent with the doorbell off has no rows and answers an empty list.
   key files from the host.
 - The hourly cap is in-process, so two API instances each allow their own 30
   per sender and recipient.
+- The cap has no equivalent of the CLI's `--force` (`bin/wake:427`): a sender
+  that has spent its 30 wakes to one bot cannot ring it again for the rest of
+  the hour, and its message is stored with `rate_limited`. A bypass is a later
+  decision, and it should be an operator override rather than a sender-set flag.
 - A delivery that is still retrying when the process dies leaves no row; the
   row is written when the attempt finishes, not when it starts.

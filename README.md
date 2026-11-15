@@ -65,7 +65,7 @@ WAKE_DOORBELL_TIMEOUT_MS=1500                         # 100..9000
 WAKE_DOORBELL_MAX_PER_HOUR=30                         # per sender and recipient, 0 disables
 ```
 
-Keys are minted on the host by `rakazo-webhook-key` through the `bot-webhook-key` wrapper (`bot-webhook-key <botId> [--rotate]`) into `~/.config/wake/<botId>.key` (mode 0600); wake never mints one. Keep the API's environment file `chmod 600`. Empty `WAKE_DOORBELL_BOTS` leaves the doorbell off and sends keep working. A 9 s timeout keeps two attempts plus backoff (18.2 s) under the CLI's 20 s send timeout, and the hourly cap is the CLI's `HOURLY_CAP` enforced by the server per sender and recipient, which now fans out at API speed. The full contract, the payload shape and the status table are in [docs/doorbell.md](docs/doorbell.md).
+Keys are minted on the host by `rakazo-webhook-key` through the `bot-webhook-key` wrapper (`bot-webhook-key <botId> [--rotate]`) into `~/.config/wake/<botId>.key` (mode 0600); wake never mints one. Keep the API's environment file `chmod 600`. Empty `WAKE_DOORBELL_BOTS` leaves the doorbell off and sends keep working. A 9 s timeout keeps two attempts plus backoff (18.2 s) under the CLI's 20 s send timeout, and the hourly cap keeps the CLI's `HOURLY_CAP` number (30) but deliberately scopes it per sender and recipient, not the CLI's single fleet-wide bucket per bot, because the API fans out at API speed and can tell senders apart. The full contract, the payload shape and the status table are in [docs/doorbell.md](docs/doorbell.md).
 
 ```sh
 bun install
