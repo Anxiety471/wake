@@ -71,6 +71,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# A caller's own secret is checked first: it is the cheapest thing to be wrong, and naming it
+# here keeps the message about their input and not about this host, whether or not every tool
+# below is installed. The API refuses a short secret at boot, and a boot that never happened
+# used to cost the whole 20-second health wait before anyone learned why.
+if [ -n "${WAKE_E2E_SECRET:-}" ] && [ "${#WAKE_E2E_SECRET}" -lt 32 ]; then
+    echo "wake-api-e2e: WAKE_E2E_SECRET is ${#WAKE_E2E_SECRET} characters; the API needs at least 32" >&2
+    exit 1
+fi
+
 # What the run needs comes before what it generates. The checkout is the cheapest thing to
 # check, so it goes first: nothing below runs without it.
 [ -d "$REPO/apps/api" ] || { echo "wake-api-e2e: no wake checkout at $REPO (set WAKE_REPO)" >&2; exit 1; }
@@ -84,18 +93,12 @@ done
 command -v "$PG" >/dev/null || { echo "wake-api-e2e: $PG not found; run OPS=1 ./install.sh or put bin/ops on PATH" >&2; exit 1; }
 
 # A fresh secret every run: 48 hex characters, over the 32 the API requires, and never a literal.
+# Minting needs openssl, so it happens after the dependency check above; a mint that prints
+# nothing is a different mistake from a caller's short secret, and it gets its own message
+# instead of being reported as one.
 SECRET=${WAKE_E2E_SECRET:-$(openssl rand -hex 24)}
-# A caller's secret and a failed mint are different mistakes, and the second one used to be
-# reported as the first.
 if [ -z "${WAKE_E2E_SECRET:-}" ] && [ "${#SECRET}" -lt 32 ]; then
     echo "wake-api-e2e: openssl rand -hex 24 printed ${#SECRET} characters; expected 48" >&2
-    exit 1
-fi
-# The API refuses a short secret at boot, and a boot that never happened used to cost the
-# whole 20-second health wait before anyone learned why. Name the caller's secret here,
-# before Postgres starts, so the run is refused instead of started and abandoned.
-if [ "${#SECRET}" -lt 32 ]; then
-    echo "wake-api-e2e: WAKE_E2E_SECRET is ${#SECRET} characters; the API needs at least 32" >&2
     exit 1
 fi
 

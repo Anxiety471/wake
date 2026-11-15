@@ -91,6 +91,8 @@ def e2e_path(openssl):
         with open(path, "w", encoding="utf-8") as handle:
             handle.write("#!/bin/sh\nexit 0\n")
         os.chmod(path, 0o755)
+    elif openssl == "real" and shutil.which("openssl") is not None:
+        os.symlink(shutil.which("openssl"), os.path.join(bindir, "openssl"))
     return bindir
 
 
@@ -177,8 +179,11 @@ class OpsFilesTestCase(unittest.TestCase):
 
     def test_the_e2e_script_refuses_a_short_secret_before_starting_anything(self):
         # The API exits 1 on a short secret, and the health wait that followed spent 20
-        # seconds before it said so. The length is checked before Postgres is started.
-        r = run("wake-api-e2e", env={"WAKE_E2E_SECRET": "a" * 31})
+        # seconds before it said so. The length is checked before Postgres is started, and
+        # before the dependency check: the PATH is the one e2e_path builds, not the developer's,
+        # so this passes on a box with bun installed and on a runner with none, which is where
+        # the ordering was found to be wrong.
+        r = run("wake-api-e2e", env={"WAKE_E2E_SECRET": "a" * 31, "PATH": e2e_path("real")})
         self.assertEqual(r.returncode, 1)
         self.assertIn("at least 32", r.stderr)
         self.assertNotIn("ALL PASS", r.stdout)
