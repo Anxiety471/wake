@@ -61,5 +61,9 @@ scripts/scrub-check.sh --history   # tracked files, every commit message and pat
 ```
 
 `scripts/scrub-allow.txt` lists fixed strings whose lines are skipped: the test's fake minted key, and the owner's public identity (`Joshua M. Valderrama`, `@Anxiety471`). The private list contains the owner's first name, last name and GitHub handle, so without those entries `LICENSE`, `CODEOWNERS` and this file would fail; any other use of those names (for example in a home-directory path) still fails. CI runs the same script without the private list.
+The email stage ignores an address whose domain ends in a reserved test name (RFC 2606/6761:
+`example.com`, `example.net`, `example.org` and their subdomains, `*.invalid`, `*.test`, `*.example`,
+`*.localhost`), because no mailbox can exist there; a live address on the same line still fails, and
+`.local` or `.internal` names stay secrets.
 
 Last run (2026-11-14, after the second pass): `scripts/scrub-check.sh --history` clean with the private list, i.e. no private-pattern hits outside the allowlisted identity strings, no IPs other than `127.0.0.1`, no email addresses and no token-like strings in tracked files or any commit. `TASK.md`, `TASK2.md`, `omp.log` and `omp2.log` were never tracked in any commit.

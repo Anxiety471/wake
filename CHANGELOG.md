@@ -51,6 +51,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **A reserved test address is not a secret, and one branch's fixture failed every branch's scan.**
+  `scripts/scrub-check.sh` flagged `user.email=simulation@example.invalid` in
+  `tests/test_publish_checklist.py`: an address on an RFC 2606 reserved name, which can never resolve
+  or receive mail. The email stage ignores an address whose domain ends in a reserved test name
+  (`example.com`, `example.net`, `example.org` and their subdomains, `*.invalid`, `*.test`, `*.example`,
+  `*.localhost`), one occurrence at a time: a live address sharing the line still fails, a reserved
+  name that only prefixes a live domain still fails, and `.local` or `.internal` names stay secrets.
+  The scan reads `git log -p --all` on a `fetch-depth: 0` checkout, so while that fixture lived on
+  any branch every pull request's secret-scan failed, not just the branch that added it
+  ([#84](https://github.com/Anxiety471/wake/issues/84)).
+
 - **A NUL in `WAKE_REGISTRY` still emptied `tools/list`.** `fleet()` caught only
   `OSError`, but `open()` raises `ValueError` for a path with an embedded NUL, and a
   `config.env` can carry that byte even though an environment variable cannot: one NUL
