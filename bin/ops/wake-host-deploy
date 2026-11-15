@@ -402,6 +402,12 @@ def step_env():
     if not secret:
         sys.exit("wake-host-deploy: WAKE_REGISTRATION_SECRET is not in the environment")
     no_control("WAKE_REGISTRATION_SECRET", secret)
+    # The API refuses to boot with a shorter value (apps/api/src/options.ts), so writing one
+    # would leave a file that cannot start. Refuse before the host is touched.
+    if len(secret) < 32:
+        sys.exit(
+            "wake-host-deploy: WAKE_REGISTRATION_SECRET must be at least 32 characters, or the API will refuse to start"
+        )
     values = {
         "DATABASE_URL": f"postgres://{DB_ROLE}:{password}@{DB_HOST}:{DB_PORT}/{DB_NAME}",
         "HOST": BIND,

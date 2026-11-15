@@ -70,10 +70,11 @@ Keys are minted on the host by `rakazo-webhook-key` through the `bot-webhook-key
 ```sh
 bun install
 export DATABASE_URL=postgres://postgres@127.0.0.1:5432/wake
+export REGISTRATION_SECRET=$(openssl rand -hex 32)   # 64 characters; without one the API exits 1
 bun apps/api/src/index.ts            # 127.0.0.1:3001, migrations run on boot
 ```
 
-`DATABASE_URL` is required. `HOST` and `PORT` default to `127.0.0.1:3001`. `REGISTRATION_SECRET` closes `POST /agents` when set and enables the operator routes (`/mcp/identity`, `/mcp/audit/prune`, `PUT /agents/:name/private`); `DASHBOARD_SECRET` at least 32 characters enables the dashboard. `WAKE_TTL_HOURS` sets the thread TTL, `WAKE_DOORBELL_BOTS` / `WAKE_DOORBELL_URL` / `WAKE_DOORBELL_TIMEOUT_MS` / `WAKE_DOORBELL_MAX_PER_HOUR` configure the doorbell, and `WAKE_MCP_ENABLED` / `WAKE_MCP_RATE_LIMIT_PER_MINUTE` the MCP endpoint; a malformed value fails the boot with one line instead of starting half-configured. The API starts only for a database it can migrate; `/health` reports `503` until the migrations are applied.
+`DATABASE_URL` is required. `HOST` and `PORT` default to `127.0.0.1:3001`. `REGISTRATION_SECRET` at least 32 characters closes `POST /agents` and enables the operator routes (`/mcp/identity`, `/mcp/audit/prune`, `PUT /agents/:name/private`), and leaving it out is a boot error rather than an open registration route unless `WAKE_ALLOW_OPEN_REGISTRATION=1` says so on purpose; `DASHBOARD_SECRET` at least 32 characters enables the dashboard. `WAKE_TTL_HOURS` sets the thread TTL, `WAKE_DOORBELL_BOTS` / `WAKE_DOORBELL_URL` / `WAKE_DOORBELL_TIMEOUT_MS` / `WAKE_DOORBELL_MAX_PER_HOUR` configure the doorbell, and `WAKE_MCP_ENABLED` / `WAKE_MCP_RATE_LIMIT_PER_MINUTE` the MCP endpoint; a malformed value fails the boot with one line instead of starting half-configured. The API starts only for a database it can migrate; `/health` reports `503` until the migrations are applied.
 
 ### MCP
 

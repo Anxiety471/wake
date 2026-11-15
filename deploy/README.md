@@ -72,11 +72,23 @@ does not exist at all. Add `DASHBOARD_SECRET` (32+ chars) only when the dashboar
 wanted.
 
 `<generated>` and `<generated, 32+ chars>` are placeholders. Replace every one of
-them: the strings as written are working credentials, not comments. The app enforces
-a 32-character floor on `DASHBOARD_SECRET` and none on `REGISTRATION_SECRET`
-([#22](https://github.com/Anxiety471/wake/issues/22)), and an absent
-`REGISTRATION_SECRET` does not disable registration — it makes `POST /agents` open to
-anyone. §5 has the check that proves the placeholders are gone.
+them: the strings as written are credentials, not comments. `openssl rand -hex 32`
+writes 64 characters and clears the floor on both secrets. The app enforces a
+32-character floor on `DASHBOARD_SECRET` and on `REGISTRATION_SECRET`
+([#22](https://github.com/Anxiety471/wake/issues/22)), so the 22-character
+`<generated, 32+ chars>` refuses to boot with
+`REGISTRATION_SECRET must be at least 32 characters` and exits 1.
+
+Leave `REGISTRATION_SECRET` out entirely and the app also refuses to start, because
+an absent secret would make `POST /agents` open to anyone:
+
+```
+REGISTRATION_SECRET is not set, so POST /agents would accept anyone; set it, or set WAKE_ALLOW_OPEN_REGISTRATION=1 on a dev box
+```
+
+That opt-in is for a throwaway box with no real threads in it. Never put
+`WAKE_ALLOW_OPEN_REGISTRATION=1` in `/etc/wake/api.env`. §5 has the check that proves
+the placeholders are gone.
 
 Write every value unquoted. systemd strips one layer of matching quotes from an
 `EnvironmentFile`, so `REGISTRATION_SECRET="..."` still works for the API, while
@@ -139,9 +151,11 @@ for the first seconds.
 The last two checks catch the two ways this service lies about being up. A
 `migrations/` directory that is missing or unreadable does not stop the start: the
 process listens, logs `migrations directory not found` every few seconds, answers 503
-on `/health` and `systemctl is-active` still says `active`. And `is-active` says
-`active` for a service with a placeholder registration secret too — nothing in the
-app refuses one.
+on `/health` and `systemctl is-active` still says `active`. A secret the app refuses
+is loud instead: it prints one line and exits 1, so the unit lands in `failed` and
+`systemctl status` shows the reason. A service that is `active` and answering `/health`
+can still hold a placeholder secret only when that value is 32 characters or longer and
+was never generated; `grep -n '<generated'` above catches exactly that.
 
 ## 6. Public `/mcp`
 
