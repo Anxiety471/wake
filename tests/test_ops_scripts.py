@@ -223,6 +223,39 @@ class OpsBehaviourTestCase(unittest.TestCase):
         self.assertEqual(oct(os.stat(saved).st_mode & 0o777), "0o600")
         self.assertEqual(sorted(os.listdir(key_dir)), ["bot-coordinator-0001.key"])
 
+    def test_wake_pingall_skips_a_bad_alias_and_still_pings_the_rest(self):
+        # An alias becomes a file name, so ../x must not run - but one bad alias must not hold the
+        # batch hostage either. It is named and skipped, the rest go out, and the exit code says one
+        # was refused.
+        home = tempfile.mkdtemp(prefix="ping-")
+        bindir = os.path.join(home, "bin")
+        os.makedirs(bindir)
+        asks = os.path.join(home, "asks")
+        fake = os.path.join(bindir, "wake")
+        with open(fake, "w", encoding="utf-8") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> ' + shlex.quote(asks) + "\n")
+        os.chmod(fake, 0o755)
+        logs = os.path.join(home, "logs")
+        env = {
+            "PATH": bindir + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
+            "WAKE_PING_LOG_DIR": logs,
+        }
+        r = run("wake-pingall", "bad.alias", "good-bot", env=env)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("bad.alias", r.stderr)
+        self.assertIn("skipped", r.stderr)
+        self.assertIn("started: good-bot", r.stdout)
+        self.assertNotIn("bad.alias", r.stdout)
+        self.assertEqual(sorted(os.listdir(logs)), ["good-bot.log"])
+        for _ in range(40):  # the asks are started in the background
+            if os.path.exists(asks):
+                break
+            time.sleep(0.05)
+        with open(asks, encoding="utf-8") as f:
+            sent = f.read()
+        self.assertIn("--ask good-bot", sent)
+        self.assertNotIn("bad.alias", sent)
+
     def test_wake_pingall_refuses_an_empty_registry(self):
         home = tempfile.mkdtemp(prefix="ping-")
         reg = os.path.join(home, "bots.tsv")
