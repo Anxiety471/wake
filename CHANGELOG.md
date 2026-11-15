@@ -5,6 +5,8 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-15
+
 ### Changed
 
 - **The tree names examples, not anyone's infrastructure.** The example config, the README
