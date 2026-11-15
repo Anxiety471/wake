@@ -7,6 +7,12 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **Three agent skills under `skills/`.** `wake-ops` covers the operator helpers (a scratch
+  database, the HTTP end-to-end run, keys, a fleet ping, the two installers and a gate
+  review); `wake-mcp` covers the stdio bridge, the public `/mcp` endpoint and its single
+  identity, including what a 401, a 404 and a 405 mean there; `wake-deploy` covers the
+  order of operations on a host, the one nginx location, the check from outside and an
+  exact rollback. Each is a `SKILL.md` with `name` and `description` frontmatter.
 - **A deploy runbook, a systemd unit and two operator scripts.** `deploy/README.md` runs the
   API on the host: a `wake` service account, `/opt/wake` (bundle, `node`, migrations beside it),
   `/etc/wake/api.env` as `root:wake 640` and an `mcp-token` nobody else can read, a unit that
