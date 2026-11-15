@@ -63,7 +63,7 @@ class FakeMcp:
                                 "result": {
                                     "protocolVersion": "2025-06-18",
                                     "capabilities": {"tools": {}},
-                                    "serverInfo": {"name": "wake", "version": "0.1.0"},
+                                    "serverInfo": {"name": "wake", "version": "0.2.0"},
                                 },
                             }
                         ),

@@ -7,7 +7,7 @@ then falls back to the default below. An empty value in the environment counts a
 
 import os
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 DEFAULTS = {
     "WAKE_API_BASE": "",  # e.g. https://bots.example.com/api/v1/bots ; POST {base}/{bot-id}/webhook
