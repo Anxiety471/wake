@@ -391,10 +391,36 @@ class WakeWaitTestCase(unittest.TestCase):
         ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
         reply = "[2026-11-15T12:01] bot-engineer (reply): tomorrow"
         self.stub_rounds([[ask, reply]])
-        r = self.wait("t-1", env={"WAKE_WAIT_FROM": "engineer", "WAKE_WAIT_QUIET": "1"})
+        r = self.wait("t-1", "--timeout", "5", env={"WAKE_WAIT_FROM": "engineer", "WAKE_WAIT_QUIET": "1"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, reply + "\n")
         self.assertEqual(r.stderr, "")
+
+    def test_the_default_timeout_is_180s_and_the_variable_sets_it(self):
+        # Proved without waiting: a --from answer that is already there returns at once, so the
+        # progress line is the only thing under test.
+        ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
+        reply = "[2026-11-15T12:01] bot-engineer (reply): tomorrow"
+        self.stub_rounds([[ask, reply]])
+        r = self.wait("t-1", "--from", "engineer")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("waiting up to 180s", r.stderr)
+        self.stub_rounds([[ask, reply]])
+        r = self.wait("t-1", "--from", "engineer", env={"WAKE_WAIT_TIMEOUT": "7"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("waiting up to 7s", r.stderr)
+
+    def test_the_two_reply_patterns_cannot_drift(self):
+        # The pattern is written twice: once for grep (the baseline snapshot) and once inside the
+        # awk program, because a -v value is unescaped by gawk and left alone by mawk. If the two
+        # ever diverge, "new reply" and "the reply to print" stop meaning the same thing.
+        body = read("wake-wait")
+        self.assertNotIn("-v reply=", body, "a pattern through -v is unescaped by gawk and kept by mawk")
+        from_grep = re.search(r"(?m)^REPLY=.(.+).$", body)
+        in_awk = re.search(r"\$0 !~ /(.+?)/\) next", body)
+        self.assertIsNotNone(from_grep, "the REPLY pattern is gone")
+        self.assertIsNotNone(in_awk, "the pattern inside the awk program is gone")
+        self.assertEqual(in_awk.group(1), from_grep.group(1), "the grep and awk patterns drifted")
 
     # ---- timeout and errors --------------------------------------------------------
 

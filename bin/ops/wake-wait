@@ -77,6 +77,9 @@ trap 'rm -f "$BASE" "$ERR"' EXIT INT TERM
 
 # What bin/wake's show() prints for a reply record: [2026-11-15T12:00] bot-engineer (reply): text
 # Anchored on the whole prefix, so an ask whose own text contains "(reply):" is not an answer.
+# The same pattern is written into MATCH below and deliberately not passed with -v: gawk
+# unescapes a -v value and mawk does not, so the anchor survives on one and not the other.
+# test_the_two_reply_patterns_cannot_drift keeps the two copies identical.
 REPLY='^\[[^]]*\] [^ ]+ \(reply\): '
 
 # Print the thread from the first qualifying reply to its end, and say whether there was one.
@@ -91,7 +94,7 @@ BEGIN {
 }
 {
     if (found) { print; next }
-    if ($0 !~ reply) next
+    if ($0 !~ /^\[[^]]*\] [^ ]+ \(reply\): /) next
     who = $0
     sub(/^\[[^]]*\] /, "", who)
     sub(/ \(reply\):.*$/, "", who)
@@ -128,7 +131,7 @@ while :; do
         printf '%s\n' "$out" | grep -E "$REPLY" >"$BASE" 2>/dev/null || :
         first=0
     fi
-    answer=$(printf '%s\n' "$out" | awk -v base="$BASE" -v author="$FROM" -v reply="$REPLY" "$MATCH")
+    answer=$(printf '%s\n' "$out" | awk -v base="$BASE" -v author="$FROM" "$MATCH")
     if [ -n "$answer" ]; then
         printf '%s\n' "$answer"
         exit 0
