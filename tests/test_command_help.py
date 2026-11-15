@@ -167,5 +167,45 @@ class CommandHelpTestCase(unittest.TestCase):
             self.assertIsNotNone(problem(wrote_then_helped), "a help path that left a file passed")
 
 
+def help_output(path, flag="--help"):
+    """What a command prints for its help flag, or "" if it does not answer in time."""
+    with tempfile.TemporaryDirectory() as home:
+        try:
+            r = subprocess.run(
+                [str(path), flag],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                stdin=subprocess.DEVNULL,
+                cwd=home,
+                env=environment(home),
+            )
+        except subprocess.TimeoutExpired:
+            return ""
+    return r.stdout or ""
+
+
+class ExitCodeTest(unittest.TestCase):
+    def test_every_bash_helper_states_every_exit_code_it_uses(self):
+        """A usage text that lists fewer exits than the script can take is how an 0/1-only text
+        survives a script that grew a 2 for bad usage."""
+        problems = []
+        for path in commands():
+            source = path.read_text(errors="replace")
+            if "bash" not in source.splitlines()[0]:
+                continue
+            codes = sorted({int(n) for n in re.findall(r"\bexit\s+(\d+)\b", source)})
+            out = help_output(path)
+            for code in codes:
+                if not re.search(rf"(?<!\d){code}(?!\d)", out):
+                    problems.append(f"{path.name} exits {code} but --help never says so")
+        self.assertEqual(problems, [], "\n".join(problems))
+
+    def test_the_check_rejects_a_usage_that_hides_an_exit(self):
+        """The check above must bite: a helper that exits 3 while its usage lists 0 and 1 fails."""
+        self.assertEqual(sorted({int(n) for n in re.findall(r"\bexit\s+(\d+)\b", "exit 0\nexit 3\n")}), [0, 3])
+        self.assertIsNone(re.search(r"(?<!\d)3(?!\d)", "usage: selftest\n  exit 0 ok, 1 bad"))
+
+
 if __name__ == "__main__":
     unittest.main()

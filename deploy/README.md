@@ -243,10 +243,15 @@ the new host), and refuses plain `http` to anything but this machine.
 ### 6.3 Unpublish and prove it
 
 The nginx site file below is called `wake-mcp`; substitute the name your host uses
-(the one that holds the certificate for the API's hostname).
+(the one that holds the certificate for the API's hostname). The file and its backup
+are named once, in `SITE` and `BACKUP`, so a rollback cannot copy one file's backup
+over another: set `BACKUP` to the copy taken before publishing, dated as it is on
+your host.
 
 ```sh
-sudo cp /etc/nginx/sites-available/wake-mcp.bak-2026-11-15 /etc/nginx/sites-available/wake-mcp
+SITE=wake-mcp                  # the site file that holds the API host's certificate
+BACKUP=$SITE.bak-2026-11-15    # the copy taken before publishing; use your own date
+sudo cp "/etc/nginx/sites-available/$BACKUP" "/etc/nginx/sites-available/$SITE"
 sudo nginx -t && sudo systemctl reload nginx
 sudo /opt/wake/ops/mcp-identity.py revoke
 sudo systemctl disable --now wake-api
@@ -335,4 +340,4 @@ sudo systemctl disable --now wake-api
 
 That is the whole rollback: the CLI keeps its own store, so bots notice nothing. The
 database can stay in place for the next attempt, or `sudo -u postgres dropdb wake`.
-To unpublish `/mcp`, §6.4.
+To unpublish `/mcp`, §6.3.
