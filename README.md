@@ -138,7 +138,7 @@ Every setting is an environment variable; the same names can be set in `~/.confi
 | `WAKE_CONFIG` | `$WAKE_CONFIG_DIR/config.env` | config file path |
 | `WAKE_REGISTRY` | `$WAKE_CONFIG_DIR/bots.tsv` | bot registry |
 | `WAKE_KEY_DIR` | `$WAKE_CONFIG_DIR` | `<bot-id>.key` files |
-| `WAKE_STATE_DIR` | `/var/lib/wake` | shared `threads/` and `inbox/` (on the host) |
+| `WAKE_STATE_DIR` | `/var/lib/wake` | shared `threads/` and `inbox/`; the host copy of `bin/wake` is patched to `/var/lib/wake-site` |
 | `WAKE_HOSTOPS` | *(empty: this is the host)* | guest mode: executable that runs `$1` as a shell command on the host, stdin passed through |
 | `WAKE_KEY_HELPER` | `wake-webhook-key` | host command that mints keys (see protocol doc) |
 | `WAKE_GROUP` | `wake` | group allowed to read keys; used by the `sg` fallback |
