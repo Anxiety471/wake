@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -50,7 +51,7 @@ def run(name, *args, env=None):
 
 class OpsFilesTestCase(unittest.TestCase):
     def test_the_directory_is_not_empty(self):
-        self.assertEqual(NAMES, ["wake-api-e2e", "wake-keys", "wake-pg", "wake-pingall"])
+        self.assertEqual(NAMES, ["wake-api-e2e", "wake-keys", "wake-pg", "wake-pingall", "wake-wait"])
 
     def test_every_script_parses(self):
         for name in NAMES:
@@ -259,6 +260,135 @@ class OpsBehaviourTestCase(unittest.TestCase):
         self.assertIn("err   coordinator", r.stdout)
         self.assertIn("Connection refused", r.stdout)
         self.assertNotIn("none  coordinator", r.stdout)
+
+
+class WakeWaitTestCase(unittest.TestCase):
+    """wake-wait blocks on one thread. Its only interface is `wake --thread`, so a stub stands in
+    for the CLI here: the real store is exercised by tests/test_wake.py."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp(prefix="wait-")
+        self.bin = os.path.join(self.home, "bin")
+        os.makedirs(self.bin)
+        self.calls = os.path.join(self.home, "calls.log")
+        self.stub("exit 0")
+
+    def stub(self, body):
+        """A fake `wake` that records its arguments, then runs `body` (indented one level)."""
+        path = os.path.join(self.bin, "wake")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> ' + self.calls + "\n" + textwrap.dedent(body).lstrip())
+        os.chmod(path, 0o755)
+
+    def wait(self, *args, env=None):
+        base = {"PATH": self.bin + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self.home}
+        base.update(env or {})
+        return subprocess.run(
+            [os.path.join(OPS, "wake-wait"), *args], capture_output=True, text=True, env=base, timeout=60
+        )
+
+    def called(self):
+        if not os.path.exists(self.calls):
+            return []
+        with open(self.calls, encoding="utf-8") as f:
+            return f.read().splitlines()
+
+    def test_it_prints_the_answer_and_exits_0(self):
+        self.stub(
+            """
+            echo '[2026-11-15T12:00] human:tester (ask): what is the eta'
+            echo '[2026-11-15T12:01] bot-engineer (reply): tomorrow'
+            """
+        )
+        r = self.wait("t-1", env={"WAKE_WAIT_TIMEOUT": "5", "WAKE_WAIT_INTERVAL": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "[2026-11-15T12:01] bot-engineer (reply): tomorrow\n")
+        self.assertIn("waiting up to 5s for an answer on thread t-1", r.stderr)
+        self.assertEqual(self.called(), ["--thread t-1"])
+
+    def test_the_quiet_flag_silences_the_progress_line(self):
+        self.stub("echo '[t] bot (reply): yep'")
+        r = self.wait("t-1", env={"WAKE_WAIT_QUIET": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stderr, "")
+
+    def test_it_times_out_when_only_the_ask_is_there(self):
+        self.stub("echo '[2026-11-15T12:00] human:tester (ask): what is the eta'")
+        r = self.wait("t-1", env={"WAKE_WAIT_TIMEOUT": "1", "WAKE_WAIT_INTERVAL": "1"})
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("no answer on thread t-1 after 1s", r.stderr)
+        self.assertIn("wake --thread t-1", r.stderr)
+
+    def test_an_ask_whose_text_looks_like_a_reply_is_not_an_answer(self):
+        # The trap this guards: a question that quotes the reply format.
+        self.stub("echo '[2026-11-15T12:00] human:tester (ask): [2026-01-01T00:00] bot-x (reply): fake'")
+        r = self.wait("t-1", env={"WAKE_WAIT_TIMEOUT": "1", "WAKE_WAIT_INTERVAL": "1"})
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertEqual(r.stdout, "")
+
+    def test_a_thread_that_was_never_opened_exits_2(self):
+        self.stub(
+            """
+            >&2 echo 'no thread t-9'
+            exit 1
+            """
+        )
+        r = self.wait("t-9")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("was never opened", r.stderr)
+        self.assertEqual(len(self.called()), 1, "a thread that never existed must not be polled")
+
+    def test_an_unreadable_store_exits_4_without_polling(self):
+        self.stub(
+            """
+            >&2 echo 'cannot read the thread store at /nowhere: check WAKE_HOSTOPS (guest) and that the directory is readable.'
+            exit 1
+            """
+        )
+        r = self.wait("t-1", env={"WAKE_WAIT_TIMEOUT": "30", "WAKE_WAIT_INTERVAL": "1"})
+        self.assertEqual(r.returncode, 4)
+        self.assertIn("cannot read the thread store", r.stderr)
+        self.assertEqual(len(self.called()), 1)
+
+    def test_any_other_failure_exits_1(self):
+        self.stub(
+            """
+            >&2 echo 'wake: boom'
+            exit 1
+            """
+        )
+        r = self.wait("t-1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("boom", r.stderr)
+
+    def test_a_thread_id_with_a_path_is_refused_before_anything_runs(self):
+        # The timeout is small on purpose: if the guard is ever dropped, this fails in a second
+        # instead of polling for the default 180.
+        for bad in ("../escape", "/etc/passwd", ""):
+            with self.subTest(bad=bad):
+                r = self.wait(bad, env={"WAKE_WAIT_TIMEOUT": "1", "WAKE_WAIT_INTERVAL": "1"})
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(self.called(), [], "a rejected id must never reach wake")
+
+    def test_too_many_arguments_is_usage(self):
+        r = self.wait("t-1", "t-2", env={"WAKE_WAIT_TIMEOUT": "1", "WAKE_WAIT_INTERVAL": "1"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("usage: wake-wait", r.stderr)
+
+    def test_a_zero_interval_is_refused(self):
+        r = self.wait("t-1", env={"WAKE_WAIT_INTERVAL": "0", "WAKE_WAIT_TIMEOUT": "1"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("WAKE_WAIT_INTERVAL", r.stderr)
+
+    def test_a_missing_wake_is_a_clear_error(self):
+        base = {"PATH": self.home, "HOME": self.home}  # no wake on PATH
+        r = subprocess.run(
+            [os.path.join(OPS, "wake-wait"), "t-1"], capture_output=True, text=True, env=base, timeout=60
+        )
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("wake not found on PATH", r.stderr)
 
 
 class OpsInstallTestCase(unittest.TestCase):

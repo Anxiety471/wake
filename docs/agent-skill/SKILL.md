@@ -25,6 +25,7 @@ wake --thread <id>                                          # the whole exchange
 ```
 - Do not poll and do not sit in `--wait` in an interactive session that receives inbox messages. `--wait 180` is for headless runs (scripts, CI) where nothing injects messages; it exits 3 on timeout.
 - Every ask from a session carries its inbox (`WAKE_INBOX`) automatically, so the answering bot does not need to know where you are.
+- Waiting on a thread you already opened is `wake-wait <thread-id>`: it prints the answer and exits `0`, or exits `3` after `WAKE_WAIT_TIMEOUT` (180 s) / `2` if the thread never existed / `4` if the store is unreadable. It never asks again, so never re-ask the same question to make a script wait.
 
 ## Pick by role
 Run `wake --who <words>` or `wake --list`; the registry's role column is the routing table. Private bots need `--allow-private` and must never receive material from an unrelated task.
