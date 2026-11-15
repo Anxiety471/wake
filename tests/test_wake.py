@@ -223,6 +223,12 @@ class WakeTestCase(unittest.TestCase):
         """
         self.assertEqual(self.env.get("PYTHONDONTWRITEBYTECODE"), "1")
 
+    def audit(self):
+        """Every ask, reply and refusal the CLI wrote, oldest first."""
+        path = os.path.join(self.rate, f"wake-audit-{os.getuid()}.log")
+        with open(path) as f:
+            return [json.loads(x) for x in f]
+
     def put_key(self, bot_id, key="test-key"):
         path = os.path.join(self.keys, bot_id + ".key")
         with open(path, "w") as f:
@@ -466,9 +472,16 @@ class ThreadTests(WakeTestCase):
         self.assertEqual(len(self.thread(tid)), 1)
 
     def test_reply_to_unknown_thread_is_explained(self):
+        """A CLI-shaped id keeps the old message byte for byte: only API-minted ids moved."""
         r = self.wake("--reply", "0101-beef", "x", env={"WAKE_SOURCE": "bot:engineer"})
         self.assertEqual(r.returncode, 1)
-        self.assertIn("never opened", r.stderr)
+        self.assertEqual(
+            r.stderr,
+            "no thread 0101-beef: it was never opened, so there is nothing to answer. "
+            'A question thread is created by: wake --ask <bot> "<question>" '
+            f"(checked {os.path.join(self.state, 'threads')}). "
+            "To reach that sender directly, wake the bot instead.\n",
+        )
 
     def test_reply_to_an_api_thread_names_the_api_route(self):
         """A UUID was minted by the API in Postgres, not by --ask: "never opened" hides the one
@@ -596,11 +609,6 @@ class ReplyGuardTests(WakeTestCase):
             for rec in recs:
                 f.write(json.dumps(rec) + "\n")
 
-    def audit(self):
-        path = os.path.join(self.rate, f"wake-audit-{os.getuid()}.log")
-        with open(path) as f:
-            return [json.loads(x) for x in f]
-
     def test_reply_after_ttl_is_refused(self):
         self.put_key("bot-engineer-0002")
         self.put_key("bot-coordinator-0001")
@@ -687,11 +695,33 @@ class ApiThreadReplyTests(WakeTestCase):
         self.assertEqual(os.listdir(threads) if os.path.isdir(threads) else [], [])
 
     def test_reply_without_a_token_names_the_setting_that_is_missing(self):
+        """No token names the setting; it must not fall back to the flat-store text, which is
+        wrong for an API id and hides the one route that can answer it."""
         r = self.wake("--reply", self.UUID, "x", env=self.api_env(token=None))
         self.assertEqual(r.returncode, 1)
         self.assertIn("WAKE_AGENT_TOKEN", r.stderr)
         self.assertIn(f"POST /threads/{self.UUID}/reply", r.stderr)
+        self.assertNotIn("never opened", r.stderr)
         self.assertEqual(self.api.requests, [])
+
+    def test_reply_to_an_api_thread_is_audited(self):
+        """The answer is audited as delivered over the API, so a refusal and an answer are
+        distinguishable afterwards (both would otherwise leave the same empty store)."""
+        self.wake("--reply", self.UUID, "the answer", env=self.api_env())
+        [row] = self.audit()
+        self.assertEqual((row["cmd"], row["thread"], row["bot"], row["rc"]), ("reply", self.UUID, "api", 0))
+        self.assertEqual(row["source"], "bot:engineer")
+
+    def test_reply_to_an_api_thread_this_bot_is_not_in_is_refused(self):
+        """loadThreadState joins thread_participants on the caller, so a non-participant gets 404:
+        the CLI must exit non-zero and audit the refusal instead of reporting a posted answer."""
+        self.api.status[self.UUID] = 404
+        self.api.error[self.UUID] = "no such thread"
+        r = self.wake("--reply", self.UUID, "x", env=self.api_env())
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("404", r.stderr)
+        [row] = self.audit()
+        self.assertEqual((row["cmd"], row["bot"], row["rc"]), ("reply-refused", "api", 7))
 
     def test_reply_surfaces_the_api_refusal(self):
         """The route refuses the asker of an ask; the CLI repeats that instead of inventing a store error."""
