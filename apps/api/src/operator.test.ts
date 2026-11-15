@@ -1,0 +1,321 @@
+import { Client } from 'pg';
+import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
+import { buildApp } from './app.js';
+import { assertTestDatabaseUrl } from './test-helpers/test-database.js';
+import type {
+  AgentSummary,
+  InboxPage,
+  RegisteredAgent,
+  SentMessage,
+} from '@wake/shared';
+
+const databaseUrl = assertTestDatabaseUrl(process.env.TEST_DATABASE_URL);
+const OPERATOR = 'operator-secret-0123456789';
+
+const app = buildApp(databaseUrl, { registrationSecret: OPERATOR });
+const admin = new Client({ connectionString: databaseUrl });
+
+beforeAll(async () => {
+  await admin.connect();
+  await app.ready();
+  await app.migrationsReady;
+});
+
+beforeEach(async () => {
+  await admin.query('TRUNCATE agents CASCADE');
+});
+
+afterAll(async () => {
+  await admin.end();
+  await app.close();
+});
+
+function bearer(token: string): { authorization: string } {
+  return { authorization: `Bearer ${token}` };
+}
+
+function operator(secret = OPERATOR): {
+  'x-registration-secret': string;
+} {
+  return { 'x-registration-secret': secret };
+}
+
+async function register(name: string): Promise<RegisteredAgent> {
+  const response = await app.inject({
+    method: 'POST',
+    url: '/agents',
+    headers: operator(),
+    payload: { name },
+  });
+  expect(response.statusCode).toBe(201);
+  return response.json();
+}
+
+async function provision(secret = OPERATOR): Promise<RegisteredAgent> {
+  const response = await app.inject({
+    method: 'POST',
+    url: '/mcp/identity',
+    headers: operator(secret),
+  });
+  expect(response.statusCode).toBe(201);
+  return response.json();
+}
+
+test('operator routes do not exist without a registration secret', async () => {
+  const bare = buildApp(databaseUrl, { migrate: false });
+  try {
+    await bare.ready();
+    for (const request of [
+      { method: 'GET' as const, url: '/mcp/identity' },
+      { method: 'POST' as const, url: '/mcp/identity' },
+      { method: 'DELETE' as const, url: '/mcp/identity' },
+      {
+        method: 'PUT' as const,
+        url: '/agents/bob/private',
+        payload: { private: true },
+      },
+    ]) {
+      const response = await bare.inject(request);
+      expect(response.statusCode).toBe(404);
+    }
+  } finally {
+    await bare.close();
+  }
+});
+
+test('operator routes reject the wrong secret', async () => {
+  for (const request of [
+    { method: 'GET' as const, url: '/mcp/identity' },
+    { method: 'POST' as const, url: '/mcp/identity' },
+    { method: 'DELETE' as const, url: '/mcp/identity' },
+    {
+      method: 'PUT' as const,
+      url: '/agents/bob/private',
+      payload: { private: true },
+    },
+  ]) {
+    const response = await app.inject({
+      ...request,
+      headers: operator('wrong-secret'),
+    });
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: 'unauthorized' });
+  }
+});
+
+test('the mcp identity is provisioned once, rotated and revoked', async () => {
+  const created = await provision();
+  expect(created.name).toBe('mcp');
+  expect(created.token).toHaveLength(43);
+  expect(JSON.stringify(created)).not.toContain(OPERATOR);
+
+  const again = await app.inject({
+    method: 'POST',
+    url: '/mcp/identity',
+    headers: operator(),
+  });
+  expect(again.statusCode).toBe(409);
+
+  const listed = await app.inject({
+    method: 'GET',
+    url: '/mcp/identity',
+    headers: operator(),
+  });
+  expect(listed.statusCode).toBe(200);
+  expect(listed.json()).toMatchObject({
+    id: created.id,
+    name: 'mcp',
+    kind: 'mcp',
+    private: false,
+    tokenRevoked: false,
+    lastSeenAt: null,
+  });
+
+  // The token works as a normal agent token until it is rotated.
+  expect(
+    (
+      await app.inject({
+        method: 'GET',
+        url: '/agents',
+        headers: bearer(created.token),
+      })
+    ).statusCode,
+  ).toBe(200);
+
+  const rotated = await app.inject({
+    method: 'POST',
+    url: '/mcp/identity/rotate',
+    headers: operator(),
+  });
+  expect(rotated.statusCode).toBe(200);
+  const fresh: RegisteredAgent = rotated.json();
+  expect(fresh.id).toBe(created.id);
+  expect(fresh.token).not.toBe(created.token);
+  expect(
+    (
+      await app.inject({
+        method: 'GET',
+        url: '/agents',
+        headers: bearer(created.token),
+      })
+    ).statusCode,
+  ).toBe(401);
+  expect(
+    (
+      await app.inject({
+        method: 'GET',
+        url: '/agents',
+        headers: bearer(fresh.token),
+      })
+    ).statusCode,
+  ).toBe(200);
+
+  const revoked = await app.inject({
+    method: 'DELETE',
+    url: '/mcp/identity',
+    headers: operator(),
+  });
+  expect(revoked.statusCode).toBe(200);
+  expect(revoked.json()).toEqual({ name: 'mcp', tokenRevoked: true });
+  expect(
+    (
+      await app.inject({
+        method: 'GET',
+        url: '/agents',
+        headers: bearer(fresh.token),
+      })
+    ).statusCode,
+  ).toBe(401);
+
+  // Rotating a revoked identity revives it rather than failing.
+  const revived = await app.inject({
+    method: 'POST',
+    url: '/mcp/identity/rotate',
+    headers: operator(),
+  });
+  expect(revived.statusCode).toBe(200);
+  expect(
+    (
+      await app.inject({
+        method: 'GET',
+        url: '/agents',
+        headers: bearer(revived.json<RegisteredAgent>().token),
+      })
+    ).statusCode,
+  ).toBe(200);
+});
+
+test('the open registration route cannot take the mcp name', async () => {
+  const response = await app.inject({
+    method: 'POST',
+    url: '/agents',
+    headers: operator(),
+    payload: { name: 'MCP' },
+  });
+  expect(response.statusCode).toBe(409);
+  expect(response.json()).toEqual({ error: 'name already registered' });
+});
+
+test('a private bot is reachable from the fleet but not from the mcp identity', async () => {
+  const alice = await register('alice');
+  const bob = await register('bob');
+  const marked = await app.inject({
+    method: 'PUT',
+    url: '/agents/bob/private',
+    headers: operator(),
+    payload: { private: true },
+  });
+  expect(marked.statusCode).toBe(200);
+  expect(marked.json()).toEqual({ name: 'bob', private: true });
+
+  // Bot-to-bot traffic is unchanged.
+  const direct = await app.inject({
+    method: 'POST',
+    url: '/messages',
+    headers: bearer(alice.token),
+    payload: { to: 'bob', body: 'still reachable' },
+  });
+  expect(direct.statusCode).toBe(201);
+
+  const listedForBot = await app.inject({
+    method: 'GET',
+    url: '/agents',
+    headers: bearer(alice.token),
+  });
+  const forBot: { agents: AgentSummary[] } = listedForBot.json();
+  expect(forBot.agents.map((agent) => agent.name)).toEqual(['alice', 'bob']);
+  expect(forBot.agents.find((agent) => agent.name === 'bob')?.private).toBe(
+    true,
+  );
+
+  const identity = await provision();
+  const listedForMcp = await app.inject({
+    method: 'GET',
+    url: '/agents',
+    headers: bearer(identity.token),
+  });
+  const forMcp: { agents: AgentSummary[] } = listedForMcp.json();
+  expect(forMcp.agents.map((agent) => agent.name)).not.toContain('bob');
+
+  for (const [url, payload] of [
+    ['/messages', { to: 'bob', body: 'let me in' }],
+    ['/threads', { to: 'bob', body: 'let me in' }],
+  ] as const) {
+    const refused = await app.inject({
+      method: 'POST',
+      url,
+      headers: bearer(identity.token),
+      payload,
+    });
+    expect(refused.statusCode).toBe(404);
+    expect(refused.json()).toEqual({ error: 'recipient not found' });
+  }
+
+  // A broadcast from the mcp identity reaches the open bots and skips bob.
+  const broadcast = await app.inject({
+    method: 'POST',
+    url: '/messages',
+    headers: bearer(identity.token),
+    payload: { to: '*', body: 'all hands' },
+  });
+  expect(broadcast.statusCode).toBe(201);
+  const sent: SentMessage = broadcast.json();
+  expect(sent.id).toBeDefined();
+  const bobInbox = await app.inject({
+    method: 'GET',
+    url: '/inbox',
+    headers: bearer(bob.token),
+  });
+  expect(
+    (bobInbox.json() as InboxPage).messages.map((message) => message.body),
+  ).toEqual(['still reachable']);
+  const aliceInbox = await app.inject({
+    method: 'GET',
+    url: '/inbox',
+    headers: bearer(alice.token),
+  });
+  expect(
+    (aliceInbox.json() as InboxPage).messages.map((message) => message.body),
+  ).toEqual(['all hands']);
+});
+
+test('marking a private bot is idempotent and a missing bot is a 404', async () => {
+  await register('bob');
+  for (const value of [true, true, false]) {
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/agents/bob/private',
+      headers: operator(),
+      payload: { private: value },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ name: 'bob', private: value });
+  }
+  const missing = await app.inject({
+    method: 'PUT',
+    url: '/agents/nobody/private',
+    headers: operator(),
+    payload: { private: true },
+  });
+  expect(missing.statusCode).toBe(404);
+});
