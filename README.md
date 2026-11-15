@@ -232,6 +232,9 @@ wake --all "read-only window until 18:00"   # one message to every open bot; pri
 - `wake-hook claude-code Stop|StopFailure` (hook JSON on stdin) or `wake-hook codex '<json>'` — turn coding-agent hook events into wakes. Off unless `WAKE_HOOK=errors|all`.
 - `wake-mcp` — MCP stdio server. With `WAKE_MCP_TOKEN` set it is a bridge to `POST /mcp`, so a stdio-only client gets the same ten thread tools, rate limit, audit and private-bot wall as an HTTP client; without one it keeps the legacy `wake_bot` and `wake_list` tools that shell out to `wake`.
 - `wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]` — session inbox plumbing for a session extension. `<hash>` is 6 to 32 lowercase hex characters; `read` only accepts `$WAKE_STATE_DIR/inbox/<hash>.jsonl`.
+- Every command above answers `-h`/`--help` with its usage, its exit codes and the environment it
+  reads, before it does anything else. `tests/test_command_help.py` runs each one in an empty
+  environment and fails if that stops being true.
 - [`docs/agent-skill/SKILL.md`](docs/agent-skill/SKILL.md) — a skill file that teaches an agent when and how to use wake (`SKILL_DIR=... ./install.sh`).
 
 ## Security model
