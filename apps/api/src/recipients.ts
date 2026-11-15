@@ -6,12 +6,20 @@ export type RecipientLookup =
   | { ok: true; id: string | null }
   | { ok: false; status: 400 | 404; error: string };
 
+export type RecipientSender = {
+  id: string;
+  kind: 'bot' | 'mcp';
+};
+
 // A message may go to one agent by name or to every agent with '*'. Threads
 // are two-party, so callers that cannot use a broadcast pass allowBroadcast
 // false and get the same 400 an invalid name would produce.
+// A private bot is reachable from the fleet (kind 'bot') only: the public MCP
+// identity answers exactly like an unknown name, so it cannot probe for
+// private bots by trying names.
 export async function resolveRecipient(
   pool: Pool,
-  senderId: string,
+  sender: RecipientSender,
   to: string,
   options?: { allowBroadcast?: boolean },
 ): Promise<RecipientLookup> {
@@ -24,16 +32,19 @@ export async function resolveRecipient(
   if (!NAME_PATTERN.test(to)) {
     return { ok: false, status: 400, error: 'invalid request' };
   }
-  const result = await pool.query<{ id: string }>(
-    'SELECT id FROM agents WHERE lower(name) = lower($1)',
+  const result = await pool.query<{ id: string; is_private: boolean }>(
+    'SELECT id, is_private FROM agents WHERE lower(name) = lower($1)',
     [to],
   );
   const row = result.rows[0];
   if (row === undefined) {
     return { ok: false, status: 404, error: 'recipient not found' };
   }
-  if (row.id === senderId) {
+  if (row.id === sender.id) {
     return { ok: false, status: 400, error: 'invalid request' };
+  }
+  if (row.is_private && sender.kind !== 'bot') {
+    return { ok: false, status: 404, error: 'recipient not found' };
   }
   return { ok: true, id: row.id };
 }

@@ -25,6 +25,7 @@ import {
 import { registerDashboardRoutes } from './dashboard.js';
 import { readInbox } from './inbox-read.js';
 import { migrate } from './migrate.js';
+import { MCP_AGENT_NAME, registerOperatorRoutes } from './operator.js';
 import { inboxLimit, parseCursor, UUID_PATTERN } from './paging.js';
 import { pgField } from './pg.js';
 import { resolveRecipient } from './recipients.js';
@@ -95,7 +96,7 @@ const UNAVAILABLE_MESSAGES = [
 
 declare module 'fastify' {
   interface FastifyRequest {
-    agent: { id: string; name: string } | null;
+    agent: { id: string; name: string; kind: 'bot' | 'mcp' } | null;
   }
 
   interface FastifyInstance {
@@ -519,6 +520,11 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
       ) {
         return reply.code(401).send({ error: 'unauthorized' });
       }
+      if (request.body.name.toLowerCase() === MCP_AGENT_NAME) {
+        // The public MCP identity is provisioned by the operator, never by the
+        // open registration route, so its name is reserved.
+        return reply.code(409).send({ error: 'name already registered' });
+      }
       const token = generateToken();
       try {
         const result = await pool.query<{ id: string; name: string }>(
@@ -558,7 +564,7 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
       }
       let result;
       try {
-        result = await pool.query<{ id: string; name: string }>(
+        result = await pool.query<{ id: string; name: string; kind: string }>(
           `WITH expired AS (
              UPDATE agents
              SET pending_token_hash = NULL,
@@ -583,7 +589,7 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
                )
              RETURNING id
            )
-           SELECT agents.id, agents.name
+           SELECT agents.id, agents.name, agents.kind
            FROM agents
            LEFT JOIN touched ON false
            WHERE (
@@ -607,7 +613,11 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
       if (row === undefined) {
         return reply.code(401).send({ error: 'unauthorized' });
       }
-      request.agent = { id: row.id, name: row.name };
+      request.agent = {
+        id: row.id,
+        name: row.name,
+        kind: row.kind === 'mcp' ? 'mcp' : 'bot',
+      };
     });
 
     agentRoutes.get(
@@ -625,12 +635,13 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
                   items: {
                     type: 'object',
                     additionalProperties: false,
-                    required: ['id', 'name', 'online', 'lastSeenAt'],
+                    required: ['id', 'name', 'online', 'lastSeenAt', 'private'],
                     properties: {
                       id: { type: 'string' },
                       name: { type: 'string' },
                       online: { type: 'boolean' },
                       lastSeenAt: { type: ['string', 'null'] },
+                      private: { type: 'boolean' },
                     },
                   },
                 },
@@ -640,29 +651,33 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
         },
       },
       async (request) => {
-        caller(request);
+        const agent = caller(request);
         const result = await pool.query<{
           id: string;
           name: string;
           online: boolean;
+          is_private: boolean;
           last_seen_at: Date | string | null;
         }>(
           `SELECT id,
                 name,
+                is_private,
                 last_seen_at,
                 (
                   last_seen_at IS NOT NULL
                   AND last_seen_at >= clock_timestamp() - $1::interval
                 ) AS online
          FROM agents
+         WHERE $2::boolean OR is_private = false
          ORDER BY name ASC`,
-          [ONLINE_INTERVAL],
+          [ONLINE_INTERVAL, agent.kind === 'bot'],
         );
         const agents: AgentSummary[] = result.rows.map((row) => ({
           id: row.id,
           name: row.name,
           online: row.online,
           lastSeenAt: isoTime(row.last_seen_at),
+          private: row.is_private,
         }));
         return { agents };
       },
@@ -703,7 +718,7 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
         ) {
           return reply.code(400).send({ error: 'invalid request' });
         }
-        const recipient = await resolveRecipient(pool, sender.id, to);
+        const recipient = await resolveRecipient(pool, sender, to);
         if (!recipient.ok) {
           return reply.code(recipient.status).send({ error: recipient.error });
         }
@@ -721,12 +736,16 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
              FROM inserted
              JOIN agents ON (
                ($2::uuid IS NOT NULL AND agents.id = $2::uuid)
-               OR ($2::uuid IS NULL AND agents.id <> inserted.from_agent)
+               OR (
+                 $2::uuid IS NULL
+                 AND agents.id <> inserted.from_agent
+                 AND ($4::boolean OR agents.is_private = false)
+               )
              )
              RETURNING message_id
            )
            SELECT id FROM inserted`,
-            [sender.id, recipientId, body],
+            [sender.id, recipientId, body, sender.kind === 'bot'],
           );
           const row = requiredRow(result.rows);
           const wake = await notifyMessage(
@@ -1274,6 +1293,12 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
       doorbell,
     });
   });
+
+  registerOperatorRoutes(
+    app,
+    pool,
+    registrationSecret === undefined ? {} : { registrationSecret },
+  );
 
   registerDashboardRoutes(app, pool, ONLINE_INTERVAL, dashboardSecret);
 

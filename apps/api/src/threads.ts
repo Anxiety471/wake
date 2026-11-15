@@ -358,7 +358,7 @@ export function registerThreadRoutes(
       ) {
         return reply.code(400).send({ error: 'invalid request' });
       }
-      const recipient = await resolveRecipient(pool, sender.id, to, {
+      const recipient = await resolveRecipient(pool, sender, to, {
         allowBroadcast: false,
       });
       if (!recipient.ok) {

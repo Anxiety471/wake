@@ -13,6 +13,9 @@ export type AgentSummary = {
   name: string;
   online: boolean;
   lastSeenAt: string | null;
+  // A private bot is invisible to non-bot callers (the public MCP identity) and
+  // can never be a recipient for them.
+  private: boolean;
 };
 
 export type DashboardAgent = {
