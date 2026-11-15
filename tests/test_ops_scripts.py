@@ -63,6 +63,18 @@ def run(name, *args, env=None):
     return subprocess.run([os.path.join(OPS, name), *args], capture_output=True, text=True, env=base, timeout=60)
 
 
+def fake_wake(home):
+    """A stand-in `wake` on PATH, so a test never reaches the real CLI and can see the asks."""
+    bindir = os.path.join(home, "bin")
+    os.makedirs(bindir, exist_ok=True)
+    calls = os.path.join(home, "calls")
+    path = os.path.join(bindir, "wake")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shlex.quote(calls) + "\nexit 0\n")
+    os.chmod(path, 0o755)
+    return bindir, calls
+
+
 class OpsFilesTestCase(unittest.TestCase):
     def test_the_directory_is_not_empty(self):
         self.assertEqual(
@@ -311,6 +323,81 @@ class OpsBehaviourTestCase(unittest.TestCase):
         r = run("wake-pingall", env={"WAKE_REGISTRY": reg, "WAKE_PING_LOG_DIR": home})
         self.assertEqual(r.returncode, 1)
         self.assertIn("no open bots", r.stderr)
+
+    def test_wake_pingall_refuses_an_alias_that_is_not_a_bot_name(self):
+        # An alias is both an argument (`wake --ask <alias>`) and a file name
+        # ($LOG_DIR/<alias>.log), so `../escape` wrote a log one level up, `a b` asked two bots
+        # called a and b, and "" started nothing while printing "started:".
+        home = tempfile.mkdtemp(prefix="ping-")
+        bindir, calls = fake_wake(home)
+        logs = os.path.join(home, "logs")
+        for alias in ("../escape", ".hidden", "a/b", "/abs", "--", "-x", "", "   ", "a b"):
+            with self.subTest(alias=alias):
+                r = run(
+                    "wake-pingall",
+                    alias,
+                    env={
+                        "PATH": bindir + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
+                        "WAKE_PING_LOG_DIR": logs,
+                    },
+                )
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertIn("bad bot alias", r.stderr)
+                self.assertNotIn("started:", r.stdout)
+                self.assertFalse(os.path.exists(os.path.join(home, "escape.log")))
+                self.assertFalse(os.path.exists(calls), "a refused alias reached wake")
+        # The log dir is made before the loop, so it may exist; nothing may be inside it.
+        self.assertEqual(os.listdir(logs) if os.path.isdir(logs) else [], [], "a refused alias was pinged")
+
+    def test_wake_pingall_skips_a_registry_alias_that_would_escape_the_log_dir(self):
+        # The registry is where an alias is least looked at. #39 keeps one bad alias from holding
+        # the batch hostage, so the good one still goes out and the exit code says one was refused.
+        home = tempfile.mkdtemp(prefix="ping-")
+        bindir, _calls = fake_wake(home)
+        reg = os.path.join(home, "bots.tsv")
+        with open(reg, "w", encoding="utf-8") as f:
+            f.write("ops\tbot-ops-0001\tOps\topen\tplan\n../escape\tbot-x-0002\tX\topen\tplan\n")
+        logs = os.path.join(home, "logs")
+        r = run(
+            "wake-pingall",
+            env={
+                "PATH": bindir + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
+                "WAKE_REGISTRY": reg,
+                "WAKE_PING_LOG_DIR": logs,
+            },
+        )
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("../escape", r.stderr)
+        self.assertIn("started: ops", r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(home, "escape.log")))
+        self.assertEqual(sorted(os.listdir(logs)), ["ops.log"], "the good alias did not run")
+
+    def test_wake_pingall_asks_a_valid_alias_and_keeps_its_log_inside_the_log_dir(self):
+        home = tempfile.mkdtemp(prefix="ping-")
+        stub = os.path.join(home, "bin")
+        os.makedirs(stub)
+        calls = os.path.join(home, "calls")
+        with open(os.path.join(stub, "wake"), "w", encoding="utf-8") as f:
+            f.write("#!/bin/bash\nprintf '%s\\n' \"$*\" >> " + shlex.quote(calls) + "\n")
+        os.chmod(os.path.join(stub, "wake"), 0o755)
+        logs = os.path.join(home, "logs")
+        r = run(
+            "wake-pingall",
+            "ops-bot",
+            env={
+                "PATH": stub + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
+                "WAKE_PING_LOG_DIR": logs,
+            },
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        log = os.path.join(logs, "ops-bot.log")
+        deadline = time.time() + 5
+        while time.time() < deadline and not (os.path.exists(log) and os.path.exists(calls)):
+            time.sleep(0.05)
+        self.assertTrue(os.path.exists(log), "the log belongs inside WAKE_PING_LOG_DIR")
+        self.assertEqual(sorted(os.listdir(logs)), ["ops-bot.log"])
+        with open(calls, encoding="utf-8") as f:
+            self.assertIn("--ask ops-bot", f.read())
 
     def test_wake_keys_finds_the_registry_when_the_key_dir_moves(self):
         home = tempfile.mkdtemp(prefix="cfg-")

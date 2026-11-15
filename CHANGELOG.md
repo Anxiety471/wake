@@ -25,6 +25,13 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   documentation and defaults. One code default moved with them: `deploy/ops/mcp-verify.py`
   names `example.com` when no URL is passed, and an explicit URL argument behaves as
   before.
+- **`wake-pingall` keeps every alias a bot name before it becomes a path or an argument.**
+  `wake-pingall ""`, `"   "` and `"a b"` printed `started:` and asked nobody (the last one
+  asked two bots called `a` and `b`), and `--` asked a bot called `--`, because `LIST=$*`
+  re-split the names on whitespace. The aliases are kept as given; a blank one and one that
+  starts with a hyphen are named and skipped like any other bad alias, with exit 2, and the
+  refusal shipped in #36 (`../escape`, `.hidden`, `a/b`, `/abs`, from arguments and from the
+  registry) now has tests.
 
 ### Fixed
 
