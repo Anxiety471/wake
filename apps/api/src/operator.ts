@@ -10,6 +10,25 @@ import { generateToken, hashToken, secretsEqual } from './token.js';
 // reach a private bot (see resolveRecipient).
 export const MCP_AGENT_NAME = 'mcp';
 
+// mcp_audit keeps one row per request and no bodies. Ninety days answers "who
+// asked for what" for a quarter and keeps the table small; the host decides how
+// often to prune, this decides how far back.
+export const DEFAULT_AUDIT_RETENTION_DAYS = 90;
+export const MAX_AUDIT_RETENTION_DAYS = 3650;
+
+// Fastify runs with coerceTypes off, so every query value is a string. The
+// schema bounds the format; this bounds the range.
+function parseRetentionDays(raw: string | undefined): number | undefined {
+  if (raw === undefined) {
+    return DEFAULT_AUDIT_RETENTION_DAYS;
+  }
+  const days = Number(raw);
+  if (!Number.isInteger(days) || days < 1 || days > MAX_AUDIT_RETENTION_DAYS) {
+    return undefined;
+  }
+  return days;
+}
+
 const NAME_SCHEMA = {
   type: 'string',
   minLength: 1,
@@ -242,6 +261,47 @@ export function registerOperatorRoutes(
       },
     );
 
+    // A window in the query string, not the body: the common call is "prune
+    // with the default", and that must work as a bare POST with no payload.
+    operator.post<{ Querystring: { days?: string } }>(
+      '/mcp/audit/prune',
+      {
+        schema: {
+          querystring: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              days: { type: 'string', pattern: '^[1-9][0-9]{0,3}$' },
+            },
+          },
+          response: {
+            200: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['deleted', 'before'],
+              properties: {
+                deleted: { type: 'integer' },
+                before: { type: 'string' },
+              },
+            },
+            400: ERROR_SCHEMA,
+          },
+        },
+      },
+      async (request, reply) => {
+        const days = parseRetentionDays(request.query.days);
+        if (days === undefined) {
+          return reply.code(400).send({ error: 'invalid request' });
+        }
+        const before = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+        const result = await pool.query(
+          `DELETE FROM mcp_audit WHERE created_at < $1::timestamptz`,
+          [before],
+        );
+        return { deleted: result.rowCount ?? 0, before: isoTime(before) ?? '' };
+      },
+    );
+
     operator.put<{ Params: { name: string }; Body: { private: boolean } }>(
       '/agents/:name/private',
       {
@@ -269,10 +329,18 @@ export function registerOperatorRoutes(
               },
             },
             404: ERROR_SCHEMA,
+            409: ERROR_SCHEMA,
           },
         },
       },
       async (request, reply) => {
+        // The public identity is never private: it has no bot traffic to hide,
+        // and hiding it would only make the wall harder to reason about.
+        if (request.params.name.toLowerCase() === MCP_AGENT_NAME) {
+          return reply
+            .code(409)
+            .send({ error: 'the public identity cannot be private' });
+        }
         const result = await pool.query<{ name: string; is_private: boolean }>(
           `UPDATE agents
            SET is_private = $2
