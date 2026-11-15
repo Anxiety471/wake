@@ -121,7 +121,7 @@ class PublicHostTests(unittest.TestCase):
 
     def test_the_scanner_would_catch_a_real_host(self):
         # A guard that cannot fail is not a guard.
-        for sample in ("https://bots.acme-corp.io/mcp", "https://h.clmmrh.gov.ph", "bots.acme-corp.io"):
+        for sample in ("https://bots.acme-corp.io/mcp", "https://h.example-hospital.gov.ph", "bots.acme-corp.io"):
             with self.subTest(sample=sample):
                 hosts = URL.findall(sample) or HOSTNAME.findall(sample)
                 self.assertTrue(hosts, sample)
