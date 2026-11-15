@@ -9,9 +9,10 @@ Two modes, one file:
 
 - **with a token** (`WAKE_MCP_TOKEN`) `bin/wake-mcp` is a stdio server that bridges
   each call to `POST {WAKE_MCP_API}/mcp` and exposes the server's ten thread tools;
-- **without one** it is the legacy two-tool CLI helper, and only when `WAKE_CONFIG`
-  is unset: naming a config file that is missing, unreadable or tokenless exits 2
-  with the path instead of quietly answering with two tools.
+- **without one** it is the legacy two-tool CLI helper, and only when nothing names
+  a config (`WAKE_CONFIG`, or `WAKE_CONFIG_DIR`, which names `config.env` inside it):
+  a named file that is missing, unreadable or tokenless exits 2 with the path
+  instead of quietly answering with two tools.
 
 ```json
 { "mcpServers": { "wake": { "command": "wake-mcp",

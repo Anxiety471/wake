@@ -60,6 +60,19 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   the CLI calls unknown; it is never answered when it arrives as a notification; and a
   `WAKE_CONFIG` that exists but cannot be read says so instead of reporting a missing token line.
 
+- **`WAKE_CONFIG_DIR` was the same silent downgrade one variable over (issue #76).** The
+  guard added for `WAKE_CONFIG` read that variable alone, so naming a directory whose
+  `config.env` was missing, unreadable or tokenless still exited 0 with the legacy two-tool
+  helper and an empty stderr. Naming either variable is a request for the bridge now, and the
+  message names the one that was set and the path it resolved to.
+
+- **The API e2e failed on a machine that has a registry.** Its stdio step asserted
+  `tools/list | length == 10`, but the bridge appends `wake_fleet` whenever `WAKE_REGISTRY`
+  is readable, which is the operator's own box and never a bare CI runner: the step stopped
+  with `rc=1` and no `PASS stdio bridge` line for a correct bridge. It now asserts the ten
+  server tools by name and allows `wake_fleet` as the only extra, so ten and eleven both pass
+  and a missing or unknown tool still fails.
+
 - **A `WAKE_CONFIG` that cannot supply a token exited 0 with two tools (issue #76).** The bridge
   picked its mode from the token alone, and `wake_config.load()` treats an unreadable file as no
   settings, so a path that was moved or wiped produced a successful session with the legacy

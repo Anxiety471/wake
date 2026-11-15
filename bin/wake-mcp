@@ -412,9 +412,10 @@ usage: wake-mcp [--help]
   stdio-only client gets the server's ten thread tools, with the same rate limit, audit and
   private-bot wall as an HTTP client.
   Without a token it keeps the legacy two-tool mode (wake_bot, wake_list), which shells out to
-  wake. That mode is only entered when WAKE_CONFIG is unset: a WAKE_CONFIG that names a missing
-  or tokenless file exits 2 instead, because silently answering with two tools looks like a
-  working session (issue #76).
+  wake. That mode is only entered when nothing names a config: a WAKE_CONFIG - or a
+  WAKE_CONFIG_DIR, which names the same file one directory up - that resolves to a missing,
+  unreadable or tokenless file exits 2 instead, because silently answering with two tools looks
+  like a working session (issue #76).
 
   wake_fleet is answered here, not by the API: it lists this machine's routing table
   (WAKE_REGISTRY, bots.tsv) - alias, name, kind, role - and it is only advertised when that
@@ -442,16 +443,26 @@ if __name__ == "__main__":
         # A client that named a config file asked for the bridge. Falling back to the
         # two-tool helper there is a silent downgrade: it answers every method and
         # lists two tools, so nothing looks wrong (issue #76).
-        explicit = os.environ.get("WAKE_CONFIG")
-        if explicit:
-            path = os.path.expanduser(explicit)
+        named = ""
+        if os.environ.get("WAKE_CONFIG"):
+            named = "WAKE_CONFIG"
+            path = os.path.expanduser(os.environ["WAKE_CONFIG"])
+        elif os.environ.get("WAKE_CONFIG_DIR"):
+            # One variable over: naming the directory asks for the same file, so a
+            # tokenless config.env found there is the same silent downgrade.
+            named = "WAKE_CONFIG_DIR"
+            path = os.path.join(os.path.expanduser(os.environ["WAKE_CONFIG_DIR"]), "config.env")
+        if named:
             if not os.path.exists(path):
                 note(
-                    "wake-mcp: WAKE_CONFIG names "
+                    "wake-mcp: "
+                    + named
+                    + " resolves to "
                     + path
                     + ", which does not exist, so there is no token to bridge with. Put "
-                    + "WAKE_MCP_TOKEN=<token> there, or unset WAKE_CONFIG to ask for the legacy "
-                    + "two-tool helper on purpose."
+                    + "WAKE_MCP_TOKEN=<token> there, or unset "
+                    + named
+                    + " to ask for the legacy two-tool helper on purpose."
                 )
             else:
                 try:
@@ -462,20 +473,26 @@ if __name__ == "__main__":
                     # not the same fact as tokenless, and saying "no token" sent the
                     # operator looking for a line that may already be there.
                     note(
-                        "wake-mcp: WAKE_CONFIG names "
+                        "wake-mcp: "
+                        + named
+                        + " resolves to "
                         + path
                         + ", which cannot be read ("
                         + (str(error) or type(error).__name__)
                         + "), so no token can come from it. Fix its mode or path, or unset "
-                        + "WAKE_CONFIG to ask for the legacy two-tool helper on purpose."
+                        + named
+                        + " to ask for the legacy two-tool helper on purpose."
                     )
                 else:
                     note(
                         "wake-mcp: "
+                        + named
+                        + " resolves to "
                         + path
-                        + " has no WAKE_MCP_TOKEN, so this session would be the legacy two-tool "
-                        + "helper instead of the bridge. Add the token there, or unset WAKE_CONFIG "
-                        + "to ask for the helper on purpose."
+                        + ", which has no WAKE_MCP_TOKEN, so this session would be the legacy two-tool "
+                        + "helper instead of the bridge. Add the token there, or unset "
+                        + named
+                        + " to ask for the helper on purpose."
                     )
             sys.exit(2)
         run_legacy()

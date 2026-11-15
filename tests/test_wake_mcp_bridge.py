@@ -249,14 +249,29 @@ class BridgeTest(unittest.TestCase):
         self.fake.requests.clear()
         self.stealer.requests.clear()
 
-    def env(self, token=TOKEN, api=None, config=None, registry=None, drop_config=False):
+    def env(
+        self,
+        token=TOKEN,
+        api=None,
+        config=None,
+        registry=None,
+        drop_config=False,
+        only_dir=False,
+        config_dir=None,
+    ):
         environ = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "WAKE_CONFIG_DIR": self.tmp,
             "WAKE_MCP_API": api or f"http://127.0.0.1:{self.fake.port}",
             "PYTHONDONTWRITEBYTECODE": "1",  # the bridge imports wake_config.py: keep bin/ clean
         }
-        if not drop_config:
+        if drop_config:
+            # Legacy on purpose: nothing names a config file or a directory for
+            # one, and an empty HOME keeps ~/.config/wake out of the answer.
+            environ["HOME"] = self.tmp
+        elif only_dir:
+            environ["WAKE_CONFIG_DIR"] = config_dir or self.tmp
+        else:
+            environ["WAKE_CONFIG_DIR"] = config_dir or self.tmp
             environ["WAKE_CONFIG"] = config or os.path.join(self.tmp, "missing.env")
         if registry is not None:
             environ["WAKE_REGISTRY"] = registry
@@ -671,6 +686,62 @@ class BridgeTest(unittest.TestCase):
         self.assertIn("cannot be read", process.stderr)
         self.assertNotIn("has no WAKE_MCP_TOKEN", process.stderr)
         self.assertEqual(out, [])
+
+    def test_a_config_dir_without_a_token_refuses_instead_of_two_tools(self):
+        # #76 one variable over: WAKE_CONFIG_DIR names the same file one directory
+        # up, so a tokenless config.env found there used to answer every method
+        # with the two-tool helper and an empty stderr, which looks like a
+        # working session. The guard read WAKE_CONFIG alone and missed it.
+        path = os.path.join(self.tmp, "dir-tokenless")
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, "config.env"), "w", encoding="utf-8") as handle:
+            handle.write("WAKE_MCP_API=http://127.0.0.1:1\n")
+        out, process = self.run_bridge(
+            [{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}],
+            token=None,
+            only_dir=True,
+            config_dir=path,
+        )
+        self.assertEqual(process.returncode, 2, process.stderr)
+        self.assertIn("WAKE_CONFIG_DIR resolves to", process.stderr)
+        self.assertIn(os.path.join(path, "config.env"), process.stderr)
+        self.assertIn("no WAKE_MCP_TOKEN", process.stderr)
+        self.assertEqual(out, [])
+        self.assertEqual(self.fake.requests, [])
+
+    def test_a_config_dir_naming_no_file_refuses_instead_of_two_tools(self):
+        # Same door, and the file is not even there: silent two-tool mode hid a
+        # typo in WAKE_CONFIG_DIR as effectively as a typo in WAKE_CONFIG.
+        path = os.path.join(self.tmp, "dir-without-a-config")
+        os.makedirs(path, exist_ok=True)
+        out, process = self.run_bridge(
+            [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}],
+            token=None,
+            only_dir=True,
+            config_dir=path,
+        )
+        self.assertEqual(process.returncode, 2, process.stderr)
+        self.assertIn("does not exist", process.stderr)
+        self.assertIn(os.path.join(path, "config.env"), process.stderr)
+        self.assertEqual(out, [])
+
+    def test_a_config_dir_with_a_token_still_bridges(self):
+        # The guard must refuse a tokenless directory, never a working one.
+        path = os.path.join(self.tmp, "dir-with-a-token")
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, "config.env"), "w", encoding="utf-8") as handle:
+            handle.write("WAKE_MCP_TOKEN=" + TOKEN + "\n")
+            handle.write("WAKE_MCP_API=http://127.0.0.1:" + str(self.fake.port) + "\n")
+        out, process = self.run_bridge(
+            [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}],
+            token=None,
+            only_dir=True,
+            config_dir=path,
+            api="http://127.0.0.1:" + str(self.fake.port),
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(out[0]["result"]["protocolVersion"], "2025-06-18")
+        self.assertEqual(len(self.fake.requests), 1)
 
     def test_a_non_utf8_config_file_does_not_end_the_session(self):
         # wake_config.load() decoded config.env with the locale codec, so one
