@@ -44,9 +44,6 @@ case ${1:-} in
         usage
         exit 0
         ;;
-esac
-
-case ${1:-} in
     '') force=0 ;;
     --force) force=1 ;;
     *)
