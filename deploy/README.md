@@ -12,7 +12,9 @@ affecting any bot until `bin/wake` is switched over to it.
 | `/opt/wake/index.mjs` | single bundled file (`bun build --target=node`) |
 | `/opt/wake/migrations/*.sql` | applied at boot, tracked in `schema_migrations` |
 | `/opt/wake/node` | Node runtime for this service (>= 20) |
+| `/opt/wake/ops/*.py` | operator scripts: provision the `/mcp` identity, verify it |
 | `/etc/wake/api.env` | environment, `root:wake 640` |
+| `/etc/wake/mcp-token` | public MCP bearer token, `root:wake 640` |
 | `/etc/systemd/system/wake-api.service` | unit, `wake-api.service` |
 | `wake` user / `wake` group | service account, `--system --no-create-home` |
 
@@ -42,11 +44,13 @@ HOST=127.0.0.1
 PORT=3001
 REGISTRATION_SECRET=<generated, 32+ chars>
 WAKE_DOORBELL_BOTS=
+WAKE_MCP_ENABLED=true
 ```
 
-Both features start off: `WAKE_DOORBELL_BOTS` empty means no send rings a bot, and
-`WAKE_MCP_ENABLED` absent means the `/mcp` route does not exist. Add
-`DASHBOARD_SECRET` (32+ chars) only when the dashboard is wanted.
+Two features, two switches: `WAKE_DOORBELL_BOTS` empty means no send rings a bot
+(still off as of this writing), and `WAKE_MCP_ENABLED` absent means the `/mcp` route
+does not exist at all. Add `DASHBOARD_SECRET` (32+ chars) only when the dashboard is
+wanted.
 
 ## 3. Build and install
 
@@ -60,7 +64,8 @@ sudo install -m 755 "$(command -v node)" /opt/wake/node
 
 The bundle carries fastify and pg, so there is no `node_modules` on the host.
 `migrate.ts` resolves `migrations/` next to the entry point, which is why it is
-copied beside `index.mjs` and not into a versioned directory.
+copied beside `index.mjs` and not into a versioned directory. A `--compile` binary
+would break that lookup, hence the node bundle.
 
 ## 4. Service
 
@@ -82,24 +87,65 @@ journalctl -u wake-api -n 20 --no-pager
 `/health` answers 503 until migrations finish, so a 503 right after start is normal
 for the first seconds.
 
-## 6. nginx (only when the public `/mcp` token ships)
+## 6. Public `/mcp`
 
-Not part of the base install: the API is loopback-only until the CLI cutover, and
-`/mcp` needs an audit trail and a rate limit before it faces the internet.
+Deployed 2026-11-15 with `WAKE_MCP_ENABLED=true` and one public identity.
+
+The API has no DNS name of its own yet, so `/mcp` rides the host that already has a
+certificate: a location in `/etc/nginx/sites-available/bots-bocchi` (backup kept as
+`bots-bocchi.bak-2026-11-15`).
 
 ```
-location /mcp {
-    proxy_pass http://127.0.0.1:3001;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_http_version 1.1;
-    proxy_set_header Connection "";
-    proxy_read_timeout 120s;
-}
+    location /mcp {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_read_timeout 120s;
+        client_max_body_size 2m;
+    }
 ```
 
-Until `trustProxy` is set in the app, `mcp_audit.remote` records the proxy address,
-not the client.
+Public URL: `https://bots.bocchi.trade/mcp`. Nothing else of the API is exposed;
+registration and the operator routes stay on loopback.
+
+### The public token
+
+One identity, `mcp`, whose bearer token is an ordinary agent token (hashed,
+revocable, rotatable). It lives in `/etc/wake/mcp-token` (`root:wake 640`) and is
+never printed. `deploy/ops/mcp-identity.py` writes it there.
+
+```sh
+sudo /opt/wake/ops/mcp-identity.py create   # first time: 201 and the token file
+sudo /opt/wake/ops/mcp-identity.py rotate   # old token dies immediately
+sudo /opt/wake/ops/mcp-identity.py revoke   # 404 from then on
+sudo /opt/wake/ops/mcp-identity.py show     # non-secret fields only
+```
+
+### Verify it
+
+```sh
+sudo /opt/wake/ops/mcp-verify.py https://bots.bocchi.trade/mcp
+# initialize: 200 protocol=2025-06-18 server=wake
+# tools/list: 200 count=10
+```
+
+### Two things to know
+
+- Cloudflare fronts that hostname and refuses the literal `Python-urllib`
+  User-Agent with `error code: 1010`, before nginx is reached. Any named
+  User-Agent passes, so a client must send one. A dedicated `wake.bocchi.trade`
+  record needs a working Cloudflare token; the local one currently fails
+  `user/tokens/verify` with 401.
+- `mcp_audit.remote` records `127.0.0.1`, the proxy, until `trustProxy` is enabled.
+  Every request is one row; prune with `POST /mcp/audit/prune?days=90` and the
+  registration secret.
+
+The doorbell is still off and this database has no bot rows yet, so `wake_bots`
+lists only the public identity itself until the CLI cutover.
 
 ## Rollback
 
@@ -109,3 +155,4 @@ sudo systemctl disable --now wake-api
 
 That is the whole rollback: the CLI keeps its own store, so bots notice nothing. The
 database can stay in place for the next attempt, or `sudo -u postgres dropdb wake`.
+To unpublish `/mcp`, restore `bots-bocchi.bak-2026-11-15` and reload nginx.
