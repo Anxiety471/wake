@@ -46,8 +46,14 @@ case ${1:-} in
         ;;
 esac
 
-force=0
-[ "${1:-}" = "--force" ] && force=1
+case ${1:-} in
+    '') force=0 ;;
+    --force) force=1 ;;
+    *)
+        echo "wake-keys: unknown argument '$1'; the only one it takes is --force (try --help)" >&2
+        exit 2
+        ;;
+esac
 
 [ -r "$REG" ] || {
     echo "no registry at $REG (set WAKE_REGISTRY, or copy bots.example.tsv there and fill it in)" >&2
