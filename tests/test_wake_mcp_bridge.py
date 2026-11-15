@@ -8,6 +8,7 @@ the real ~/.config/wake.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "bin", "wake-mcp")
 TOKEN = "bridge-test-token-0123456789"
+
+
+def version():
+    """VERSION as bin/wake_config.py declares it, so the agent is checked, not its shape."""
+    with open(os.path.join(ROOT, "bin", "wake_config.py"), encoding="utf-8") as handle:
+        return re.search(r'^VERSION = "([^"]+)"', handle.read(), re.MULTILINE).group(1)
 
 
 def send(handler, code, content_type, body):
@@ -300,12 +307,19 @@ class BridgeTest(unittest.TestCase):
         # the public /mcp refused the bridge while curl reached it. The agent is
         # the fix; this keeps a later header edit from quietly restoring the
         # default that only works against a loopback API.
-        out, process = self.run_bridge({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        out, process = self.run_bridge(
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            ]
+        )
         self.assertEqual(process.returncode, 0, process.stderr)
-        self.assertEqual(len(out), 1)
-        headers = self.fake.requests[0]["headers"]
-        self.assertIn("user-agent", headers, "urllib's default agent is what Cloudflare refuses")
-        self.assertRegex(headers["user-agent"], r"^wake-mcp/[0-9]+\.[0-9]+\.[0-9]+$")
+        self.assertEqual(len(out), 2)
+        self.assertEqual(len(self.fake.requests), 2)
+        for seen in self.fake.requests:
+            headers = seen["headers"]
+            self.assertIn("user-agent", headers, "urllib's default agent is what Cloudflare refuses")
+            self.assertEqual(headers["user-agent"], "wake-mcp/" + version())
 
     def test_a_tool_result_in_an_sse_reply_reaches_the_client(self):
         out, _ = self.run_bridge(
@@ -575,6 +589,103 @@ class BridgeTest(unittest.TestCase):
         out, _ = self.run_bridge([{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}])
         names = [tool["name"] for tool in out[0]["result"]["tools"]]
         self.assertEqual(names, ["wake_ask", "wake_inbox"])
+
+    def test_a_registry_that_is_not_utf8_still_lists_every_tool(self):
+        # One non-UTF-8 byte in a name used to raise UnicodeDecodeError out of
+        # fleet(), which answered tools/list with -32603 and zero tools: the
+        # session was dead before the client could see a single tool.
+        path = os.path.join(self.tmp, "fleet-bytes.tsv")
+        with open(path, "wb") as handle:
+            handle.write(b"# alias\tid\tname\tkind\trole\n")
+            handle.write(b"grok\tcmwdd4m1\tGrok Bot\topen\tplans\n")
+            handle.write(b"broken\tcmwdev\tB\xffd Name\topen\trole\n")
+        out, process = self.run_bridge(
+            [
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": "wake_fleet", "arguments": {}},
+                },
+            ],
+            registry=path,
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        names = [tool["name"] for tool in out[0]["result"]["tools"]]
+        self.assertEqual(names, ["wake_ask", "wake_inbox", "wake_fleet"])
+        payload = json.loads(out[1]["result"]["content"][0]["text"])
+        self.assertFalse(out[1]["result"]["isError"])
+        self.assertEqual([bot["alias"] for bot in payload["bots"]], ["grok", "broken"])
+        self.assertEqual(payload["bots"][1]["name"], "B\ufffdd Name")
+
+    def test_wake_fleet_lists_only_the_rows_the_cli_accepts(self):
+        # bin/wake:39 takes four or five tab-separated fields and ignores the
+        # rest. wake_fleet answers for the same fleet, so it must not name an
+        # alias `wake` would call unknown.
+        path = os.path.join(self.tmp, "fleet-widths.tsv")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("grok\tcmwdd4m1\tGrok Bot\topen\n")
+            handle.write("crumb\tcmwdd549\tCrumb\topen\tmemory\n")
+            handle.write("three\tcmwdd54x\tshort\n")
+            handle.write("six\tcmwdd54y\tSix\topen\trole\textra\n")
+        out, _ = self.run_bridge(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "wake_fleet", "arguments": {}},
+            },
+            registry=path,
+        )
+        payload = json.loads(out[0]["result"]["content"][0]["text"])
+        self.assertEqual([bot["alias"] for bot in payload["bots"]], ["grok", "crumb"])
+        self.assertEqual(payload["bots"][1]["role"], "memory")
+
+    def test_wake_fleet_sent_as_a_notification_is_not_answered(self):
+        out, process = self.run_bridge(
+            {
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {"name": "wake_fleet", "arguments": {}},
+            },
+            registry=self.registry(),
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(out, [])
+
+    def test_a_config_file_that_cannot_be_read_says_so(self):
+        # Present but unreadable is not tokenless: reporting "no WAKE_MCP_TOKEN"
+        # sent the operator looking for a line that may already be there.
+        path = os.path.join(self.tmp, "config-is-a-directory")
+        os.mkdir(path)
+        try:
+            out, process = self.run_bridge(
+                [{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}],
+                token=None,
+                config=path,
+            )
+        finally:
+            os.rmdir(path)
+        self.assertEqual(process.returncode, 2, process.stderr)
+        self.assertIn("cannot be read", process.stderr)
+        self.assertNotIn("has no WAKE_MCP_TOKEN", process.stderr)
+        self.assertEqual(out, [])
+
+    def test_a_non_utf8_config_file_does_not_end_the_session(self):
+        # wake_config.load() decoded config.env with the locale codec, so one
+        # stray byte in a comment killed the bridge at import, before the first
+        # message could be answered.
+        path = os.path.join(self.tmp, "latin1.env")
+        with open(path, "wb") as handle:
+            handle.write(b"# caf\xe9\nWAKE_MCP_API=http://127.0.0.1:1\n")
+        out, process = self.run_bridge(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            config=path,
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["result"]["protocolVersion"], "2025-06-18")
 
 
 if __name__ == "__main__":

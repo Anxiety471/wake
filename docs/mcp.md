@@ -248,7 +248,10 @@ one message in flight at a time, so replies keep stdin's order.
 
 Without `WAKE_MCP_TOKEN` the same binary stays the **legacy** two-tool helper —
 `wake_bot` and `wake_list`, shelling out to `bin/wake` on the same machine. That
-mode is kept for existing local configs and is not the recommended path.
+mode is only entered when `WAKE_CONFIG` is unset. Naming a config file is taken as
+a request for the bridge: if that file is missing, unreadable, or has no
+`WAKE_MCP_TOKEN`, the bridge exits 2 with the path on stderr instead of quietly
+answering with two tools, which looks like a working session (issue #76).
 
 ## Not here yet
 

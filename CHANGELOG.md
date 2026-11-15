@@ -51,6 +51,15 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **One non-UTF-8 byte in `bots.tsv` emptied `tools/list`.** `fleet()` opened the registry with
+  the locale codec and caught only `OSError`, so a single undecodable byte raised
+  `UnicodeDecodeError` out of the tool list: the client got `-32603` and zero tools, with no
+  session left to report the reason on. The registry and `config.env` are read as UTF-8 with
+  replacement now, so a damaged byte costs one character instead of the session. `wake_fleet`
+  also takes the row shape `bin/wake` accepts (four or five fields), so it never names an alias
+  the CLI calls unknown; it is never answered when it arrives as a notification; and a
+  `WAKE_CONFIG` that exists but cannot be read says so instead of reporting a missing token line.
+
 - **A `WAKE_CONFIG` that cannot supply a token exited 0 with two tools (issue #76).** The bridge
   picked its mode from the token alone, and `wake_config.load()` treats an unreadable file as no
   settings, so a path that was moved or wiped produced a successful session with the legacy

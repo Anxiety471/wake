@@ -52,7 +52,10 @@ def load(environ=None):
     cdir = config_dir(env)
     path = os.path.expanduser(env.get("WAKE_CONFIG") or os.path.join(cdir, "config.env"))
     try:
-        with open(path) as f:
+        # UTF-8 with replacement, never the locale codec: one stray byte in a
+        # comment used to end wake-mcp at import with UnicodeDecodeError, before
+        # it could answer a single message.
+        with open(path, encoding="utf-8", errors="replace") as f:
             filevals = parse_env_file(f.read())
     except OSError:
         filevals = {}

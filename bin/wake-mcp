@@ -49,10 +49,17 @@ FLEET_TOOL = {
 
 
 def fleet():
-    """The local routing table as rows, or (None, path) when there is no readable registry."""
+    """The local routing table as rows, or (None, path) when there is no readable registry.
+
+    Decoded as UTF-8 with replacement, never with the locale codec: one byte that
+    is not UTF-8 used to raise UnicodeDecodeError out of tools/list, and a client
+    that cannot list tools has no session left to report the reason on. Rows are
+    the shape bin/wake accepts (four or five tab-separated fields), so wake_fleet
+    never names an alias the CLI itself calls unknown.
+    """
     path = CFG.get("WAKE_REGISTRY") or ""
     try:
-        with open(path) as handle:
+        with open(path, encoding="utf-8", errors="replace") as handle:
             lines = handle.read().splitlines()
     except OSError:
         return None, path
@@ -62,7 +69,7 @@ def fleet():
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         fields = line.split("\t")
-        if len(fields) < 2 or not fields[0].strip():
+        if len(fields) not in (4, 5) or not fields[0].strip():
             continue
         fields += [""] * (5 - len(fields))
         alias = fields[0].strip()
@@ -219,6 +226,9 @@ def bridge_line(line, state):
     params = message.get("params") if isinstance(message.get("params"), dict) else {}
     if message.get("method") == "tools/call" and params.get("name") == "wake_fleet":
         # Local by design: the routing table lives on this machine, not on the server.
+        # A notification has no id and takes no answer, here as everywhere else.
+        if "id" not in message:
+            return
         bots, path = fleet()
         if bots is None:
             text, failed = "no routing table at " + path + " (WAKE_REGISTRY)", True
@@ -444,12 +454,28 @@ if __name__ == "__main__":
                     + "two-tool helper on purpose."
                 )
             else:
-                note(
-                    "wake-mcp: "
-                    + path
-                    + " has no WAKE_MCP_TOKEN, so this session would be the legacy two-tool "
-                    + "helper instead of the bridge. Add the token there, or unset WAKE_CONFIG to "
-                    + "ask for the helper on purpose."
-                )
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as handle:
+                        handle.read()
+                except OSError as error:
+                    # Present but not readable (mode, a directory, a bad mount) is
+                    # not the same fact as tokenless, and saying "no token" sent the
+                    # operator looking for a line that may already be there.
+                    note(
+                        "wake-mcp: WAKE_CONFIG names "
+                        + path
+                        + ", which cannot be read ("
+                        + (str(error) or type(error).__name__)
+                        + "), so no token can come from it. Fix its mode or path, or unset "
+                        + "WAKE_CONFIG to ask for the legacy two-tool helper on purpose."
+                    )
+                else:
+                    note(
+                        "wake-mcp: "
+                        + path
+                        + " has no WAKE_MCP_TOKEN, so this session would be the legacy two-tool "
+                        + "helper instead of the bridge. Add the token there, or unset WAKE_CONFIG "
+                        + "to ask for the helper on purpose."
+                    )
             sys.exit(2)
         run_legacy()
