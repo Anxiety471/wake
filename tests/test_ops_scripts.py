@@ -13,9 +13,11 @@ import fnmatch
 import os
 import re
 import shlex
+import signal
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -355,6 +357,36 @@ class WakeWaitTestCase(unittest.TestCase):
         self.assertTrue(self.called(), "the stub was never called")
         for call in self.called():
             self.assertTrue(call.startswith("--thread "), f"wake-wait sent something: {call}")
+
+    def test_an_interrupt_stops_it_instead_of_answering_with_an_older_reply(self):
+        # The trap that cleaned up on INT also deleted the baseline while the loop kept going, and
+        # with no baseline every reply in the thread looks new: Ctrl-C printed an older answer and
+        # exited 0. An interrupt must end the wait, not answer it.
+        ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
+        old = "[2026-11-15T12:01] bot-other (reply): an older answer"
+        self.stub_rounds([[ask, old]])
+        base = {
+            "PATH": self.bin + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": self.home,
+        }
+        proc = subprocess.Popen(
+            [os.path.join(OPS, "wake-wait"), "t-1", "--timeout", "30", "--interval", "1"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=base,
+            start_new_session=True,
+        )
+        try:
+            time.sleep(1.5)  # one poll has taken its baseline and is between polls
+            proc.send_signal(signal.SIGINT)
+            out, err = proc.communicate(timeout=20)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+        self.assertEqual(proc.returncode, 130, out + err)
+        self.assertEqual(out, "", "an interrupt printed an answer")
 
     # ---- --from --------------------------------------------------------------------
 
