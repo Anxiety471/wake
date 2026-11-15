@@ -2,6 +2,45 @@
 # desc: run the wake API on a throwaway database and prove the public surface over real HTTP: /mcp, the inbox, deliveries, audit prune, the stdio bridge. Needs bun, jq, curl and wake-pg; reads WAKE_REPO, WAKE_E2E_DB, WAKE_E2E_PORT, WAKE_PG_PORT
 set -euo pipefail
 
+usage() {
+    cat <<'EOF'
+usage: wake-api-e2e [--help]
+
+  Runs the wake API on a scratch database and proves the public surface over real HTTP: /mcp
+  initialize, the ten tools, wake_ask and wake_read_thread, the inbox, deliveries, private-bot
+  refusal, mcp_audit, audit prune, GET /mcp 405, and the stdio bridge in bin/wake-mcp. It prints
+  PASS per step and ALL PASS, or stops at the step that failed.
+
+  It starts its own Postgres through wake-pg and its own API, and stops both on exit, failed or
+  not. Every file it writes - request bodies, the bot and MCP tokens - goes into one private
+  directory at mode 0700 and is removed with it; the registration secret is generated per run.
+
+  It takes no arguments. --help is the only one it answers without starting anything.
+
+  environment   WAKE_REPO (this checkout)    WAKE_E2E_DB (wake_e2e)
+                WAKE_E2E_PORT (3599)         WAKE_PG_PORT (5433)
+                WAKE_E2E_LOG (inside the private directory)  WAKE_E2E_DATABASE_URL
+                WAKE_E2E_SECRET             WAKE_PG (wake-pg)
+
+  needs   bun, jq, curl, openssl, python3 and wake-pg on PATH
+  exit    0 when every step passed; 1 at the first step that did not
+EOF
+}
+
+case ${1:-} in
+    -h | --help)
+        usage
+        exit 0
+        ;;
+esac
+
+# It takes no arguments: a stray one is a mistake, not a no-op, and it would be paid for by
+# starting Postgres and the API before the mistake showed.
+if [ "$#" -gt 0 ]; then
+    echo "wake-api-e2e takes no arguments; try --help" >&2
+    exit 2
+fi
+
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 REPO=${WAKE_REPO:-$ROOT}
 DB=${WAKE_E2E_DB:-wake_e2e}

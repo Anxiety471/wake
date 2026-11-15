@@ -36,6 +36,40 @@ name() {
     printf '%s' "$1"
 }
 
+usage() {
+    cat <<'EOF'
+usage: wake-pg [start|stop|status|reset|createdb NAME|dropdb NAME|psql ...]
+
+  A throwaway Postgres for the wake API tests. It owns one cluster - data in $WAKE_PG_DATA, a
+  unix socket in $WAKE_PG_SOCK - listening on 127.0.0.1:$WAKE_PG_PORT and nowhere else. No
+  argument means status.
+
+  start                  initdb on first use, then start; prints the socket directory
+  stop                   stop this cluster, fast
+  status                 exit 0 when it accepts connections, 1 when it rejects, 2 when no
+                         process answers (pg_isready's own codes)
+  reset                  stop, delete the data directory, start again empty
+  createdb NAME          create one database in this cluster
+  dropdb NAME            drop one database in this cluster
+  psql ...               the client, as postgres, against this cluster
+
+  environment   WAKE_PG_BASE      a Postgres prefix, for a machine with no Postgres on PATH
+                WAKE_PG_DATA      data directory ($TMPDIR/wake-pg/data)
+                WAKE_PG_SOCK      socket directory ($TMPDIR/wake-pg/sock)
+                WAKE_PG_PORT      port (5433)
+                WAKE_PG_LOG_DIR   where initdb.log and postgres.log go ($TMPDIR/wake-pg)
+
+  exit 0 on success, 1 when a Postgres tool is missing, 2 on a bad database name
+EOF
+}
+
+case ${1:-} in
+    -h | --help)
+        usage
+        exit 0
+        ;;
+esac
+
 case ${1:-status} in
     start)
         mkdir -p "$SOCK" "$LOGD"
