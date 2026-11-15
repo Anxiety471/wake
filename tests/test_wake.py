@@ -909,6 +909,63 @@ class InboxIoHostileInputTests(WakeTestCase):
         self.assertFalse(os.path.exists(self.pwned))
 
 
+class InboxIoFailureTests(WakeTestCase):
+    """A host command that fails must fail the bridge.
+
+    A gate refusal used to be discarded: register printed an inbox path for a file nothing had
+    created and exited 0, so a session exported WAKE_INBOX pointing at nothing.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # BASE does not exist, so every call takes the host path even with a writable state dir.
+        self.hostops = os.path.join(self.fakebin, "hostops")
+        write_exe(
+            self.hostops,
+            """
+            #!/bin/sh
+            echo "the gate refused: not on the allow-list" >&2
+            exit 75
+        """,
+        )
+        self.env_host = {"WAKE_HOSTOPS": self.hostops}
+
+    def test_register_fails_when_the_host_refuses_it(self):
+        r = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=self.env_host)
+        self.assertEqual(r.returncode, 75, (r.stdout, r.stderr))
+        self.assertIn("the gate refused", r.stderr)
+        self.assertEqual(r.stdout, "", "a refused register still printed an inbox path")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "inbox", "abc123.jsonl")))
+
+    def test_beat_fails_when_the_host_refuses_it(self):
+        inbox = os.path.join(self.state, "inbox")
+        os.makedirs(os.path.join(inbox, "active"))
+        marker = os.path.join(inbox, "active", "abc123.json")
+        with open(marker, "w") as f:
+            f.write('{"pid": 1}')
+        # A read-only inbox directory is what a guest shell sees, so the write goes to the host.
+        os.chmod(inbox, 0o500)
+        self.addCleanup(os.chmod, inbox, 0o700)
+        r = self.run_bin("wake-inbox-io", "beat", "abc123", '{"pid": 2}', env=self.env_host)
+        self.assertEqual(r.returncode, 75, (r.stdout, r.stderr))
+        self.assertIn("the gate refused", r.stderr)
+        self.assertEqual(slurp(marker), '{"pid": 1}', "a refused beat still rewrote the marker")
+
+    def test_a_successful_host_command_is_still_quiet_and_prints_the_path(self):
+        hostops = os.path.join(self.fakebin, "hostops-ok")
+        write_exe(
+            hostops,
+            """
+            #!/bin/sh
+            exec bash -c "$1"
+        """,
+        )
+        r = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env={"WAKE_HOSTOPS": hostops})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), os.path.join(self.state, "inbox", "abc123.jsonl"))
+        self.assertEqual(r.stderr, "")
+
+
 class ConfigTests(unittest.TestCase):
     def test_defaults_and_derived_paths(self):
         cfg = wake_config.load({"HOME": "/nonexistent-home", "WAKE_CONFIG_DIR": "/nonexistent-cfg"})

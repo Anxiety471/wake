@@ -115,12 +115,17 @@ def exercise_inbox_io(test):
     test.assertEqual(r.returncode, 0, r.stderr)
     box = r.stdout.strip()
     test.assertEqual(box, os.path.join(base, "abc123.jsonl"))
-    shutil.rmtree(base, ignore_errors=True)
-    r = test.run_bin("wake-inbox-io", "beat", "abc123", '{"pid": 2}', env=env)
-    test.assertEqual(r.returncode, 0, r.stderr)
-    shutil.rmtree(base, ignore_errors=True)
-    r = test.run_bin("wake-inbox-io", "read", box, env=env)
-    test.assertEqual(r.returncode, 0, r.stderr)
+    # A guest shell has the directory but cannot write it: registering is what made it.
+    # Deleting it here would ask the host to write a marker into a missing directory, which a
+    # real guest never does, and which `wake-inbox-io` now reports as the failure it is.
+    os.chmod(base, 0o500)
+    try:
+        r = test.run_bin("wake-inbox-io", "beat", "abc123", '{"pid": 2}', env=env)
+        test.assertEqual(r.returncode, 0, r.stderr)
+        r = test.run_bin("wake-inbox-io", "read", box, env=env)
+        test.assertEqual(r.returncode, 0, r.stderr)
+    finally:
+        os.chmod(base, 0o700)
     return slurp(log).splitlines()
 
 
