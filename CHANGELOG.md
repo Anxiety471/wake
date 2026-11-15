@@ -18,6 +18,13 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 - **Site names, an owner's domain and a personal path are out of the tree.** They were
   documentation only; no code path changed.
+- **`wake-pingall` keeps every alias a bot name before it becomes a path or an argument.**
+  `wake-pingall ""`, `"   "` and `"a b"` printed `started:` and asked nobody (the last one
+  asked two bots called `a` and `b`), and `--` asked a bot called `--`, because `LIST=$*`
+  re-split the names on whitespace. The aliases are kept as given; a blank one and one that
+  starts with a hyphen are named and skipped like any other bad alias, with exit 2, and the
+  refusal shipped in #36 (`../escape`, `.hidden`, `a/b`, `/abs`, from arguments and from the
+  registry) now has tests.
 
 ### Added
 
