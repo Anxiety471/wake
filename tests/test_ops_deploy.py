@@ -257,7 +257,7 @@ class HostDeployTestCase(unittest.TestCase):
             "#!/bin/sh\n{\n  printf 'CMD: %s\\n' \"$1\"\n  cat\n  printf '\\n--\\n'\n} >> \"$STUB_LOG\"\n",
             executable=True,
         )
-        self.secret = "regsecret-0123456789"
+        self.secret = "regsecret-0123456789-0123456789abc"
         self.password = "dbpassword123"
         self.env = {
             "WAKE_HOSTOPS": self.hostops,
@@ -425,6 +425,13 @@ class HostDeployTestCase(unittest.TestCase):
         r = run("wake-host-deploy", "env", env=dict(self.env, WAKE_REGISTRATION_SECRET="abc\ndef"))
         self.assertEqual(r.returncode, 1)
         self.assertIn("control character", r.stderr)
+        self.assertFalse(self.logged(), "a host command ran before the secret was checked")
+
+    def test_env_refuses_a_registration_secret_the_api_would_not_boot_with(self):
+        # The API enforces a 32-character floor, so a shorter value writes a file that cannot start.
+        r = run("wake-host-deploy", "env", env=dict(self.env, WAKE_REGISTRATION_SECRET="short-secret"))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("32 characters", r.stderr)
         self.assertFalse(self.logged(), "a host command ran before the secret was checked")
 
     def test_env_refuses_a_password_that_the_db_step_would_refuse(self):

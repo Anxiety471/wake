@@ -25,7 +25,9 @@ DELETE /mcp/identity           revoke (200)
 
 All four require `x-registration-secret` (the same secret `POST /agents` uses).
 With no `REGISTRATION_SECRET` configured they answer `404`, not `401`: an
-instance with no operator secret has no operator routes at all.
+instance with no operator secret has no operator routes at all. That instance only
+exists behind `WAKE_ALLOW_OPEN_REGISTRATION=1`, since the API refuses to boot with
+no secret otherwise, and it is a dev box: `POST /agents` is open there.
 
 `POST /agents` can no longer take the name `mcp`; a rotation on a revoked
 identity revives it rather than failing.
