@@ -212,7 +212,7 @@ describe('parseDoorbell', () => {
     }
   });
 
-  test('bounds the per-recipient hourly cap', () => {
+  test('bounds the hourly cap', () => {
     expect(parseDoorbellMaxPerHour(undefined)).toBe(30);
     expect(parseDoorbellMaxPerHour('0')).toBe(0);
     expect(parseDoorbellMaxPerHour('7')).toBe(7);
@@ -728,7 +728,7 @@ describe('notifyMessage', () => {
     }
   });
 
-  test('caps wakes per recipient per hour without making a request', async () => {
+  test('caps wakes per sender and recipient per hour without making a request', async () => {
     const stub = startStub(() => ({
       status: 200,
       body: JSON.stringify({ ok: true, seq: 1 }),
@@ -797,6 +797,57 @@ describe('notifyMessage', () => {
       );
       expect(third.deliveries[0]?.delivered).toBe(true);
       expect(stub.requests).toHaveLength(2);
+    } finally {
+      stub.close();
+    }
+  });
+
+  test('one sender cannot spend the hourly budget of another', async () => {
+    const stub = startStub(() => ({
+      status: 200,
+      body: JSON.stringify({ ok: true, seq: 1 }),
+    }));
+    try {
+      const { log, lines } = capture();
+      const config = parseDoorbell({
+        WAKE_DOORBELL_BOTS: JSON.stringify({
+          bob: { botId: 'cmwbot123', secret: SECRET },
+        }),
+        WAKE_DOORBELL_URL: stub.url,
+        WAKE_DOORBELL_MAX_PER_HOUR: '1',
+      });
+      if (config === null) {
+        throw new Error('expected a doorbell config');
+      }
+      const { pool } = recordingPool([
+        { id: '22222222-2222-2222-2222-222222222222', name: 'bob' },
+      ]);
+      const at = new Date('2026-11-15T00:00:00.000Z');
+      const first = await notifyMessage(pool, config, message, log, at);
+      expect(first.deliveries).toEqual([
+        { agent: 'bob', delivered: true, reason: null, attempts: 1 },
+      ]);
+      // Same window, same recipient, a different sender: a different budget,
+      // so it must ring. Keying on the recipient alone refused it.
+      const other = await notifyMessage(
+        pool,
+        config,
+        { ...message, from: 'carol' },
+        log,
+        at,
+      );
+      expect(other.deliveries).toEqual([
+        { agent: 'bob', delivered: true, reason: null, attempts: 1 },
+      ]);
+      // The first sender is still spent.
+      const again = await notifyMessage(pool, config, message, log, at);
+      expect(again.deliveries).toEqual([
+        { agent: 'bob', delivered: false, reason: 'rate_limited', attempts: 0 },
+      ]);
+      expect(stub.requests).toHaveLength(2);
+      expect(
+        lines.filter((line) => line['reason'] === 'rate_limited'),
+      ).toHaveLength(1);
     } finally {
       stub.close();
     }
