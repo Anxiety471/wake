@@ -46,8 +46,12 @@ SKIP_PATHS = {"tests/test_public_defaults.py"}
 
 # An http(s) URL's host: a user:token@ prefix is skipped rather than read as the host.
 # A protocol-relative //host needs no pattern of its own - HOSTNAME below sees its name.
-URL = re.compile(r"https?://(?:[^/@\s]*@)?(\[[0-9a-fA-F:]+\]|[A-Za-z0-9._-]+)")
-HOSTNAME = re.compile(r"\b[A-Za-z0-9-]+\.(?:com|org|net|trade|io|ph|gov|edu)\b")
+# Both patterns ignore case: HTTPS://HOST.TRADE names the same host as the lowercase form, and a
+# case-sensitive pattern read an uppercase URL as none at all.
+URL = re.compile(r"https?://(?:[^/@\s]*@)?(\[[0-9a-fA-F:]+\]|[A-Za-z0-9._-]+)", re.IGNORECASE)
+# A bare name is a heuristic, not a parser: the suffixes below are the ones this project has ever
+# needed to catch, so a name in an unlisted suffix (.cloud, .co.uk) is not a host to this scan.
+HOSTNAME = re.compile(r"\b[A-Za-z0-9-]+\.(?:com|org|net|trade|io|ph|gov|edu)\b", re.IGNORECASE)
 
 
 def allowed(host):
@@ -102,6 +106,17 @@ class PublicHostTests(unittest.TestCase):
 
     def test_only_this_file_is_excluded_from_the_scan(self):
         self.assertEqual(SKIP_PATHS, {"tests/test_public_defaults.py"})
+
+    def test_a_host_in_another_case_is_still_a_host(self):
+        # Both patterns were case-sensitive, so an uppercase URL was read as no URL at all and a
+        # mixed-case name was read as no name.
+        for sample in (
+            "HTTP://BOTS.ACME-CORP.TRADE/MCP",
+            "See Bots.Acme-Corp.Trade for the endpoint.",
+            "Ask POST https://OPS.acme-corp.IO/mcp for the status.",
+        ):
+            with self.subTest(sample=sample):
+                self.assertNotEqual(offenders_in(sample), [], sample)
 
     def test_workflow_files_are_scanned_too(self):
         names = [rel for rel, _ in tracked_files()]
