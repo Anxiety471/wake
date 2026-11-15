@@ -80,7 +80,7 @@ class SkillsTestCase(unittest.TestCase):
         # A helper that no skill mentions is one an agent will not find. wake-wait landed in
         # bin/ops and in no skill until this check existed.
         ops = os.path.join(ROOT, "bin", "ops")
-        helpers = sorted(n for n in os.listdir(ops) if not n.endswith(".md"))
+        helpers = sorted(n for n in os.listdir(ops) if not n.endswith(".md") and os.path.isfile(os.path.join(ops, n)))
         everywhere = "\n".join(text(name) for name in names())
         for helper in helpers:
             with self.subTest(helper=helper):
