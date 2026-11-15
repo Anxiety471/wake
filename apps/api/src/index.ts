@@ -1,5 +1,6 @@
 import { buildApp, parseHost, parsePort } from './app.js';
 import { parseDoorbell } from './doorbell.js';
+import { parseMcp } from './mcp.js';
 import { enforceConfig, enforceRuntimeSecrets } from './options.js';
 import { parseThreadTtlHours } from './threads.js';
 
@@ -10,6 +11,7 @@ if (!databaseUrl) {
 
 const port = parsePort(process.env.PORT);
 const doorbell = enforceConfig(() => parseDoorbell(process.env));
+const mcp = enforceConfig(() => parseMcp(process.env));
 const app = buildApp(databaseUrl, {
   logger: true,
   ...enforceRuntimeSecrets(process.env),
@@ -17,6 +19,7 @@ const app = buildApp(databaseUrl, {
     parseThreadTtlHours(process.env.WAKE_TTL_HOURS),
   ),
   doorbell,
+  mcp,
 });
 
 if (doorbell === null) {
@@ -27,6 +30,15 @@ if (doorbell === null) {
   app.log.info(
     { url: doorbell.url, targets: [...doorbell.targets.keys()] },
     'doorbell ready',
+  );
+}
+
+if (mcp === null) {
+  app.log.info('/mcp disabled: WAKE_MCP_ENABLED is not true');
+} else {
+  app.log.info(
+    { rateLimitPerMinute: mcp.rateLimitPerMinute },
+    '/mcp ready for the single public token',
   );
 }
 
