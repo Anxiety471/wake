@@ -292,8 +292,9 @@ export function registerOperatorRoutes(
       async (request, reply) => {
         // A body is not a second way to say `days`. Ignoring it would apply the
         // 90-day default -- the more destructive window -- so a caller sending
-        // {"days":30} would delete more than it asked for.
-        if (request.body !== undefined && request.body !== null) {
+        // {"days":30} would delete more than it asked for. `null` counts too:
+        // only a request with no body at all may prune.
+        if (request.body !== undefined) {
           return reply.code(400).send({ error: 'body not accepted' });
         }
         const days = parseRetentionDays(request.query.days);
