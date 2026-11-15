@@ -298,8 +298,10 @@ sudo systemctl start wake-api
 
 Migrations run at boot and only forward: a restart applies what is new, and going
 back to an older bundle needs a database restore, not another restart. That is
-what the `pg_dump` above is for: `pg_restore -c -d wake <file>` with the service
-stopped restores the dump taken before the redeploy.
+what the `pg_dump` above is for: with the service stopped,
+`sudo -u postgres pg_restore -c -d wake < /var/backups/wake/<file>.dump` restores
+the dump taken before the redeploy (the shell opens the root-only file, so the
+redirect is what lets postgres read it).
 
 ## Cutover from the CLI store
 
