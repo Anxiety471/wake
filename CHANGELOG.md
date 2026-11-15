@@ -5,13 +5,55 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ## [Unreleased]
 
+### Added
+
+- **The other four operator helpers, generalised.** `wake-gate-check` reviews a gate artifact
+  (hash, size, its selftest, an adversarial harness, an e2e run in a copied checkout) and
+  `wake-shape-check` checks every command a wake copy builds against that gate's matcher, so a
+  shape the gate would refuse is caught before it turns a call into a silent no-op.
+  `wake-deploy` installs a checkout's scripts — core files, `wake_config.py`, every helper — into
+  a prefix locally or on an `ssh:DEST` host as one tar stream and verifies the copy there;
+  `wake-host-deploy` puts the API on a host as a native systemd service in idempotent steps
+  (`db`, `user`, `build`, `install`, `env`, `unit`, `status`, `log`), with `WAKE_DB_PASSWORD` and
+  `WAKE_REGISTRATION_SECRET` read from the environment and written through stdin so they never
+  reach a command line or the output. Every host-specific value is a `WAKE_*` variable now, and
+  `tests/test_ops_deploy.py` drives all four with a stubbed `ssh`, host runner and builder.
+  Loading a helper or a gate is `compile()` plus `exec`, never a loader import, so a run leaves
+  no `__pycache__` behind: a clean checkout stays clean, and a check that lists `bin/ops` sees
+  the helpers and nothing else. The suite passes `PYTHONDONTWRITEBYTECODE=1` for the same reason.
+- **`bin/ops` shellcheck covers the shell helpers only.** `ci.yml` and the README name the five
+  bash helpers instead of a glob, and `tests/test_ops_scripts.py` fails if a Python helper is
+  handed to shellcheck or a shell helper is left out.
+
 ### Fixed
 
-- **The `0.2.0` note on `wake-pingall` names two cases it never had.** It says `""` and
-  `"   "` printed `started:` and asked nobody. Neither reaches that line: both exit 2 with
-  `wake-pingall: no alias left to ping` and ask no one. Only `"a b"` (which asks two bots,
-  `a` and `b`) and `"--"` (which asks a bot called `--` and writes `--.log`) printed
-  `started:`. Measured on the `0.2.0` code; that section stays as released.
+- **`wake-host-deploy` could install a bundle it never built.** `install` took the newest
+  `/tmp/wake-build-*` by mtime, so a stale directory - or one planted by another local user - was
+  installed as root. `build` now records its artifact under `WAKE_DEPLOY_STATE` (0700 directory,
+  0600 pointer, and it must be a private directory of yours) and `install` reads only that record.
+  The same step staged migrations in `/tmp/wake-*.sql` and copied them with a glob, so anything
+  matching the glob became an installed migration while a migration the checkout no longer had
+  stayed forever; they now travel as one base64 tar stream with exact names, a name that is not a
+  migration name is refused, and a `.sql` the checkout no longer has is removed. `user` creates the
+  group before `useradd --gid wake` (which failed on a clean host, at the second documented step),
+  `install --dry-run` no longer exits on an empty `command -v node`, and `env` merges instead of
+  overwriting: lines the operator added stay, and `WAKE_MCP_ENABLED` comes from the environment
+  with a default of false, so a deploy does not republish a halted `/mcp`.
+- **The shellcheck step listed its own targets.** `bin/ops/wake-wait` was not shellchecked the day
+  it landed. CI and the README now filter `bin/ops/wake-*` by shebang, so a new bash helper is
+  covered without an edit, and a test proves the filter picks exactly the bash helpers.
+- **`wake-deploy` now renames each file into place.** A wake running from the prefix could exec a
+  half-written script; it copies to `.new` and `os.replace`s it.
+
+### Security
+
+- **`wake-pingall` keeps every alias a bot name before it becomes a path or an argument.**
+  `wake-pingall "a b"` asked two bots called `a` and `b`, and `--` asked a bot called `--`
+  and wrote `--.log`, because `LIST=$*` re-split the names on whitespace; `""` and `"   "`
+  exited 2 with `no alias left to ping` and asked nobody. The aliases are kept as given; a
+  blank one and one that starts with a hyphen are named and skipped like any other bad
+  alias, with exit 2, and the refusal shipped in #36 (`../escape`, `.hidden`, `a/b`, `/abs`,
+  from arguments and from the registry) now has tests.
 
 ## [0.2.0] - 2026-11-15
 
@@ -33,13 +75,6 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   documentation and defaults. One code default moved with them: `deploy/ops/mcp-verify.py`
   names `example.com` when no URL is passed, and an explicit URL argument behaves as
   before.
-- **`wake-pingall` keeps every alias a bot name before it becomes a path or an argument.**
-  `wake-pingall ""`, `"   "` and `"a b"` printed `started:` and asked nobody (the last one
-  asked two bots called `a` and `b`), and `--` asked a bot called `--`, because `LIST=$*`
-  re-split the names on whitespace. The aliases are kept as given; a blank one and one that
-  starts with a hyphen are named and skipped like any other bad alias, with exit 2, and the
-  refusal shipped in #36 (`../escape`, `.hidden`, `a/b`, `/abs`, from arguments and from the
-  registry) now has tests.
 
 ### Fixed
 
@@ -67,23 +102,6 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   no README names; with only that file on the bytes before this change, 14 checks fail.
   `wake-pingall` also refuses an alias that is not letters, digits, hyphen or underscore, so
   `<log dir>/<alias>.log` cannot be written outside the log directory.
-- **The other four operator helpers, generalised.** `wake-gate-check` reviews a gate artifact
-  (hash, size, its selftest, an adversarial harness, an e2e run in a copied checkout) and
-  `wake-shape-check` checks every command a wake copy builds against that gate's matcher, so a
-  shape the gate would refuse is caught before it turns a call into a silent no-op.
-  `wake-deploy` installs a checkout's scripts — core files, `wake_config.py`, every helper — into
-  a prefix locally or on an `ssh:DEST` host as one tar stream and verifies the copy there;
-  `wake-host-deploy` puts the API on a host as a native systemd service in idempotent steps
-  (`db`, `user`, `build`, `install`, `env`, `unit`, `status`, `log`), with `WAKE_DB_PASSWORD` and
-  `WAKE_REGISTRATION_SECRET` read from the environment and written through stdin so they never
-  reach a command line or the output. Every host-specific value is a `WAKE_*` variable now, and
-  `tests/test_ops_deploy.py` drives all four with a stubbed `ssh`, host runner and builder.
-  Loading a helper or a gate is `compile()` plus `exec`, never a loader import, so a run leaves
-  no `__pycache__` behind: a clean checkout stays clean, and a check that lists `bin/ops` sees
-  the helpers and nothing else. The suite passes `PYTHONDONTWRITEBYTECODE=1` for the same reason.
-- **`bin/ops` shellcheck covers the shell helpers only.** `ci.yml` and the README name the five
-  bash helpers instead of a glob, and `tests/test_ops_scripts.py` fails if a Python helper is
-  handed to shellcheck or a shell helper is left out.
 - **Three agent skills under `skills/`.** `wake-ops` covers the operator helpers (a scratch
   database, the HTTP end-to-end run, keys, a fleet ping, the two installers and a gate
   review); `wake-mcp` covers the stdio bridge, the public `/mcp` endpoint and its single
@@ -222,23 +240,6 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
-- **`wake-host-deploy` could install a bundle it never built.** `install` took the newest
-  `/tmp/wake-build-*` by mtime, so a stale directory - or one planted by another local user - was
-  installed as root. `build` now records its artifact under `WAKE_DEPLOY_STATE` (0700 directory,
-  0600 pointer, and it must be a private directory of yours) and `install` reads only that record.
-  The same step staged migrations in `/tmp/wake-*.sql` and copied them with a glob, so anything
-  matching the glob became an installed migration while a migration the checkout no longer had
-  stayed forever; they now travel as one base64 tar stream with exact names, a name that is not a
-  migration name is refused, and a `.sql` the checkout no longer has is removed. `user` creates the
-  group before `useradd --gid wake` (which failed on a clean host, at the second documented step),
-  `install --dry-run` no longer exits on an empty `command -v node`, and `env` merges instead of
-  overwriting: lines the operator added stay, and `WAKE_MCP_ENABLED` comes from the environment
-  with a default of false, so a deploy does not republish a halted `/mcp`.
-- **The shellcheck step listed its own targets.** `bin/ops/wake-wait` was not shellchecked the day
-  it landed. CI and the README now filter `bin/ops/wake-*` by shebang, so a new bash helper is
-  covered without an edit, and a test proves the filter picks exactly the bash helpers.
-- **`wake-deploy` now renames each file into place.** A wake running from the prefix could exec a
-  half-written script; it copies to `.new` and `os.replace`s it.
 - **The doorbell's hourly cap keyed on the recipient alone**, so one sender's 30 wakes made another
   sender's first wake to the same bot `rate_limited`: message stored, no ring, and the API has no
   `--force`. The key is now `sender:recipient`: the CLI's number, but a deliberate divergence from
