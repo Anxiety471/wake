@@ -7,8 +7,13 @@ without one — and a secret is proven to travel through stdin, never through st
 or a command line.
 """
 
+import base64
+import importlib.machinery
+import importlib.util
+import io
 import os
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -28,6 +33,31 @@ def write(path, body, executable=False):
     if executable:
         os.chmod(path, 0o755)
     return path
+
+
+def load_host_deploy():
+    """Import bin/ops/wake-host-deploy as a module, to test one pure function of it."""
+    loader = importlib.machinery.SourceFileLoader("wake_host_deploy", os.path.join(OPS, "wake-host-deploy"))
+    spec = importlib.util.spec_from_loader("wake_host_deploy", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def make_build(directory, body="export const built = 1\n"):
+    """A build directory shaped like the one `build` makes: private, with index.mjs."""
+    build = os.path.join(directory, "wake-build-mine")
+    os.makedirs(build)
+    os.chmod(build, 0o700)
+    with open(os.path.join(build, "index.mjs"), "w", encoding="utf-8") as f:
+        f.write(body)
+    return build
+
+
+def record(state, build):
+    os.makedirs(state, exist_ok=True)
+    with open(os.path.join(state, "last-build"), "w", encoding="utf-8") as f:
+        f.write(build + "\n")
 
 
 class GateCheckTestCase(unittest.TestCase):
@@ -210,6 +240,110 @@ class HostDeployTestCase(unittest.TestCase):
         for step in ("db", "user", "build", "install", "env", "unit", "status", "log"):
             self.assertIn(step, r.stdout)
 
+    def test_the_user_step_makes_the_group_before_the_account(self):
+        # On a clean host, `useradd --gid wake` fails with "group 'wake' does not exist", so the
+        # documented order stopped at its second step and nothing after it could run.
+        r = run("wake-host-deploy", "user", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.logged()
+        self.assertIn("getent group wake >/dev/null || sudo -n groupadd --system wake", log)
+        self.assertLess(log.index("groupadd"), log.index("useradd"), "the group must exist first")
+
+    def test_install_refuses_a_build_it_did_not_make(self):
+        # install used to take the newest /tmp/wake-build-* by mtime. A planted directory won.
+        state = os.path.join(self.dir, "state")
+        planted = os.path.join(self.dir, "wake-build-planted")
+        os.makedirs(planted)
+        with open(os.path.join(planted, "index.mjs"), "w", encoding="utf-8") as f:
+            f.write("planted payload")
+        env = dict(self.env, WAKE_DEPLOY_STATE=state, TMPDIR=self.dir)
+        r = run("wake-host-deploy", "install", env=env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no build recorded", r.stderr)
+        self.assertNotIn("planted payload", self.logged())
+
+    def test_install_takes_the_recorded_build(self):
+        state = os.path.join(self.dir, "state")
+        build = make_build(self.dir, "export const mine = 1\n")
+        record(state, build)
+        env = dict(self.env, WAKE_DEPLOY_STATE=state, WAKE_NODE="/usr/bin/node", WAKE_REPO=self.dir)
+        r = run("wake-host-deploy", "install", env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("export const mine = 1", self.logged())
+
+    def test_install_refuses_a_recorded_build_that_is_not_private(self):
+        state = os.path.join(self.dir, "state")
+        build = make_build(self.dir)
+        os.chmod(build, 0o755)
+        record(state, build)
+        env = dict(self.env, WAKE_DEPLOY_STATE=state, WAKE_NODE="/usr/bin/node")
+        r = run("wake-host-deploy", "install", env=env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not a private directory", r.stderr)
+
+    def test_dry_run_install_needs_no_build_and_no_node(self):
+        # Both branches used to exit 1: no build found, and `command -v node` empty under dry-run.
+        env = dict(self.env, WAKE_DEPLOY_STATE=os.path.join(self.dir, "state"))
+        r = run("wake-host-deploy", "install", "--dry-run", env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("<build>/index.mjs", r.stdout)
+        self.assertFalse(os.path.exists(self.log), "dry run reached the host")
+
+    def test_migrations_arrive_as_one_stream_with_no_tmp_staging(self):
+        state = os.path.join(self.dir, "state")
+        build = make_build(self.dir)
+        record(state, build)
+        checkout = os.path.join(self.dir, "checkout")
+        migrations = os.path.join(checkout, "apps", "api", "src", "migrations")
+        os.makedirs(migrations)
+        for name in ("001_init.sql", "002_threads.sql"):
+            with open(os.path.join(migrations, name), "w", encoding="utf-8") as f:
+                f.write("select 1;\n")
+        env = dict(self.env, WAKE_DEPLOY_STATE=state, WAKE_NODE="/usr/bin/node", WAKE_REPO=checkout)
+        r = run("wake-host-deploy", "install", env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.logged()
+        self.assertNotIn("/tmp/wake-", log, "a /tmp staging name is back")
+        self.assertIn("base64 -d | sudo -n tar -x --no-same-owner -C /opt/wake/migrations", log)
+        self.assertIn('case " 001_init.sql 002_threads.sql " in', log, "stale migrations are not pruned")
+        payload = log.split("base64 -d | sudo -n tar -x --no-same-owner -C /opt/wake/migrations", 1)[1]
+        payload = payload.split("\n--\n", 1)[0]
+        stream = base64.b64decode(payload.strip())
+        with tarfile.open(fileobj=io.BytesIO(stream)) as tar:
+            self.assertEqual(sorted(tar.getnames()), ["001_init.sql", "002_threads.sql"])
+
+    def test_install_refuses_a_migration_name_it_cannot_trust(self):
+        state = os.path.join(self.dir, "state")
+        build = make_build(self.dir)
+        record(state, build)
+        checkout = os.path.join(self.dir, "checkout")
+        migrations = os.path.join(checkout, "apps", "api", "src", "migrations")
+        os.makedirs(migrations)
+        with open(os.path.join(migrations, "a b.sql"), "w", encoding="utf-8") as f:
+            f.write("select 1;\n")
+        env = dict(self.env, WAKE_DEPLOY_STATE=state, WAKE_NODE="/usr/bin/node", WAKE_REPO=checkout)
+        r = run("wake-host-deploy", "install", env=env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not a migration name", r.stderr)
+
+    def test_env_merge_keeps_what_the_operator_added(self):
+        merge = load_host_deploy().merge_env
+        existing = "DATABASE_URL=postgres://old\nWAKE_RATE_LIMIT=5\nWAKE_MCP_ENABLED=true\n# a note the operator left\n"
+        merged = merge(existing, {"DATABASE_URL": "postgres://new", "WAKE_MCP_ENABLED": "false"})
+        self.assertIn("DATABASE_URL=postgres://new", merged)
+        self.assertIn("WAKE_RATE_LIMIT=5", merged)
+        self.assertIn("WAKE_MCP_ENABLED=false", merged)
+        self.assertEqual(merged.count("WAKE_MCP_ENABLED="), 1)
+        self.assertIn("# a note the operator left", merged)
+
+    def test_env_writes_mcp_off_unless_the_operator_says_on(self):
+        r = run("wake-host-deploy", "env", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("WAKE_MCP_ENABLED=false", self.logged())
+        r = run("wake-host-deploy", "env", env=dict(self.env, WAKE_MCP_ENABLED="true"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("WAKE_MCP_ENABLED=true", self.logged().split("WAKE_MCP_ENABLED=false")[-1])
+
     def test_the_env_file_is_written_through_stdin_and_never_printed(self):
         r = run("wake-host-deploy", "env", env=self.env)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -251,6 +385,16 @@ class HostDeployTestCase(unittest.TestCase):
         self.assertIn("install -d -o root -g wake -m 750 /etc/wake", r.stdout)
         self.assertNotIn(self.secret, r.stdout + r.stderr)
         self.assertFalse(os.path.exists(self.log), "dry run reached the host")
+
+    def test_shape_check_says_it_executes_the_gate(self):
+        # exec_module runs the gate in this process: "nothing here runs a host command" was true of
+        # hosts and false of the artifact.
+        with open(os.path.join(OPS, "wake-shape-check"), encoding="utf-8") as f:
+            body = f.read()
+        self.assertIn("with your privileges", body)
+        r = run("wake-shape-check", "--help", env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("usage: wake-shape-check", r.stdout)
 
 
 if __name__ == "__main__":
