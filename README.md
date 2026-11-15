@@ -134,6 +134,8 @@ Every setting is an environment variable; the same names can be set in `~/.confi
 | variable | default | meaning |
 |---|---|---|
 | `WAKE_API_BASE` | *(none, required to send)* | webhook prefix; wake POSTs to `$WAKE_API_BASE/<bot-id>/webhook` |
+| `WAKE_MCP_API` | `http://127.0.0.1:3001` | API base for the `wake-mcp` stdio bridge; it POSTs to `$WAKE_MCP_API/mcp`. `https` for any non-loopback host: the token is a bearer credential |
+| `WAKE_MCP_TOKEN` | *(empty: legacy two-tool mode)* | the `mcp` identity's token; with one set, `wake-mcp` bridges to `/mcp` |
 | `WAKE_CONFIG_DIR` | `~/.config/wake` | where `config.env`, `bots.tsv` and keys live by default |
 | `WAKE_CONFIG` | `$WAKE_CONFIG_DIR/config.env` | config file path |
 | `WAKE_REGISTRY` | `$WAKE_CONFIG_DIR/bots.tsv` | bot registry |
@@ -228,7 +230,7 @@ wake --all "read-only window until 18:00"   # one message to every open bot; pri
 
 - `wake-run [--bot BOT] [--only-errors] [--name label] -- cmd...` — run a command, wake a bot when it ends (`ok` on exit 0, `error` otherwise). Child commands see `WAKE_DEPTH+1`.
 - `wake-hook claude-code Stop|StopFailure` (hook JSON on stdin) or `wake-hook codex '<json>'` — turn coding-agent hook events into wakes. Off unless `WAKE_HOOK=errors|all`.
-- `wake-mcp` — MCP stdio server with tools `wake_bot` and `wake_list`.
+- `wake-mcp` — MCP stdio server. With `WAKE_MCP_TOKEN` set it is a bridge to `POST /mcp`, so a stdio-only client gets the same ten thread tools, rate limit, audit and private-bot wall as an HTTP client; without one it keeps the legacy `wake_bot` and `wake_list` tools that shell out to `wake`.
 - `wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]` — session inbox plumbing for a session extension. `<hash>` is 6 to 32 lowercase hex characters; `read` only accepts `$WAKE_STATE_DIR/inbox/<hash>.jsonl`.
 - [`docs/agent-skill/SKILL.md`](docs/agent-skill/SKILL.md) — a skill file that teaches an agent when and how to use wake (`SKILL_DIR=... ./install.sh`).
 
