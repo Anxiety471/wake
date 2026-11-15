@@ -44,7 +44,7 @@ The live scripts had hard-coded paths and identities; these are now configuratio
 - **Legacy form** `wake <source> <event> [detail]` reports to `WAKE_BOT` (default `coordinator`) instead of a hard-coded alias; `wake-hook` and `wake-run` use the same default.
 - **Hint texts** no longer name specific people or bots.
 - **Shell paths** built from config are quoted with `shlex.quote`.
-- **User-Agent** is `wake-cli/0.1.0` instead of `wake-cli/2.1`.
+- **User-Agent** is `wake-cli/0.2.0` instead of `wake-cli/2.1`.
 - **Deploy script dropped.** The site-specific deploy script (copied files to named users' homes, patched the host copy with string replacement) is replaced by `install.sh` plus config. Host deployments set `WAKE_REGISTRY=$WAKE_STATE_DIR/bots.tsv` and leave `WAKE_HOSTOPS` empty.
 
 Migrating the live setup to this version needs a private `config.env` (state dir, host bridge path, key helper name, API base, default bot, and `WAKE_REGISTRY_GROUP` if the old group should stay). Keep those values out of the repo.
