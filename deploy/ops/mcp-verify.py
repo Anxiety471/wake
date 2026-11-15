@@ -18,7 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-URL = sys.argv[1] if len(sys.argv) > 1 else "https://bots.bocchi.trade/mcp"
+URL = sys.argv[1] if len(sys.argv) > 1 else "https://bots.example.com/mcp"
 TOKEN_FILE = os.environ.get("WAKE_TOKEN_FILE", "/etc/wake/mcp-token")
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 TIMEOUT = 20

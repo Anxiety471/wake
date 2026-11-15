@@ -22,7 +22,7 @@ NAMES = sorted(n for n in os.listdir(OPS) if not n.endswith(".md"))
 DOCS = (os.path.join(OPS, "README.md"), os.path.join(ROOT, "config.example.env"))
 
 # Paths and names that belong to one operator's machine, never to this repo.
-PERSONAL = ("/home/", "/root/", "/Users/", "/tmp/pgbuild", "rakazo", "hitori", "Anxiety471")
+PERSONAL = ("/home/", "/root/", "/Users/", "/tmp/pgbuild", "example-site", "example-owner", "example-handle")
 
 # A real hostname, which CONTRIBUTING keeps out of these files the same way it keeps out an IP.
 # The TLD list is deliberately short: a placeholder (example.com) is allowed, a live name is not.
@@ -131,7 +131,7 @@ class OpsFilesTestCase(unittest.TestCase):
                     )
 
     def test_the_hostname_guard_is_not_a_no_op(self):
-        for sample in ("bots.bocchi.trade", "vps01.contabo.com", "wake.internal", "h.some-hospital.org"):
+        for sample in ("bots.example.com", "vps01.example.com", "wake.internal", "h.some-hospital.example.org"):
             with self.subTest(sample=sample):
                 self.assertRegex(sample, HOSTNAME)
 

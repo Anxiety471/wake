@@ -153,9 +153,9 @@ identity row survives the teardown, so re-publishing starts at `rotate` (§6.1),
 not `create`.
 
 The API has no DNS name of its own yet, so `/mcp` rides the host that already has a
-certificate: a location in `/etc/nginx/sites-available/bots-bocchi`. Two backups sit
-next to it: `bots-bocchi.bak-2026-11-15` is the file before any of this (restore it
-to unpublish) and `bots-bocchi.prehalt-2026-11-15` keeps the old prefix-match block
+certificate: a location in `/etc/nginx/sites-available/wake-mcp`. Two backups sit
+next to it: `wake-mcp.bak-2026-11-15` is the file before any of this (restore it
+to unpublish) and `wake-mcp.prehalt-2026-11-15` keeps the old prefix-match block
 for reference only — do not restore that one, it is the version this section
 replaces.
 
@@ -230,7 +230,7 @@ teardown is §6.3's `POST /mcp`, not revoke's.
 ### 6.2 Verify it
 
 ```sh
-sudo /opt/wake/ops/mcp-verify.py https://bots.bocchi.trade/mcp
+sudo /opt/wake/ops/mcp-verify.py https://bots.example.com/mcp
 # initialize: 200 protocol=2025-06-18 server=wake
 # tools/list: 200 count=10
 # wake_bots: 200 isError=False text=...
@@ -243,7 +243,7 @@ the new host), and refuses plain `http` to anything but this machine.
 ### 6.3 Unpublish and prove it
 
 ```sh
-sudo cp /etc/nginx/sites-available/bots-bocchi.bak-2026-11-15 /etc/nginx/sites-available/bots-bocchi
+sudo cp /etc/nginx/sites-available/wake-mcp.bak-2026-11-15 /etc/nginx/sites-available/wake-mcp
 sudo nginx -t && sudo systemctl reload nginx
 sudo /opt/wake/ops/mcp-identity.py revoke
 sudo systemctl disable --now wake-api
@@ -252,8 +252,8 @@ sudo systemctl disable --now wake-api
 Prove it with a POST, and with the port:
 
 ```sh
-curl -s -o /dev/null -w '%{http_code}\n' -X POST https://bots.bocchi.trade/mcp             # 404
-curl -s -o /dev/null -w '%{http_code}\n' -X POST https://bots.bocchi.trade/mcp/audit/prune # 404
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://bots.example.com/mcp             # 404
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://bots.example.com/mcp/audit/prune # 404
 sudo ss -ltnp 'sport = :3001'                                                              # empty
 ```
 
@@ -269,9 +269,9 @@ unpublished.
 - Cloudflare fronts that hostname and refuses the literal `Python-urllib`
   User-Agent with `error code: 1010`, before nginx is reached. Any named
   User-Agent passes, which is why the scripts send `wake-verify/1`. A dedicated
-  `wake.bocchi.trade` record needs a working Cloudflare token; the local one
-  currently fails `user/tokens/verify` with 401. That is the Cloudflare Manager's
-  item, not a change in this repo.
+  `wake.example.com` record needs a working Cloudflare token; the one on the deploy
+  host currently fails `user/tokens/verify` with 401. That is an infrastructure item
+  outside this repo.
 - `mcp_audit.remote` records `127.0.0.1`, the proxy, until `trustProxy` is enabled.
   Every request is one row; prune with `POST /mcp/audit/prune?days=90` and the
   registration secret.
