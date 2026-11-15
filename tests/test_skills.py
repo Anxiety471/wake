@@ -76,7 +76,6 @@ class SkillsTestCase(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIn(f"skills/{name}", readme, f"{name} is not in the README table")
 
-
     def test_every_ops_helper_is_named_in_a_skill(self):
         # A helper that no skill mentions is one an agent will not find. wake-wait landed in
         # bin/ops and in no skill until this check existed.
@@ -86,6 +85,7 @@ class SkillsTestCase(unittest.TestCase):
         for helper in helpers:
             with self.subTest(helper=helper):
                 self.assertIn(helper, everywhere, f"bin/ops/{helper} is not named in any skill")
+
 
 if __name__ == "__main__":
     unittest.main()
