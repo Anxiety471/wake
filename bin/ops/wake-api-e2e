@@ -1,0 +1,235 @@
+#!/bin/bash
+# desc: run the wake API on a throwaway database and prove the public surface over real HTTP: /mcp, the inbox, deliveries, audit prune, the stdio bridge. Needs bun, jq, curl and wake-pg; reads WAKE_REPO, WAKE_E2E_DB, WAKE_E2E_PORT, WAKE_PG_PORT
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+REPO=${WAKE_REPO:-$ROOT}
+DB=${WAKE_E2E_DB:-wake_e2e}
+PORT=${WAKE_E2E_PORT:-3599}
+PG=${WAKE_PG:-wake-pg}
+
+# Every file this run writes - request bodies, the two bot tokens, the MCP token - lives in one
+# private directory: 0700 from mktemp, umask 077 for what is created inside it, gone on exit even
+# when a step fails. Fixed names under /tmp were world-readable, were never removed (a live
+# bearer token stayed behind), and a pre-planted symlink could redirect one into any file the
+# caller can write.
+umask 077
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/wake-e2e.XXXXXX")
+LOG=${WAKE_E2E_LOG:-$WORK/server.log}
+
+cleanup() {
+  rc=$?
+  if [ -n "${SERVER:-}" ]; then
+    kill "$SERVER" 2>/dev/null || true
+    wait "$SERVER" 2>/dev/null || true
+  fi
+  if [ "$rc" -ne 0 ] && [ -s "$LOG" ]; then
+    echo "--- API log (last 40 lines) ---" >&2
+    tail -n 40 "$LOG" >&2
+  fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+# A fresh secret every run: 48 hex characters, over the 32 the API requires, and never a literal.
+SECRET=${WAKE_E2E_SECRET:-$(openssl rand -hex 24)}
+
+# The checkout is the cheapest thing to check, so it goes first: nothing below runs without it.
+[ -d "$REPO/apps/api" ] || { echo "wake-api-e2e: no wake checkout at $REPO (set WAKE_REPO)" >&2; exit 1; }
+for tool in bun jq curl openssl python3; do
+  command -v "$tool" >/dev/null || { echo "wake-api-e2e: $tool not found on PATH" >&2; exit 1; }
+done
+command -v "$PG" >/dev/null || { echo "wake-api-e2e: $PG not found; run OPS=1 ./install.sh or put bin/ops on PATH" >&2; exit 1; }
+
+cd "$REPO"
+"$PG" dropdb "$DB" >/dev/null 2>&1 || true
+"$PG" createdb "$DB" >/dev/null
+
+export DATABASE_URL=${WAKE_E2E_DATABASE_URL:-postgres://postgres@127.0.0.1:${WAKE_PG_PORT:-5433}/$DB}
+export PORT
+export REGISTRATION_SECRET="$SECRET"
+export WAKE_MCP_ENABLED=true
+export WAKE_MCP_RATE_LIMIT_PER_MINUTE=0
+export WAKE_DOORBELL_BOTS=""
+
+bun apps/api/src/index.ts >"$LOG" 2>&1 &
+SERVER=$!
+
+for _ in $(seq 1 100); do
+  if curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then break; fi
+  sleep 0.2
+done
+curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null
+
+api() { curl -sS -o "$2" -w '%{http_code}' "$@"; }
+
+op() { printf 'x-registration-secret: %s' "$SECRET"; }
+
+# Register two bots.
+curl -fsS -X POST "http://127.0.0.1:$PORT/agents" -H "$(op)" \
+  -H 'content-type: application/json' -d '{"name":"bob"}' >"$WORK/e2e-bob.json"
+curl -fsS -X POST "http://127.0.0.1:$PORT/agents" -H "$(op)" \
+  -H 'content-type: application/json' -d '{"name":"carol"}' >"$WORK/e2e-carol.json"
+
+# Provision the single public identity.
+curl -fsS -X POST "http://127.0.0.1:$PORT/mcp/identity" -H "$(op)" >"$WORK/e2e-mcp.json"
+TOKEN=$(jq -r .token "$WORK/e2e-mcp.json")
+BOB=$(jq -r .token "$WORK/e2e-bob.json")
+
+AUTH="authorization: Bearer $TOKEN"
+ACCEPT='accept: application/json, text/event-stream'
+
+init=$(curl -sS -X POST "http://127.0.0.1:$PORT/mcp" -H "$AUTH" -H "$ACCEPT" \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"1"}}}')
+echo "$init" | jq -e '.result.serverInfo.name == "wake" and .result.protocolVersion == "2025-06-18"' >/dev/null
+echo "PASS initialize"
+
+tools=$(curl -sS -X POST "http://127.0.0.1:$PORT/mcp" -H "$AUTH" -H "$ACCEPT" \
+  -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
+echo "$tools" | jq -e '.result.tools | length == 10' >/dev/null
+echo "PASS tools/list (10 tools)"
+
+ask=$(curl -sS -X POST "http://127.0.0.1:$PORT/mcp" -H "$AUTH" -H "$ACCEPT" \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"wake_ask","arguments":{"to":"bob","body":"e2e question"}}}')
+echo "$ask" | jq -e '.result.isError == false' >/dev/null
+THREAD=$(echo "$ask" | jq -r '.result.content[0].text | fromjson | .threadId')
+echo "PASS wake_ask ($THREAD)"
+
+inbox=$(curl -sS "http://127.0.0.1:$PORT/inbox" -H "authorization: Bearer $BOB")
+echo "$inbox" | jq -e '.messages | length == 1' >/dev/null
+echo "PASS bob inbox has the ask"
+
+unread=$(curl -sS -X POST "http://127.0.0.1:$PORT/inbox/read" -H "authorization: Bearer $BOB" \
+  -H 'content-type: application/json' -d "{\"ids\":[\"$(echo "$inbox" | jq -r '.messages[0].id')\"]}")
+echo "$unread" | jq -e '.read | length == 1' >/dev/null
+echo "PASS bob read the ask"
+
+reply=$(curl -sS -X POST "http://127.0.0.1:$PORT/threads/$THREAD/reply" -H "authorization: Bearer $BOB" \
+  -H 'content-type: application/json' -d '{"body":"e2e answer"}')
+echo "$reply" | jq -e '.threadId' >/dev/null
+
+read=$(curl -sS -X POST "http://127.0.0.1:$PORT/mcp" -H "$AUTH" -H "$ACCEPT" \
+  -H 'content-type: application/json' \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"wake_read_thread\",\"arguments\":{\"threadId\":\"$THREAD\"}}}")
+echo "$read" | jq -e '.result.content[0].text | fromjson | .messages | length == 2' >/dev/null
+echo "PASS wake_read_thread shows both messages"
+
+code=$(curl -sS -o "$WORK/e2e-get.json" -w '%{http_code}' "http://127.0.0.1:$PORT/mcp" -H "$AUTH")
+test "$code" = "405"
+echo "PASS GET /mcp is 405"
+
+# Delivery outcomes over real HTTP: the doorbell is off here, so a stored
+# message has no rows and answers an empty list; another token gets a 404.
+sent=$(curl -sS -X POST "http://127.0.0.1:$PORT/messages" -H "authorization: Bearer $BOB" \
+  -H 'content-type: application/json' -d '{"to":"carol","body":"plain"}')
+MSG=$(echo "$sent" | jq -r .id)
+deliveries=$(curl -sS "http://127.0.0.1:$PORT/messages/$MSG/deliveries" -H "authorization: Bearer $BOB")
+echo "$deliveries" | jq -e '.deliveries == []' >/dev/null
+code=$(curl -sS -o "$WORK/e2e-del.json" -w '%{http_code}' "http://127.0.0.1:$PORT/messages/$MSG/deliveries" \
+  -H "authorization: Bearer $TOKEN")
+test "$code" = "404"
+echo "PASS deliveries: empty for the sender, 404 for anyone else"
+
+# Private bot: hidden and unreachable.
+curl -fsS -X PUT "http://127.0.0.1:$PORT/agents/bob/private" -H "$(op)" \
+  -H 'content-type: application/json' -d '{"private":true}' >/dev/null
+bots=$(curl -sS -X POST "http://127.0.0.1:$PORT/mcp" -H "$AUTH" -H "$ACCEPT" \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"wake_bots","arguments":{}}}')
+echo "$bots" | jq -e '.result.content[0].text | fromjson | [.agents[].name] | index("bob") == null' >/dev/null
+refused=$(curl -sS -X POST "http://127.0.0.1:$PORT/mcp" -H "$AUTH" -H "$ACCEPT" \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"wake_ask","arguments":{"to":"bob","body":"let me in"}}}')
+echo "$refused" | jq -e '.result.isError == true and (.result.content[0].text | startswith("HTTP 404"))' >/dev/null
+echo "PASS private bot hidden and refused"
+
+audit=$("$PG" psql -d "$DB" -tAc "SELECT count(*) FROM mcp_audit")
+test "$audit" -ge 6
+echo "PASS mcp_audit rows: $audit"
+
+bad=$(curl -sS -o "$WORK/e2e-bad.json" -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/mcp" \
+  -H "authorization: Bearer $BOB" -H "$ACCEPT" -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":7,"method":"ping"}')
+test "$bad" = "401"
+echo "PASS bot token refused on /mcp (401)"
+
+# Round-2 follow-ups, over real HTTP.
+code=$(curl -sS -o "$WORK/e2e-prune.json" -w '%{http_code}' -X POST \
+  "http://127.0.0.1:$PORT/mcp/audit/prune" -H "$(op)")
+test "$code" = "200"
+jq -e '.deleted >= 0 and (.before | length) > 0' "$WORK/e2e-prune.json" >/dev/null
+code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  "http://127.0.0.1:$PORT/mcp/audit/prune?days=30" -H "$(op)")
+test "$code" = "200"
+code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  "http://127.0.0.1:$PORT/mcp/audit/prune?days=0" -H "$(op)")
+test "$code" = "400"
+code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+  "http://127.0.0.1:$PORT/mcp/audit/prune")
+test "$code" = "401"
+echo "PASS prune: 200 default, 200 ?days=30, 400 ?days=0, 401 without the secret"
+before_rows=$("$PG" psql -d "$DB" -tAc "SELECT count(*) FROM mcp_audit")
+code=$(curl -sS -o "$WORK/e2e-prune-body.json" -w '%{http_code}' -X POST \
+  "http://127.0.0.1:$PORT/mcp/audit/prune" -H "$(op)" \
+  -H 'content-type: application/json' -d '{"days":30}')
+test "$code" = "400"
+jq -e '.error == "body not accepted"' "$WORK/e2e-prune-body.json" >/dev/null
+after_rows=$("$PG" psql -d "$DB" -tAc "SELECT count(*) FROM mcp_audit")
+test "$before_rows" = "$after_rows"
+echo "PASS prune refuses a body with 400 and deletes nothing ($before_rows rows kept)"
+code=$(curl -sS -o "$WORK/e2e-prune-null.json" -w '%{http_code}' -X POST \
+  "http://127.0.0.1:$PORT/mcp/audit/prune" -H "$(op)" \
+  -H 'content-type: application/json' -d 'null')
+test "$code" = "400"
+after_null=$("$PG" psql -d "$DB" -tAc "SELECT count(*) FROM mcp_audit")
+test "$before_rows" = "$after_null"
+echo "PASS prune refuses a null body too (400, nothing deleted)"
+
+code=$(curl -sS -o "$WORK/e2e-mcp-priv.json" -w '%{http_code}' -X PUT \
+  "http://127.0.0.1:$PORT/agents/mcp/private" -H "$(op)" \
+  -H 'content-type: application/json' -d '{"private":true}')
+test "$code" = "409"
+jq -e '.error == "the public identity cannot be private"' "$WORK/e2e-mcp-priv.json" >/dev/null
+echo "PASS PUT /agents/mcp/private is refused (409)"
+
+IDS=$(python3 -c 'import json;print(json.dumps(["00000000-0000-4000-8000-%012d" % i for i in range(101)]))')
+too_many=$(curl -sS -X POST "http://127.0.0.1:$PORT/mcp" -H "$AUTH" -H "$ACCEPT" \
+  -H 'content-type: application/json' \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"wake_inbox_read\",\"arguments\":{\"ids\":$IDS}}}")
+echo "$too_many" | jq -e '.error.code == -32602 and (.error.message | test("at most 100 ids"))' >/dev/null
+echo "PASS wake_inbox_read refuses 101 ids with -32602"
+
+if grep -q "def run_bridge" "$REPO/bin/wake-mcp"; then
+  # Step 4: the stdio bridge. Drive bin/wake-mcp exactly as a client would.
+  bridge_env=(env -u WAKE_MCP_TOKEN -u WAKE_MCP_API WAKE_CONFIG="$WORK/wake-e2e-missing.env" \
+    WAKE_MCP_API="http://127.0.0.1:$PORT" WAKE_MCP_TOKEN="$TOKEN")
+  printf '%s\n' \
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"1"}}}' \
+    '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+    '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"wake_bots","arguments":{}}}' \
+    | "${bridge_env[@]}" "$REPO/bin/wake-mcp" >"$WORK/e2e-bridge.jsonl"
+  test "$(wc -l <"$WORK/e2e-bridge.jsonl")" = "3"
+  jq -s -e '.[0].result.serverInfo.name == "wake"' "$WORK/e2e-bridge.jsonl" >/dev/null
+  jq -s -e '.[1].result.tools | length == 10' "$WORK/e2e-bridge.jsonl" >/dev/null
+  jq -s -e '.[2].result.isError == false and (.[2].result.content[0].text | fromjson | .agents | length) >= 1' "$WORK/e2e-bridge.jsonl" >/dev/null
+  echo "PASS stdio bridge: initialize, 10 tools, wake_bots over POST /mcp"
+
+  # A stale token is the API's own REST error, not JSON-RPC: the bridge must
+  # answer -32603 on the asking id, or the client waits for a reply it drops.
+  printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/list"}' \
+    | env -u WAKE_MCP_TOKEN -u WAKE_MCP_API WAKE_CONFIG="$WORK/wake-e2e-missing.env" \
+      WAKE_MCP_API="http://127.0.0.1:$PORT" WAKE_MCP_TOKEN="stale-token-not-registered" \
+      "$REPO/bin/wake-mcp" >"$WORK/e2e-bridge-401.jsonl" 2>"$WORK/e2e-bridge-401.err"
+  test "$(wc -l <"$WORK/e2e-bridge-401.jsonl")" = "1"
+  jq -s -e '.[0].id == 9 and .[0].jsonrpc == "2.0" and .[0].error.code == -32603 and (.[0].error.message | startswith("HTTP 401"))' "$WORK/e2e-bridge-401.jsonl" >/dev/null
+  if grep -q "stale-token-not-registered" "$WORK/e2e-bridge-401.jsonl" "$WORK/e2e-bridge-401.err"; then
+    echo "FAIL the bridge echoed its token"; exit 1
+  fi
+  echo "PASS stdio bridge: a stale token answers -32603 on the asking id"
+
+else
+  echo "SKIP stdio bridge (this tree's bin/wake-mcp has no bridge mode)"
+fi
+
+echo "ALL PASS"

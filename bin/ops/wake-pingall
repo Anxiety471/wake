@@ -1,0 +1,35 @@
+#!/bin/bash
+# desc: wake --ask every open bot in the registry at once, one log per bot; arguments pick bots by alias instead. Reads WAKE_REGISTRY, WAKE_PING_LOG_DIR, WAKE_PING_TIMEOUT, WAKE_PING_MESSAGE
+set -u
+
+CFG=${WAKE_CONFIG_DIR:-$HOME/.config/wake}
+# Same default as bin/wake and wake-keys: the registry lives in the config dir.
+REG=${WAKE_REGISTRY:-$CFG/bots.tsv}
+LOG_DIR=${WAKE_PING_LOG_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/wake/pingall}
+WAIT=${WAKE_PING_TIMEOUT:-240}
+MSG=${WAKE_PING_MESSAGE:-ping test: reply with the word pong only}
+
+if [ "$#" -gt 0 ]; then
+    LIST=$*
+else
+    [ -r "$REG" ] || {
+        echo "no registry at $REG (set WAKE_REGISTRY, or pass bot aliases as arguments)" >&2
+        exit 1
+    }
+    LIST=$(awk -F'\t' 'NF >= 4 && $4 == "open" && $1 != "" { printf "%s ", $1 }' "$REG")
+    [ -n "$LIST" ] || {
+        echo "no open bots in $REG" >&2
+        exit 1
+    }
+fi
+
+command -v wake >/dev/null || {
+    echo "wake not found on PATH; run ./install.sh first" >&2
+    exit 1
+}
+
+mkdir -p "$LOG_DIR"
+for alias in $LIST; do
+    nohup wake --ask "$alias" "$MSG" --wait "$WAIT" </dev/null >"$LOG_DIR/$alias.log" 2>&1 &
+done
+echo "started: $LIST(logs in $LOG_DIR)"
