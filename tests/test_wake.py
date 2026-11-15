@@ -116,6 +116,8 @@ class WakeTestCase(unittest.TestCase):
             "WAKE_API_BASE": self.hook.base,
             "WAKE_HOSTOPS": "",
             "WAKE_KEY_HELPER": "wake-test-no-such-helper",
+            # bin/wake imports bin/wake_config.py, so without this every run leaves bin/__pycache__ in the tree
+            "PYTHONDONTWRITEBYTECODE": "1",
             "no_proxy": "*",
         }
 
@@ -146,6 +148,12 @@ class WakeTestCase(unittest.TestCase):
 
     def wake(self, *args, env=None):
         return self.run_bin("wake", *args, env=env)
+
+    def test_every_run_is_told_not_to_cache_bytecode(self):
+        """bin/wake imports bin/wake_config.py at startup, so a run without this writes
+        bin/__pycache__ into the checkout and a clean tree stops being clean after the first test.
+        """
+        self.assertEqual(self.env.get("PYTHONDONTWRITEBYTECODE"), "1")
 
     def put_key(self, bot_id, key="test-key"):
         path = os.path.join(self.keys, bot_id + ".key")

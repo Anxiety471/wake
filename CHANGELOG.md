@@ -48,6 +48,9 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   `WAKE_REGISTRATION_SECRET` read from the environment and written through stdin so they never
   reach a command line or the output. Every host-specific value is a `WAKE_*` variable now, and
   `tests/test_ops_deploy.py` drives all four with a stubbed `ssh`, host runner and builder.
+  Loading a helper or a gate is `compile()` plus `exec`, never a loader import, so a run leaves
+  no `__pycache__` behind: a clean checkout stays clean, and a check that lists `bin/ops` sees
+  the helpers and nothing else. The suite passes `PYTHONDONTWRITEBYTECODE=1` for the same reason.
 - **`bin/ops` shellcheck covers the shell helpers only.** `ci.yml` and the README name the five
   bash helpers instead of a glob, and `tests/test_ops_scripts.py` fails if a Python helper is
   handed to shellcheck or a shell helper is left out.

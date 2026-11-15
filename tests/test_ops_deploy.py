@@ -8,13 +8,12 @@ or a command line.
 """
 
 import base64
-import importlib.machinery
-import importlib.util
 import io
 import os
 import subprocess
 import tarfile
 import tempfile
+import types
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -22,7 +21,11 @@ OPS = os.path.join(ROOT, "bin", "ops")
 
 
 def run(name, *args, env=None):
-    base = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tempfile.mkdtemp(prefix="ops-home-")}
+    base = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": tempfile.mkdtemp(prefix="ops-home-"),
+        "PYTHONDONTWRITEBYTECODE": "1",  # a helper that imports a module must not cache it in the tree
+    }
     base.update(env or {})
     return subprocess.run([os.path.join(OPS, name), *args], capture_output=True, text=True, env=base, timeout=120)
 
@@ -35,13 +38,23 @@ def write(path, body, executable=False):
     return path
 
 
-def load_host_deploy():
-    """Import bin/ops/wake-host-deploy as a module, to test one pure function of it."""
-    loader = importlib.machinery.SourceFileLoader("wake_host_deploy", os.path.join(OPS, "wake-host-deploy"))
-    spec = importlib.util.spec_from_loader("wake_host_deploy", loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
+def load_source(name, path):
+    """Execute a script from disk as a module without writing a bytecode cache.
+
+    SourceFileLoader writes `<dir>/__pycache__` beside the file it loads, which puts
+    bin/ops/__pycache__ into the checkout; compile() plus exec writes nothing but the
+    module object.
+    """
+    module = types.ModuleType(name)
+    module.__file__ = path
+    with open(path, encoding="utf-8") as f:
+        exec(compile(f.read(), path, "exec"), module.__dict__)  # noqa: S102 - the file under test
     return module
+
+
+def load_host_deploy():
+    """Execute bin/ops/wake-host-deploy as a module, to test one pure function of it."""
+    return load_source("wake_host_deploy", os.path.join(OPS, "wake-host-deploy"))
 
 
 def make_build(directory, body="export const built = 1\n"):
@@ -395,6 +408,31 @@ class HostDeployTestCase(unittest.TestCase):
         r = run("wake-shape-check", "--help", env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("usage: wake-shape-check", r.stdout)
+
+
+class NoBytecodeInTheTreeTests(unittest.TestCase):
+    """A loader import wrote `bin/ops/__pycache__` into the working tree.
+
+    A clean checkout then carries an untracked directory, and anything that lists
+    `bin/ops` to find the helpers sees an entry that is not one.
+    """
+
+    def bytecode(self, directory):
+        found = set()
+        for root, _dirs, files in os.walk(directory):
+            found.update(os.path.join(root, name) for name in files if name.endswith((".pyc", ".pyo")))
+        return found
+
+    def test_loading_the_helper_writes_no_bytecode(self):
+        before = self.bytecode(OPS)
+        load_host_deploy()
+        self.assertEqual(self.bytecode(OPS) - before, set(), "loading the helper wrote bytecode into bin/ops")
+
+    def test_the_shape_check_writes_no_bytecode_beside_the_gate(self):
+        gate_dir = tempfile.mkdtemp(prefix="gate-")
+        gate = write(os.path.join(gate_dir, "gate.py"), "ROUTES = []\n\n\ndef match(command):\n    return None\n")
+        load_source("wake_shape_check", os.path.join(OPS, "wake-shape-check")).load_gate(gate)
+        self.assertEqual(sorted(os.listdir(gate_dir)), ["gate.py"], "loading the gate wrote beside it")
 
 
 if __name__ == "__main__":
