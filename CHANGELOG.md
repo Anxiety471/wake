@@ -75,6 +75,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **The reply-token hook matches the reply route by path, anchored.** `request.url` carries the
+  query string, so the unanchored pattern also matched `POST /messages?q=/threads/x/reply`: an
+  unauthenticated request with any `X-Wake-Reply-Token` header passed the `onRequest` hook and
+  reached a handler with no agent, which answered `500` instead of `401`. The pattern is anchored
+  and tested against the path alone, with a test for the bypass string.
+
+- **`bin/wake --reply` sends one credential, not two.** With both `WAKE_AGENT_TOKEN` and
+  `WAKE_REPLY_TOKEN` set, it sent the bearer and the thread token together, and the route reads the
+  bearer first, so the thread token was never spent - against the docs, which say the reply token is
+  sent when there is no agent token. The bearer now wins and the reply token is not sent at all.
+
 - **A refused inbox says so, instead of printing a path to nothing.** `wake-inbox-io` discarded the
   exit status of every host command it ran, so a gate refusal was indistinguishable from success:
   `register` printed an inbox path for a file nothing had created and exited 0, and the session

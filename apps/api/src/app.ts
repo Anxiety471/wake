@@ -95,8 +95,10 @@ const UNAVAILABLE_MESSAGES = [
   'the database system is starting up',
 ];
 
-// POST /threads/:id/reply, the one route a reply token can reach (#93).
-const REPLY_TOKEN_ROUTE = /\/threads\/[^/?]+\/reply(?:\?|$)/;
+// POST /threads/:id/reply, the one route a reply token can reach (#93). Matched
+// against the path alone and anchored: `request.url` carries the query string, so
+// an unanchored test also matched `POST /messages?q=/threads/x/reply`.
+const REPLY_TOKEN_ROUTE = /^\/threads\/[^/?]+\/reply$/;
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -571,9 +573,11 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
         // route verifies and spends the token; nothing else runs unauthenticated.
         const header = request.headers['x-wake-reply-token'];
         const replyToken = Array.isArray(header) ? header[0] : header;
+        const [path] = request.url.split('?');
         if (
           request.method === 'POST' &&
-          REPLY_TOKEN_ROUTE.test(request.url) &&
+          path !== undefined &&
+          REPLY_TOKEN_ROUTE.test(path) &&
           replyToken !== undefined &&
           replyToken !== ''
         ) {

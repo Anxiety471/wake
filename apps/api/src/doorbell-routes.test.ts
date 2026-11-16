@@ -439,6 +439,20 @@ test('a reply token past its expiry is refused', async () => {
   expect(late.json().error).toBe('reply token expired');
 });
 
+test('a query string that looks like the reply route is still unauthenticated', async () => {
+  // request.url keeps the query string, so an unanchored match on it let
+  // POST /messages?q=/threads/x/reply through with agent=null: a 500 from the
+  // handler instead of a 401 from the hook.
+  const bypass = await app.inject({
+    method: 'POST',
+    url: '/messages?q=/threads/abc/reply',
+    headers: { 'x-wake-reply-token': 'not-a-real-token' },
+    payload: { to: 'bob', body: 'hello' },
+  });
+  expect(bypass.statusCode).toBe(401);
+  expect(bypass.json().error).toBe('unauthorized');
+});
+
 test('a recipient with no doorbell target is not rung and not reported', async () => {
   const alice = await register('alice');
   await register('dave');

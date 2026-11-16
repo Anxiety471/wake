@@ -706,6 +706,19 @@ class ApiThreadReplyTests(WakeTestCase):
         self.assertNotIn("authorization", headers)
         self.assertEqual(req["json"], {"body": "the answer"})
 
+    def test_the_agent_token_is_the_only_credential_sent_when_both_are_configured(self):
+        """The docs say the reply token is sent when WAKE_AGENT_TOKEN is absent. Sending both
+        left the reply token unspent: the route reads the bearer first, so the thread token
+        outlived the answer for its whole TTL."""
+        env = self.api_env()
+        env["WAKE_REPLY_TOKEN"] = "thread-token-abc"
+        r = self.wake("--reply", self.UUID, "the answer", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.api.requests
+        headers = {k.lower(): v for k, v in req["headers"].items()}
+        self.assertEqual(headers["authorization"], "Bearer bob-agent-token")
+        self.assertNotIn("x-wake-reply-token", headers)
+
     def test_reply_to_an_api_thread_writes_no_flat_record(self):
         """A record under threads/ would be a second copy that the asker never reads."""
         self.wake("--reply", self.UUID, "the answer", env=self.api_env())

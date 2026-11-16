@@ -577,8 +577,9 @@ def api_reply(tid, text):
 
     Two credentials can answer: this bot's own agent token, or the per-thread reply token the
     doorbell payload carried (#93) - a doorbell-woken bot has no agent token, and the token is
-    scoped to that one thread, usable once, and expires with the thread. Both go in headers, never
-    in argv, so a process listing cannot leak them.
+    scoped to that one thread, usable once, and expires with the thread. The bearer wins when both
+    are set, so only one credential travels, in a header, never in argv: a process listing cannot
+    leak it.
 
     The shared `mcp` token cannot stand in: it is one identity, the route refuses the asker of an
     ask (apps/api/src/threads.ts), and every MCP-born thread has that identity as its asker.
@@ -594,7 +595,7 @@ def api_reply(tid, text):
     }
     if token:
         headers["Authorization"] = "Bearer " + token
-    if reply_token:
+    elif reply_token:
         headers["X-Wake-Reply-Token"] = reply_token
     req = urllib.request.Request(
         f"{base}/threads/{urllib.parse.quote(tid)}/reply",
