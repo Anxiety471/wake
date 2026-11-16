@@ -86,6 +86,29 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   and the route answers `409 the asker cannot answer its own ask` (`threads.ts`). Deploying a
   per-bot token to the fleet is [#93](https://github.com/Anxiety471/wake/issues/93); the false
   instruction fixed here is [#96](https://github.com/Anxiety471/wake/issues/96).
+- **`wake-host-deploy` can no longer ship a tree it cannot name.** `build` ran `bun build`
+  inside `WAKE_REPO` and read nothing about the checkout, so a stale branch, a half-rebased
+  worktree or a bot's verification clone all shipped as `main`: on 2026-11-16 00:44 PHT the
+  shared clone stood on an unmerged pull request's tree and `install` would have put it on
+  the host with no record of it. `build` now refuses uncommitted changes (naming the files)
+  and a `HEAD` that is not `origin/main`'s commit (naming both ids), prints the commit it
+  built and records it beside the artifact, so `install` says which one it shipped.
+  `WAKE_ALLOW_ANY_REF` is the deliberate hotfix and it is an allowlist: `1`, `true`, `yes`
+  or `on` builds the checked-out commit and says so on stderr, while the default word the
+  documentation uses, `off`, means off ([#75](https://github.com/Anxiety471/wake/issues/75)).
+
+  Review found the promise was not true yet, in four places, and each one is a test now:
+  `install` printed the build's commit and then tarred `apps/api/src/migrations` from the
+  live checkout, so an uncommitted `.sql` added after the build ran against the live
+  database at the next boot - the build carries its own copy of the migrations and `install`
+  reads only that; `git status --porcelain` honoured `status.showUntrackedFiles=no`, so
+  untracked work was invisible to the clean check - it reads `--untracked-files=all`; the
+  tree was read before the builder and never again, so a builder that committed mid-run
+  left an artifact stamped with a commit it did not belong to - the tree is re-read after
+  the build and a moved checkout is not recorded; and `status` printed the last build's
+  commit from the operator's state directory, which build B after installing A answered
+  "B" while the host ran A - `install` writes the commit beside the installed file and
+  `status` prints that.
 
 - **A reserved test address is not a secret, and one branch's fixture failed every branch's scan.**
   `scripts/scrub-check.sh` flagged `user.email=simulation@example.invalid` in
