@@ -19,7 +19,9 @@ wake --me                      # which bot this session is (bot:<alias>) or that
 ```bash
 wake engineer "PR #42 is ready for review"                  # notify, no answer expected
 wake --ask notes "what did we decide about the release date"  # ask; the answer arrives as a message
-wake --reply <thread-id> "answer" --source skill:agent      # answer a thread someone sent you
+wake --reply <thread-id> "answer" --source skill:agent      # answer a CLI thread someone sent you
+# an `api-thread:` id needs this bot's own token: with WAKE_AGENT_TOKEN and WAKE_API set,
+# `wake --reply` posts it to /threads/<id>/reply as this bot; otherwise POST that route yourself
 wake --inbox                                                # threads you opened, with answers
 wake --thread <id>                                          # the whole exchange
 ```

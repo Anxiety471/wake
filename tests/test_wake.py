@@ -92,6 +92,53 @@ class FakeWebhook:
         return self.requests
 
 
+class FakeWakeApi:
+    """Records every POST /threads/<id>/reply; answers 201 with seq 2, or the status set per id."""
+
+    def __init__(self):
+        self.requests = []
+        self.status = {}
+        self.error = {}
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                m = re.match(r"^/threads/([^/]+)/reply$", self.path)
+                tid = m.group(1) if m else None
+                outer.requests.append(
+                    {"path": self.path, "thread": tid, "headers": dict(self.headers), "json": json.loads(body or b"{}")}
+                )
+                code = outer.status.get(tid, 201) if tid else 404
+                if code == 201:
+                    payload = {
+                        "threadId": tid,
+                        "messageId": "message-2",
+                        "seq": 2,
+                        "createdAt": "2026-11-16T04:00:00+08:00",
+                        "status": "answered",
+                    }
+                else:
+                    payload = {"error": outer.error.get(tid, "refused")}
+                out = json.dumps(payload).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
 def write_exe(path, body):
     with open(path, "w") as f:
         f.write(textwrap.dedent(body).lstrip())
@@ -112,6 +159,7 @@ class WakeTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="wake-test-")
         self.hook = FakeWebhook()
+        self.api = FakeWakeApi()
         self.cfg = os.path.join(self.tmp, "config")
         self.keys = os.path.join(self.tmp, "keys")
         self.state = os.path.join(self.tmp, "state")
@@ -142,6 +190,7 @@ class WakeTestCase(unittest.TestCase):
 
     def tearDown(self):
         self.hook.close()
+        self.api.close()
         for root, _dirs, files in os.walk(self.tmp):
             for n in files:
                 path = os.path.join(root, n)
@@ -173,6 +222,12 @@ class WakeTestCase(unittest.TestCase):
         bin/__pycache__ into the checkout and a clean tree stops being clean after the first test.
         """
         self.assertEqual(self.env.get("PYTHONDONTWRITEBYTECODE"), "1")
+
+    def audit(self):
+        """Every ask, reply and refusal the CLI wrote, oldest first."""
+        path = os.path.join(self.rate, f"wake-audit-{os.getuid()}.log")
+        with open(path) as f:
+            return [json.loads(x) for x in f]
 
     def put_key(self, bot_id, key="test-key"):
         path = os.path.join(self.keys, bot_id + ".key")
@@ -417,9 +472,26 @@ class ThreadTests(WakeTestCase):
         self.assertEqual(len(self.thread(tid)), 1)
 
     def test_reply_to_unknown_thread_is_explained(self):
+        """A CLI-shaped id keeps the old message byte for byte: only API-minted ids moved."""
         r = self.wake("--reply", "0101-beef", "x", env={"WAKE_SOURCE": "bot:engineer"})
         self.assertEqual(r.returncode, 1)
-        self.assertIn("never opened", r.stderr)
+        self.assertEqual(
+            r.stderr,
+            "no thread 0101-beef: it was never opened, so there is nothing to answer. "
+            'A question thread is created by: wake --ask <bot> "<question>" '
+            f"(checked {os.path.join(self.state, 'threads')}). "
+            "To reach that sender directly, wake the bot instead.\n",
+        )
+
+    def test_reply_to_an_api_thread_names_the_api_route(self):
+        """A UUID was minted by the API in Postgres, not by --ask: "never opened" hides the one
+        route that can answer it, so the refusal names the store and the route (issue #96)."""
+        tid = "11a793f5-9f12-40c5-8880-19d4fb80431b"
+        r = self.wake("--reply", tid, "x", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(f"POST /threads/{tid}/reply", r.stderr)
+        self.assertIn("wake API", r.stderr)
+        self.assertNotIn("never opened", r.stderr)
 
     def test_reply_lands_in_live_session_inbox(self):
         self.put_key("bot-engineer-0002")
@@ -537,11 +609,6 @@ class ReplyGuardTests(WakeTestCase):
             for rec in recs:
                 f.write(json.dumps(rec) + "\n")
 
-    def audit(self):
-        path = os.path.join(self.rate, f"wake-audit-{os.getuid()}.log")
-        with open(path) as f:
-            return [json.loads(x) for x in f]
-
     def test_reply_after_ttl_is_refused(self):
         self.put_key("bot-engineer-0002")
         self.put_key("bot-coordinator-0001")
@@ -598,6 +665,72 @@ class ReplyGuardTests(WakeTestCase):
         self.assertEqual(rows[1]["source"], "bot:engineer")
         self.assertEqual(rows[2]["rc"], 4)
         self.assertNotIn("PWNED", json.dumps(rows))  # never carries key material, only the text it was given
+
+
+class ApiThreadReplyTests(WakeTestCase):
+    """An id the API minted is not in the shared folder, so --reply answers it on the API (issue #96)."""
+
+    UUID = "11a793f5-9f12-40c5-8880-19d4fb80431b"
+
+    def api_env(self, token="bob-agent-token", base=None):
+        env = {"WAKE_SOURCE": "bot:engineer", "WAKE_API": self.api.base if base is None else base}
+        if token is not None:
+            env["WAKE_AGENT_TOKEN"] = token
+        return env
+
+    def test_reply_to_an_api_thread_posts_the_answer(self):
+        r = self.wake("--reply", self.UUID, "the answer", env=self.api_env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("seq 2", r.stdout)
+        [req] = self.api.requests
+        self.assertEqual(req["thread"], self.UUID)
+        self.assertEqual(req["headers"]["Authorization"], "Bearer bob-agent-token")
+        self.assertEqual(req["headers"]["User-Agent"], "wake-cli/" + wake_config.VERSION)
+        self.assertEqual(req["json"], {"body": "the answer"})
+
+    def test_reply_to_an_api_thread_writes_no_flat_record(self):
+        """A record under threads/ would be a second copy that the asker never reads."""
+        self.wake("--reply", self.UUID, "the answer", env=self.api_env())
+        threads = os.path.join(self.state, "threads")
+        self.assertEqual(os.listdir(threads) if os.path.isdir(threads) else [], [])
+
+    def test_reply_without_a_token_names_the_setting_that_is_missing(self):
+        """No token names the setting; it must not fall back to the flat-store text, which is
+        wrong for an API id and hides the one route that can answer it."""
+        r = self.wake("--reply", self.UUID, "x", env=self.api_env(token=None))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stderr)
+        self.assertIn(f"POST /threads/{self.UUID}/reply", r.stderr)
+        self.assertNotIn("never opened", r.stderr)
+        self.assertEqual(self.api.requests, [])
+
+    def test_reply_to_an_api_thread_is_audited(self):
+        """The answer is audited as delivered over the API, so a refusal and an answer are
+        distinguishable afterwards (both would otherwise leave the same empty store)."""
+        self.wake("--reply", self.UUID, "the answer", env=self.api_env())
+        [row] = self.audit()
+        self.assertEqual((row["cmd"], row["thread"], row["bot"], row["rc"]), ("reply", self.UUID, "api", 0))
+        self.assertEqual(row["source"], "bot:engineer")
+
+    def test_reply_to_an_api_thread_this_bot_is_not_in_is_refused(self):
+        """loadThreadState joins thread_participants on the caller, so a non-participant gets 404:
+        the CLI must exit non-zero and audit the refusal instead of reporting a posted answer."""
+        self.api.status[self.UUID] = 404
+        self.api.error[self.UUID] = "no such thread"
+        r = self.wake("--reply", self.UUID, "x", env=self.api_env())
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("404", r.stderr)
+        [row] = self.audit()
+        self.assertEqual((row["cmd"], row["bot"], row["rc"]), ("reply-refused", "api", 7))
+
+    def test_reply_surfaces_the_api_refusal(self):
+        """The route refuses the asker of an ask; the CLI repeats that instead of inventing a store error."""
+        self.api.status[self.UUID] = 409
+        self.api.error[self.UUID] = "the asker cannot answer its own ask"
+        r = self.wake("--reply", self.UUID, "x", env=self.api_env())
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("409", r.stderr)
+        self.assertIn("the asker cannot answer its own ask", r.stderr)
 
 
 class DirectoryTests(WakeTestCase):

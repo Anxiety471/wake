@@ -262,5 +262,9 @@ quietly answering with two tools, which looks like a working session (issue #76)
 - **per-client tokens**: one public token, rotated by the operator, is the
   contract for now.
 - **the CLI as an API client**: `bin/wake` still uses the shared-folder store and
-  the webhook doorbell. Moving it onto this API is its own step, and the one that
-  retires the shared-folder store.
+  the webhook doorbell. Its one API call is `wake --reply` for a thread the store
+  does not hold, made as this bot when `WAKE_AGENT_TOKEN` and `WAKE_API` are set.
+  Moving the rest of it onto this API is its own step, and the one that retires the
+  shared-folder store. Until then an API thread is answered on the
+  API (`POST /threads/:id/reply`, tool `wake_reply`); the doorbell says so, and
+  `wake --reply <uuid>` refuses with the same route instead of "never opened".

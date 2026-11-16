@@ -13,6 +13,8 @@ DEFAULTS = {
     "WAKE_API_BASE": "",  # e.g. https://bots.example.com/api/v1/bots ; POST {base}/{bot-id}/webhook
     "WAKE_MCP_API": "http://127.0.0.1:3001",  # API base for the wake-mcp stdio bridge: POST {api}/mcp
     "WAKE_MCP_TOKEN": "",  # the mcp identity's token; empty leaves wake-mcp the legacy two-tool helper
+    "WAKE_API": "",  # wake API root for the CLI: POST {api}/threads/ID/reply ; empty = no API call
+    "WAKE_AGENT_TOKEN": "",  # the token of this bot; empty = --reply cannot answer an API thread
     "WAKE_STATE_DIR": "/var/lib/wake",  # shared threads/ and inbox/ live here (on the host)
     "WAKE_HOSTOPS": "",  # executable: runs its one argument as a shell command on the host, stdin passed through
     "WAKE_KEY_HELPER": "wake-webhook-key",  # creates/rotates webhook keys: has-key ID | ID [--rotate] | enable-bot ID
@@ -71,4 +73,5 @@ def load(environ=None):
     cfg["WAKE_REGISTRY"] = os.path.expanduser(get("WAKE_REGISTRY", os.path.join(cdir, "bots.tsv")))
     cfg["WAKE_STATE_DIR"] = os.path.expanduser(cfg["WAKE_STATE_DIR"]).rstrip("/") or "/"
     cfg["WAKE_HOSTOPS"] = os.path.expanduser(cfg["WAKE_HOSTOPS"])
+    cfg["WAKE_API"] = cfg["WAKE_API"].rstrip("/")
     return cfg

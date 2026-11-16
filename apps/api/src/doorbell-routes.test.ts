@@ -269,9 +269,9 @@ test('a broadcast wakes every configured recipient once', async () => {
   ).toEqual(new Set([sent.id]));
 });
 
-test('an ask wakes the recipient with the thread ref and the reply hint', async () => {
+test('an ask wakes the recipient with an api-thread ref and the API reply route', async () => {
   const alice = await register('alice');
-  await register('bob');
+  const bob = await register('bob');
   const thread = await ask(alice.token, 'bob', 'why is CI red?');
   expect(thread.wake).toEqual({
     enabled: true,
@@ -281,17 +281,23 @@ test('an ask wakes the recipient with the thread ref and the reply hint', async 
   const payload = JSON.parse(requests[0]?.body ?? '');
   expect(payload).toMatchObject({
     event: 'request',
-    ref: `thread:${thread.threadId}`,
+    // Not the CLI's `thread:` prefix: a routine that routes on it would run
+    // `wake --reply`, which cannot read this API's store (issue #96).
+    ref: `api-thread:${thread.threadId}`,
     threadId: thread.threadId,
     messageId: thread.messageId,
     from: 'alice',
     to: 'bob',
   });
-  expect(payload.detail).toBe(
-    `why is CI red? [thread ${thread.threadId}] reply: wake --reply ${thread.threadId} "YOUR ANSWER"`,
-  );
+  expect(payload.detail).toContain(`POST /threads/${thread.threadId}/reply`);
+  expect(payload.detail).not.toContain('wake --reply');
   expect(payload.depth).toBe(0);
   expect(requests[0]?.headers['idempotency-key']).toBe(thread.messageId);
+
+  // The hint is only honest if the route it names answers the recipient: the
+  // bot's own agent token, not the CLI and not the asker's identity.
+  const answer = await reply(bob.token, thread.threadId, 'because billing');
+  expect(answer.seq).toBe(2);
 });
 
 test('a reply wakes the asker', async () => {

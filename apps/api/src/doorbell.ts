@@ -213,9 +213,12 @@ export function parseDoorbell(env: NodeJS.ProcessEnv): DoorbellConfig | null {
 
 export type DoorbellEvent = 'message' | 'request' | 'reply';
 
-// Field names and wording follow bin/wake so a recipient's routine keeps working
-// when the CLI becomes a client of this API: `ref` starts with `thread:` and
-// `detail` carries the same reply hint.
+// Field names follow bin/wake so a recipient's routine keeps working when the
+// CLI becomes a client of this API. The thread wording does not: an API thread
+// lives in Postgres, and `wake --reply` reads the CLI's shared-folder store, so
+// the CLI's own hint (`reply: wake --reply <id>`) is a dead end here (issue #96).
+// `ref` is `api-thread:<id>` for the same reason: a routine that routes on the
+// CLI's `thread:` prefix must not fire a command that cannot see the thread.
 export type DoorbellPayload = {
   depth: number;
   source: string;
@@ -231,7 +234,7 @@ export type DoorbellPayload = {
 };
 
 export function replyHint(threadId: string): string {
-  return ` [thread ${threadId}] reply: wake --reply ${threadId} "YOUR ANSWER"`;
+  return ` [thread ${threadId}] reply on the wake API: POST /threads/${threadId}/reply with an agent token (not in the CLI's thread store)`;
 }
 
 // A reply wakes the asker, who cannot answer its own ask (409), so it carries
@@ -273,12 +276,14 @@ export function doorbellPayload(input: {
     level: 'info',
     detail: detailFor(input),
     // A reply cannot be answered (the asker would get a 409), so it carries no
-    // thread ref: a receiver that routes on `ref` must not try wake --reply.
+    // thread ref: a receiver that routes on `ref` must not try to answer it.
     // `threadId` still names the thread for anything that wants to record it.
+    // The prefix is `api-thread:`, not the CLI's `thread:`: the id is in this
+    // API's store, where `wake --reply` cannot reach it (issue #96).
     ref:
       input.threadId === null || input.event === 'reply'
         ? ''
-        : `thread:${input.threadId}`,
+        : `api-thread:${input.threadId}`,
     time: input.time.toISOString(),
     messageId: input.messageId,
     threadId: input.threadId,
