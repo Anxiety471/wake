@@ -61,9 +61,11 @@ const REDACT_PATHS = [
   'req.headers.Authorization',
   'req.headers["x-registration-secret"]',
   'req.headers["x-dashboard-secret"]',
+  'req.headers["x-wake-reply-token"]',
   'headers.authorization',
   'headers["x-registration-secret"]',
   'headers["x-dashboard-secret"]',
+  'headers["x-wake-reply-token"]',
 ];
 
 const CONNECTION_ERRORS = new Set([
@@ -162,7 +164,8 @@ function headersForLog(headers: IncomingHttpHeaders): Record<string, unknown> {
     copy[key] =
       name === 'authorization' ||
       name === 'x-registration-secret' ||
-      name === 'x-dashboard-secret'
+      name === 'x-dashboard-secret' ||
+      name === 'x-wake-reply-token'
         ? '[Redacted]'
         : value;
   }

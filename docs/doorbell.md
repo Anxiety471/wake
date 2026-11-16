@@ -56,7 +56,7 @@ the API, so the two payloads cannot share one hint (issue #96).
   "source": "bot:alice",
   "event": "request",
   "level": "info",
-  "detail": "why is CI red? [thread 4f1c...] reply on the wake API: POST /threads/4f1c.../reply with an agent token (not in the CLI's thread store)",
+  "detail": "why is CI red? [thread 4f1c...] reply on the wake API: POST /threads/4f1c.../reply with this payload's replyToken, or with an agent token",
   "ref": "api-thread:4f1c...",
   "time": "2026-11-14T16:00:00.000Z",
   "messageId": "9e2b...",

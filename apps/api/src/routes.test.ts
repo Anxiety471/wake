@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { Client } from 'pg';
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { buildApp } from './app.js';
+import { hashToken } from './token.js';
 import { assertTestDatabaseUrl } from './test-helpers/test-database.js';
 import {
   encodeSearchCursor,
@@ -932,11 +933,38 @@ test('logs redact authorization and never include tokens', async () => {
       headers: bearer('wrong-token-value'),
     });
     expect(wrong.statusCode).toBe(401);
+    // The reply token a doorbell payload carries (#93) is a credential too: a
+    // woken bot sends it in a header and nothing else, so the reply route is the
+    // one request that is logged without a bearer - including the ones it then
+    // refuses, which leave the token live for its thread's TTL.
+    const asker = await register('log-asker');
+    const recipient = await register('log-recipient');
+    const replyToken = 'log-reply-token-value';
+    const thread = await admin.query<{ id: string }>(
+      `INSERT INTO threads (kind, created_by, reply_token_hash, reply_token_expires_at)
+       VALUES ('ask', $1::uuid, $2, clock_timestamp() + interval '1 hour')
+       RETURNING id`,
+      [asker.id, hashToken(replyToken)],
+    );
+    const threadId = thread.rows[0]?.id ?? '';
+    await admin.query(
+      `INSERT INTO thread_participants (thread_id, agent_id)
+       VALUES ($1::uuid, $2::uuid), ($1::uuid, $3::uuid)`,
+      [threadId, asker.id, recipient.id],
+    );
+    const byToken = await logged.inject({
+      method: 'POST',
+      url: `/threads/${threadId}/reply`,
+      headers: { 'x-wake-reply-token': replyToken },
+      payload: { body: 'logged answer' },
+    });
+    expect(byToken.statusCode).toBe(201);
     const output = lines.join('\n');
     expect(output).toContain('[Redacted]');
     expect(output).not.toContain(token);
     expect(output).not.toContain('wrong-token-value');
     expect(output).not.toContain('log-secret');
+    expect(output).not.toContain(replyToken);
   } finally {
     await logged.close();
   }

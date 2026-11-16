@@ -238,7 +238,7 @@ export type DoorbellPayload = {
 };
 
 export function replyHint(threadId: string): string {
-  return ` [thread ${threadId}] reply on the wake API: POST /threads/${threadId}/reply with an agent token (not in the CLI's thread store)`;
+  return ` [thread ${threadId}] reply on the wake API: POST /threads/${threadId}/reply with this payload's replyToken, or with an agent token`;
 }
 
 // A reply wakes the asker, who cannot answer its own ask (409), so it carries

@@ -96,6 +96,39 @@ test('GET /health returns 503 when postgres is unreachable', async () => {
   }
 });
 
+test('request logs redact the thread reply token', async () => {
+  const lines: string[] = [];
+  const logged = buildApp(
+    'postgres://switchboard_user:s3cret-pass@127.0.0.1:1/unreachable_test',
+    {
+      logStream: {
+        write(message) {
+          lines.push(message);
+        },
+      },
+    },
+  );
+  const sentinel = 'SENTINEL-REPLY-TOKEN-9f3a';
+  try {
+    // A doorbell-woken bot holds no agent token (#93): this header is its whole
+    // credential, and the reply route is the one place a request is logged
+    // without a bearer - including the ones that are then refused.
+    const response = await logged.inject({
+      method: 'POST',
+      url: '/threads/11111111-1111-4111-8111-111111111111/reply',
+      headers: { 'x-wake-reply-token': sentinel },
+      payload: { body: 'answer' },
+    });
+    expect(response.statusCode).toBe(503);
+    const output = lines.join('\n');
+    expect(output).toContain('incoming request');
+    expect(output).not.toContain(sentinel);
+    expect(output).toContain('"x-wake-reply-token":"[Redacted]"');
+  } finally {
+    await logged.close();
+  }
+});
+
 test('GET /agents returns 503 when postgres accepts and never replies', async () => {
   const sockets = new Set<Socket>();
   const server = createServer((socket) => {

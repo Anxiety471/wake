@@ -61,6 +61,12 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Changed
 
+- **The doorbell names the reply token, not only an agent token.** The reply hint still told a
+  thread's recipient to answer `with an agent token (not in the CLI's thread store)` while the
+  payload it rides in carries `replyToken`; it says `with this payload's replyToken, or with an
+  agent token` now. `docs/protocol.md`'s payload sample also names `api-thread:<id>` for a thread
+  the API opened.
+
 - **`REGISTRATION_SECRET` needs 32 characters now, and a missing one stops the boot.**
   `apps/api/src/options.ts` enforced 32 characters on `DASHBOARD_SECRET` and nothing on
   `REGISTRATION_SECRET`, so the 22-character `<generated, 32+ chars>` in `deploy/README.md`
@@ -74,6 +80,14 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   ([#22](https://github.com/Anxiety471/wake/issues/22)).
 
 ### Fixed
+
+- **The reply token never reaches the request log.** A woken bot's whole credential is the
+  `X-Wake-Reply-Token` header on `POST /threads/:id/reply`, the one request the API logs without a
+  bearer, and the `incoming request` line wrote it in plaintext: `headersForLog` and `REDACT_PATHS`
+  redacted `authorization`, `x-registration-secret` and `x-dashboard-secret` only. A refused reply
+  keeps the token unspent and valid for the thread's TTL, so anyone who could read the log could
+  answer that thread. The header is redacted in both places now, including a header copied straight
+  into a log record, and the test that asserts it needs no database.
 
 - **The reply-token hook matches the reply route by path, anchored.** `request.url` carries the
   query string, so the unanchored pattern also matched `POST /messages?q=/threads/x/reply`: an
