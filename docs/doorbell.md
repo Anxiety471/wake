@@ -86,8 +86,11 @@ the API, so the two payloads cannot share one hint (issue #96).
   once. It is a top-level field on purpose: a routine that logs `detail` never
   logs it. It answers that thread and no other, once: a replay reaches the same
   `409 thread already answered` as any other second answer, a token presented
-  for a different thread id is `401 invalid reply token`, and an expired one is
-  `401 reply token expired`. `null` for a plain message and for a `reply`, which
+  for a different thread is refused - `401 invalid reply token`, unless that
+  thread's own state answers first (`409 thread closed`, `409 thread already
+  answered`, `410 thread expired`) - and an expired token is `401 reply token
+  expired`. With `WAKE_TTL_HOURS=0` the thread has no TTL, so the token has
+  none either. `null` for a plain message and for a `reply`, which
   nobody can answer. A bot with no agent token exports it as
   `WAKE_REPLY_TOKEN` and runs `wake --reply <id> "…"`; the CLI posts it to
   `POST /threads/<id>/reply` in a header, never in `argv`
