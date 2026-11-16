@@ -56,11 +56,12 @@ the API, so the two payloads cannot share one hint (issue #96).
   "source": "bot:alice",
   "event": "request",
   "level": "info",
-  "detail": "why is CI red? [thread 4f1c...] reply on the wake API: POST /threads/4f1c.../reply with an agent token (not in the CLI's thread store)",
+  "detail": "why is CI red? [thread 4f1c...] reply on the wake API: POST /threads/4f1c.../reply with this payload's replyToken, or with an agent token",
   "ref": "api-thread:4f1c...",
   "time": "2026-11-14T16:00:00.000Z",
   "messageId": "9e2b...",
   "threadId": "4f1c...",
+  "replyToken": "9f3c...",
   "from": "alice",
   "to": "bob"
 }
@@ -76,8 +77,24 @@ the API, so the two payloads cannot share one hint (issue #96).
   ([#96](https://github.com/Anxiety471/wake/issues/96)). A bot with
   `WAKE_AGENT_TOKEN` and `WAKE_API` set can still answer one with
   `wake --reply <id>`: the CLI posts to the same route as that bot instead of
-  reading the store. `threadId` still names the thread for anything that wants to
-  record it.
+  reading the store. A bot without one needs no setting at all beyond
+  `WAKE_REPLY_TOKEN` from this payload. `threadId` still names the thread for
+  anything that wants to record it.
+- `replyToken` is the credential of the bot this wake is for. The API mints one
+  when `POST /threads` opens the thread, stores only its sha256 on the thread
+  row with an expiry (the thread's TTL), and ships the plaintext here exactly
+  once. It is a top-level field on purpose: a routine that logs `detail` never
+  logs it. It answers that thread and no other, once: a replay reaches the same
+  `409 thread already answered` as any other second answer, a token presented
+  for a different thread is refused - `401 invalid reply token`, unless that
+  thread's own state answers first (`409 thread closed`, `409 thread already
+  answered`, `410 thread expired`) - and an expired token is `401 reply token
+  expired`. With `WAKE_TTL_HOURS=0` the thread has no TTL, so the token has
+  none either. `null` for a plain message and for a `reply`, which
+  nobody can answer. A bot with no agent token exports it as
+  `WAKE_REPLY_TOKEN` and runs `wake --reply <id> "…"`; the CLI posts it to
+  `POST /threads/<id>/reply` in a header, never in `argv`
+  ([#93](https://github.com/Anxiety471/wake/issues/93)).
 - `depth` is `0`, the depth the CLI sends for a normal bot, so a receiver that
   exports it as `WAKE_DEPTH` can still send its own wakes (`wake-run` raises it
   to 1, and `wake` refuses at 2).

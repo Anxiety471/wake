@@ -229,12 +229,16 @@ export type DoorbellPayload = {
   time: string;
   messageId: string;
   threadId: string | null;
+  // Minted when the API opens the thread and shipped once, here: the woken bot
+  // holds no agent token, so this is the only credential it has (#93). Kept out
+  // of `detail` on purpose, so a routine's log of the text stays clean.
+  replyToken: string | null;
   from: string;
   to: string;
 };
 
 export function replyHint(threadId: string): string {
-  return ` [thread ${threadId}] reply on the wake API: POST /threads/${threadId}/reply with an agent token (not in the CLI's thread store)`;
+  return ` [thread ${threadId}] reply on the wake API: POST /threads/${threadId}/reply with this payload's replyToken, or with an agent token`;
 }
 
 // A reply wakes the asker, who cannot answer its own ask (409), so it carries
@@ -264,6 +268,7 @@ export function doorbellPayload(input: {
   body: string;
   event: DoorbellEvent;
   threadId: string | null;
+  replyToken?: string | null;
   time: Date;
 }): DoorbellPayload {
   return {
@@ -287,6 +292,7 @@ export function doorbellPayload(input: {
     time: input.time.toISOString(),
     messageId: input.messageId,
     threadId: input.threadId,
+    replyToken: input.replyToken ?? null,
     from: input.from,
     to: input.to,
   };
@@ -494,6 +500,7 @@ export type NotifyMessage = {
   body: string;
   event: DoorbellEvent;
   threadId: string | null;
+  replyToken?: string | null;
 };
 
 type Recipient = {
@@ -657,6 +664,7 @@ export async function notifyMessage(
           body: message.body,
           event: message.event,
           threadId: message.threadId,
+          replyToken: message.replyToken ?? null,
           time: now,
         }),
       );

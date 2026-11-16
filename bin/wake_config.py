@@ -15,6 +15,7 @@ DEFAULTS = {
     "WAKE_MCP_TOKEN": "",  # the mcp identity's token; empty leaves wake-mcp the legacy two-tool helper
     "WAKE_API": "",  # wake API root for the CLI: POST {api}/threads/ID/reply ; empty = no API call
     "WAKE_AGENT_TOKEN": "",  # the token of this bot; empty = --reply cannot answer an API thread
+    "WAKE_REPLY_TOKEN": "",  # a thread's reply token from the doorbell payload; answers that thread once
     "WAKE_STATE_DIR": "/var/lib/wake",  # shared threads/ and inbox/ live here (on the host)
     "WAKE_HOSTOPS": "",  # executable: runs its one argument as a shell command on the host, stdin passed through
     "WAKE_KEY_HELPER": "wake-webhook-key",  # creates/rotates webhook keys: has-key ID | ID [--rotate] | enable-bot ID

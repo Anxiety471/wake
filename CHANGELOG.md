@@ -7,6 +7,19 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **A thread carries a reply token, so the bot a doorbell woke can answer it.** The woken bot held
+  no agent token, so an API-born thread advertised a route it could not use, and only the shared
+  `mcp` identity existed - which the route refuses with `409`, because it is the asker of every
+  thread it opened. `POST /threads` now mints one token per thread, stores only its sha256 and an
+  expiry (the thread's TTL) on the row (migration `013_thread_reply_token.sql`), and ships the
+  plaintext once in the recipient's doorbell payload as a top-level `replyToken`, outside `detail`.
+  `POST /threads/:id/reply` accepts it in `X-Wake-Reply-Token` instead of a bearer: scoped to that
+  thread, spent before the message is stored so a race cannot answer twice, refused on replay with
+  the existing `409 thread already answered`, for another thread's token, and after expiry.
+  `bin/wake --reply` sends it when `WAKE_AGENT_TOKEN` is absent and `WAKE_REPLY_TOKEN` is set, and
+  names the missing setting when neither is. No agent token, no shared file, no new client
+  ([#93](https://github.com/Anxiety471/wake/issues/93)).
+
 - **`.editorconfig` is guarded, and the binary sniff reads both ends.** The final-newline sweep
   trusted a file nothing read: deleting `insert_final_newline = true` left the suite green while
   the editor request told the next contributor something it no longer said. `EditorConfigTest`
@@ -48,6 +61,12 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Changed
 
+- **The doorbell names the reply token, not only an agent token.** The reply hint still told a
+  thread's recipient to answer `with an agent token (not in the CLI's thread store)` while the
+  payload it rides in carries `replyToken`; it says `with this payload's replyToken, or with an
+  agent token` now. `docs/protocol.md`'s payload sample also names `api-thread:<id>` for a thread
+  the API opened.
+
 - **`REGISTRATION_SECRET` needs 32 characters now, and a missing one stops the boot.**
   `apps/api/src/options.ts` enforced 32 characters on `DASHBOARD_SECRET` and nothing on
   `REGISTRATION_SECRET`, so the 22-character `<generated, 32+ chars>` in `deploy/README.md`
@@ -61,6 +80,25 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   ([#22](https://github.com/Anxiety471/wake/issues/22)).
 
 ### Fixed
+
+- **The reply token never reaches the request log.** A woken bot's whole credential is the
+  `X-Wake-Reply-Token` header on `POST /threads/:id/reply`, the one request the API logs without a
+  bearer, and the `incoming request` line wrote it in plaintext: `headersForLog` and `REDACT_PATHS`
+  redacted `authorization`, `x-registration-secret` and `x-dashboard-secret` only. A refused reply
+  keeps the token unspent and valid for the thread's TTL, so anyone who could read the log could
+  answer that thread. The header is redacted in both places now, including a header copied straight
+  into a log record, and the test that asserts it needs no database.
+
+- **The reply-token hook matches the reply route by path, anchored.** `request.url` carries the
+  query string, so the unanchored pattern also matched `POST /messages?q=/threads/x/reply`: an
+  unauthenticated request with any `X-Wake-Reply-Token` header passed the `onRequest` hook and
+  reached a handler with no agent, which answered `500` instead of `401`. The pattern is anchored
+  and tested against the path alone, with a test for the bypass string.
+
+- **`bin/wake --reply` sends one credential, not two.** With both `WAKE_AGENT_TOKEN` and
+  `WAKE_REPLY_TOKEN` set, it sent the bearer and the thread token together, and the route reads the
+  bearer first, so the thread token was never spent - against the docs, which say the reply token is
+  sent when there is no agent token. The bearer now wins and the reply token is not sent at all.
 
 - **A refused inbox says so, instead of printing a path to nothing.** `wake-inbox-io` discarded the
   exit status of every host command it ran, so a gate refusal was indistinguishable from success:

@@ -543,11 +543,15 @@ def api_thread_refusal(tid):
     if not API_THREAD_ID.match(tid):
         return None
     token = (CFG.get("WAKE_AGENT_TOKEN") or "").strip()
+    reply_token = (CFG.get("WAKE_REPLY_TOKEN") or "").strip()
     base = (CFG.get("WAKE_API") or "").strip()
     missing = [
         name
         for name, value in (
-            ("WAKE_AGENT_TOKEN (the token of this bot)", token),
+            (
+                "WAKE_AGENT_TOKEN (the token of this bot) or WAKE_REPLY_TOKEN (the token the doorbell payload carried)",
+                token or reply_token,
+            ),
             ("WAKE_API (for example http://127.0.0.1:3001)", base),
         )
         if not value
@@ -561,32 +565,43 @@ def api_thread_refusal(tid):
     return (
         f"no thread {tid} in the shared-folder store at {THREADS}: that id belongs to a thread the "
         f"wake API opened, which that store cannot show. Answer it on the API: "
-        f"POST /threads/{tid}/reply with an agent token (MCP clients: the wake_reply tool).{why} "
+        f"POST /threads/{tid}/reply with an agent token or the thread's reply token "
+        f"(MCP clients: the wake_reply tool).{why} "
         f"CLI threads have ids like 1114-a3f2."
     )
 
 
 def api_reply(tid, text):
-    """Answer an API thread on the API, as this bot. (None, None) when this CLI holds no credential
-    for it, so the caller can name what is missing instead of guessing.
+    """Answer an API thread on the API. (None, None) when this CLI holds no credential for it,
+    so the caller can name what is missing instead of guessing.
+
+    Two credentials can answer: this bot's own agent token, or the per-thread reply token the
+    doorbell payload carried (#93) - a doorbell-woken bot has no agent token, and the token is
+    scoped to that one thread, usable once, and expires with the thread. The bearer wins when both
+    are set, so only one credential travels, in a header, never in argv: a process listing cannot
+    leak it.
 
     The shared `mcp` token cannot stand in: it is one identity, the route refuses the asker of an
-    ask (apps/api/src/threads.ts), and every MCP-born thread has that identity as its asker. Only
-    this bot's own token can answer a thread it is the recipient of.
+    ask (apps/api/src/threads.ts), and every MCP-born thread has that identity as its asker.
     """
     token = (CFG.get("WAKE_AGENT_TOKEN") or "").strip()
+    reply_token = (CFG.get("WAKE_REPLY_TOKEN") or "").strip()
     base = (CFG.get("WAKE_API") or "").strip().rstrip("/")
-    if not token or not base:
+    if not base or not (token or reply_token):
         return None, None
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "wake-cli/" + wake_config.VERSION,
+    }
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    elif reply_token:
+        headers["X-Wake-Reply-Token"] = reply_token
     req = urllib.request.Request(
         f"{base}/threads/{urllib.parse.quote(tid)}/reply",
         data=json.dumps({"body": text}).encode(),
         method="POST",
-        headers={
-            "Authorization": "Bearer " + token,
-            "Content-Type": "application/json",
-            "User-Agent": "wake-cli/" + wake_config.VERSION,
-        },
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(req, timeout=20) as r:

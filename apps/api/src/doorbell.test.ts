@@ -244,9 +244,28 @@ describe('doorbellPayload', () => {
       time: '2026-11-14T16:00:00.000Z',
       messageId: 'm1',
       threadId: null,
+      replyToken: null,
       from: 'alice',
       to: 'bob',
     });
+  });
+
+  test('a thread reply token rides at the top level, never inside detail', () => {
+    const payload = doorbellPayload({
+      messageId: 'm4',
+      from: 'alice',
+      to: 'bob',
+      body: 'are you there?',
+      event: 'request',
+      threadId: 'thread-1',
+      replyToken: 'tok-abc123',
+      time: new Date('2026-11-14T16:00:00.000Z'),
+    });
+    // The woken bot has no agent token, so this is its whole credential (#93) -
+    // and a routine that logs `detail` must not log it.
+    expect(payload.replyToken).toBe('tok-abc123');
+    expect(payload.detail).not.toContain('tok-abc123');
+    expect(payload.ref).toBe('api-thread:thread-1');
   });
 
   test('an API thread carries an api-thread ref and names the API reply route', () => {

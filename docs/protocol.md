@@ -15,7 +15,7 @@ User-Agent: wake-cli/2.1
   "event":  "message",                 // message | request (ask) | reply | command_end | hook event name
   "level":  "info",                    // ok | info | error
   "detail": "<text> | host=<hostname> user=<user> cwd=<cwd>",
-  "ref":    "thread:<id>",             // or "" / --ref
+  "ref":    "thread:<id>",             // or "api-thread:<id>" / "" / --ref
   "time":   "2026-01-31T12:00:00+0000"
 }
 ```

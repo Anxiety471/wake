@@ -61,9 +61,11 @@ const REDACT_PATHS = [
   'req.headers.Authorization',
   'req.headers["x-registration-secret"]',
   'req.headers["x-dashboard-secret"]',
+  'req.headers["x-wake-reply-token"]',
   'headers.authorization',
   'headers["x-registration-secret"]',
   'headers["x-dashboard-secret"]',
+  'headers["x-wake-reply-token"]',
 ];
 
 const CONNECTION_ERRORS = new Set([
@@ -94,6 +96,11 @@ const UNAVAILABLE_MESSAGES = [
   'the database system is shutting down',
   'the database system is starting up',
 ];
+
+// POST /threads/:id/reply, the one route a reply token can reach (#93). Matched
+// against the path alone and anchored: `request.url` carries the query string, so
+// an unanchored test also matched `POST /messages?q=/threads/x/reply`.
+const REPLY_TOKEN_ROUTE = /^\/threads\/[^/?]+\/reply$/;
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -157,7 +164,8 @@ function headersForLog(headers: IncomingHttpHeaders): Record<string, unknown> {
     copy[key] =
       name === 'authorization' ||
       name === 'x-registration-secret' ||
-      name === 'x-dashboard-secret'
+      name === 'x-dashboard-secret' ||
+      name === 'x-wake-reply-token'
         ? '[Redacted]'
         : value;
   }
@@ -563,6 +571,22 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
     agentRoutes.addHook('onRequest', async (request, reply) => {
       const token = bearerToken(request.headers.authorization);
       if (token === undefined) {
+        // A doorbell-woken bot holds a per-thread reply token, not an agent
+        // token (#93), so the reply route alone may pass without a bearer. That
+        // route verifies and spends the token; nothing else runs unauthenticated.
+        const header = request.headers['x-wake-reply-token'];
+        const replyToken = Array.isArray(header) ? header[0] : header;
+        const [path] = request.url.split('?');
+        if (
+          request.method === 'POST' &&
+          path !== undefined &&
+          REPLY_TOKEN_ROUTE.test(path) &&
+          replyToken !== undefined &&
+          replyToken !== ''
+        ) {
+          request.agent = null;
+          return;
+        }
         return reply.code(401).send({ error: 'unauthorized' });
       }
       let result;
