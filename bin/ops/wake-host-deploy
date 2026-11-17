@@ -168,7 +168,7 @@ def put(local, remote):
         return
     quoted = shlex.quote(remote)
     if dest:
-        staged = f"/tmp/wake-put-{os.getpid()}-{os.path.basename(remote)}"
+        staged = host("mktemp /tmp/.wake-deploy.XXXXXX").strip()
         r = subprocess.run(
             ["scp", "-q", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", local, f"{dest}:{staged}"],
             capture_output=True,
