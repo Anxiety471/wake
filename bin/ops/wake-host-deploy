@@ -168,7 +168,13 @@ def put(local, remote):
         return
     quoted = shlex.quote(remote)
     if dest:
-        staged = host("mktemp /tmp/.wake-deploy.XXXXXX").strip()
+        # host() returns stdout and stderr together: a host-key notice would otherwise splice a
+        # newline into the name scp is handed, scp writes a file by that name, and install then
+        # fails with "No such file or directory" (#117). The path mktemp prints is the first line.
+        answer = host("mktemp /tmp/.wake-deploy.XXXXXX").strip().splitlines()
+        if not answer:
+            sys.exit("wake-host-deploy: the host did not name a staging file")
+        staged = answer[0]
         r = subprocess.run(
             ["scp", "-q", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", local, f"{dest}:{staged}"],
             capture_output=True,

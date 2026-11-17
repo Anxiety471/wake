@@ -104,6 +104,18 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   prefix for the root case. Tests assert the exact host commands for a non-root and a root operator,
   and that a dry run writes nothing
   ([#109](https://github.com/Anxiety471/wake/issues/109)).
+- **The ssh transport stages under a name the host creates, and a host notice cannot become part
+  of that name.** `put()` built the staging path from the pid and the basename, so any local account
+  on the host could pre-create `/tmp/wake-put-<pid>-<file>` and have the operator's `scp` write
+  through it; and `host()` returns stdout and stderr together, so a `Warning: Permanently added …`
+  line was spliced into the name `scp` was handed, `install` then failed with
+  `No such file or directory` and both staged files were left behind. The path now comes from
+  `mktemp /tmp/.wake-deploy.XXXXXX` on the host and only its first line is used. The scp branch had
+  no test at all - every deploy test drives the `WAKE_HOSTOPS` branch - so two now drive it against
+  a fake `ssh` and `scp`: one requires two consecutive installs to stage under different names that
+  already existed `0600`, the other requires a notice on stderr to leave the staged path alone. Both
+  fail against the old line
+  ([#117](https://github.com/Anxiety471/wake/issues/117)).
 
 - **The reply token never reaches the request log.** A woken bot's whole credential is the
   `X-Wake-Reply-Token` header on `POST /threads/:id/reply`, the one request the API logs without a

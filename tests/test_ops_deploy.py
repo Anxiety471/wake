@@ -547,6 +547,115 @@ class HostDeployTestCase(unittest.TestCase):
         self.assertNotIn("chmod 644 /opt/wake/migrations/*.sql", self.logged())
 
 
+class ScpTransportTestCase(unittest.TestCase):
+    """The ssh transport stages in the operator's /tmp before install(1) moves the bytes.
+
+    Every other deploy test sets WAKE_HOSTOPS, so the `scp` half of put() was never driven by the
+    suite: the line that names the staging file could be reverted and the suite stayed green (#117).
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="scpstage-")
+        self.bin = os.path.join(self.dir, "bin")
+        os.makedirs(self.bin)
+        self.log = os.path.join(self.dir, "host.log")
+        self.env = {
+            "PATH": self.bin + ":" + os.environ.get("PATH", "/usr/bin:/bin"),
+            "WAKE_HOST_SSH": "ops@example",
+            "WAKE_SUDO": "",  # the commands name their own user; sudo belongs to the real host
+            "WAKE_NODE": "/usr/bin/node",
+            "STUB_LOG": self.log,
+        }
+        self.ssh(warning=None)
+        # scp records where it was told to write and the mode that path had before the write, then
+        # writes through it the way scp does: an existing file keeps its mode.
+        write(
+            os.path.join(self.bin, "scp"),
+            "#!/bin/sh\n"
+            # The last two arguments are the local file and user@host:path; the rest are options.
+            'for a in "$@"; do from=$to; to=$a; done\n'
+            "dest=${to#*:}\n"
+            'if [ "$(printf %s "$dest" | wc -l)" -gt 0 ]; then\n'
+            '  printf "SCP REFUSED a staged path that carries a newline\\n" >> "$STUB_LOG"\n'
+            "  exit 1\n"
+            "fi\n"
+            'mode=$(stat -c %a "$dest" 2>/dev/null || echo none)\n'
+            'printf "SCP %s mode=%s file_mode=%s\\n" "$dest" "$mode" "$(stat -c %a "$from")" >> "$STUB_LOG"\n'
+            'cp "$from" "$dest" && exit 0\n'
+            "exit 1\n",
+            executable=True,
+        )
+
+    def ssh(self, warning):
+        """A host that answers `mktemp` the way mktemp does: creates the file 0600 and prints it.
+
+        `warning` is what ssh itself writes to stderr (a host-key notice), which the helper reads
+        back together with stdout.
+        """
+        body = "#!/bin/sh\nfor last; do :; done\n"
+        if warning:
+            body += 'printf "%s\\n" "$WAKE_SSH_WARNING" >&2\n'
+        body += (
+            'printf "SSH: %s\\n" "$last" >> "$STUB_LOG"\n'
+            'case "$last" in\n'
+            '  "mktemp "*)\n'
+            "      set -- $last; shift\n"
+            '      p=$(mktemp "$1") || exit 1\n'
+            '      chmod 600 "$p"\n'
+            '      printf "%s\\n" "$p" ;;\n'
+            "esac\n"
+        )
+        path = os.path.join(self.bin, "ssh")
+        write(path, body, executable=True)
+        if warning:
+            self.env["WAKE_SSH_WARNING"] = warning
+        return path
+
+    def logged(self):
+        with open(self.log, encoding="utf-8") as f:
+            return f.read()
+
+    def install(self, name):
+        state = os.path.join(self.dir, name + "-state")
+        build = make_build(os.path.join(self.dir, name))
+        record(state, build)
+        return run("wake-host-deploy", "install", env=dict(self.env, WAKE_DEPLOY_STATE=state))
+
+    def staged(self):
+        return [line.split()[1] for line in self.logged().splitlines() if line.startswith("SCP ")]
+
+    def test_the_staged_name_is_created_by_the_host_and_differs_every_time(self):
+        # A staged name built from the pid and the basename is predictable: any local account on
+        # the host can pre-create that path and have the operator's scp write through it (#117).
+        for name in ("first", "second"):
+            r = self.install(name)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.logged()
+        paths = self.staged()
+        self.assertEqual(len(paths), 2, log)
+        self.assertNotEqual(paths[0], paths[1], "a staged name that repeats is guessable")
+        for path in paths:
+            self.assertNotRegex(path, r"/tmp/wake-put-", "the staged name is derived, not created")
+        # Each file already existed, private, before scp wrote into it.
+        for line in log.splitlines():
+            if line.startswith("SCP "):
+                self.assertIn("mode=600", line, line)
+        # And install(1) moves the very file scp wrote.
+        self.assertIn(f"install -o root -g wake -m 644 {paths[0]} /opt/wake.index.mjs", log)
+
+    def test_a_host_notice_on_stderr_never_becomes_part_of_the_staged_path(self):
+        # host() returns stdout and stderr together, so a host-key notice is spliced into the name
+        # scp is handed: it writes a file whose name holds the notice, install then fails with
+        # "No such file or directory" and both staged files are left behind (#117).
+        self.ssh(warning="Warning: Permanently added example to the list of known hosts.")
+        r = self.install("noisy")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.logged()
+        self.assertNotIn("REFUSED", log, "a staged path carried the host's stderr")
+        self.assertNotIn("Warning", log, log[:400])
+        self.assertEqual(len(self.staged()), 1, log)
+
+
 class BuildStateTestCase(unittest.TestCase):
     """The files that remember a build: nobody else's directory, and a dry run never dies."""
 
