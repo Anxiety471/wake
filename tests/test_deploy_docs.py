@@ -40,11 +40,7 @@ def section(text, heading):
     if heading not in text:
         return ""
     start = text.index(heading)
-    ends = [
-        pos
-        for pos in (text.find("\n### ", start + 1), text.find("\n## ", start + 1))
-        if pos != -1
-    ]
+    ends = [pos for pos in (text.find("\n### ", start + 1), text.find("\n## ", start + 1)) if pos != -1]
     return text[start : min(ends)] if ends else text[start:]
 
 
@@ -166,15 +162,13 @@ class ReplyRoutePublishTest(unittest.TestCase):
     def test_the_runbook_shows_three_audited_blocks_and_no_fourth(self):
         blocks = nginx_blocks(read())
         self.assertEqual(len(blocks), 3)
-        self.assertEqual(sum('= /mcp' in b for b in blocks), 1)
-        self.assertEqual(sum('$wake_reply_has_auth' in b and 'location' not in b for b in blocks), 1)
-        self.assertEqual(sum('/reply' in b for b in blocks), 1)
+        self.assertEqual(sum("= /mcp" in b for b in blocks), 1)
+        self.assertEqual(sum("$wake_reply_has_auth" in b and "location" not in b for b in blocks), 1)
+        self.assertEqual(sum("/reply" in b for b in blocks), 1)
 
     def test_a_prefix_location_for_threads_is_caught(self):
         """The first attempt at /mcp, one route further on: it publishes the whole store."""
-        text = read().replace(
-            'location ~ "^/threads/[0-9a-fA-F-]{36}/reply$"', "location ^~ /threads/"
-        )
+        text = read().replace('location ~ "^/threads/[0-9a-fA-F-]{36}/reply$"', "location ^~ /threads/")
         problems = reply_problems(text)
         self.assertNotEqual(problems, [])
 
@@ -194,9 +188,7 @@ class ReplyRoutePublishTest(unittest.TestCase):
     def test_a_gate_that_ignores_the_bearer_is_caught(self):
         # A bot with its own agent token answers this route too; gating on the reply
         # token alone would refuse it, and the map is the only place both are named.
-        text = read().replace(
-            '$http_x_wake_reply_token|$http_authorization', "$http_x_wake_reply_token"
-        )
+        text = read().replace("$http_x_wake_reply_token|$http_authorization", "$http_x_wake_reply_token")
         self.assertNotEqual(reply_problems(text), [])
 
     def test_the_map_and_the_location_have_to_be_in_different_contexts(self):
