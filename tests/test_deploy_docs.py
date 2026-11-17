@@ -101,17 +101,26 @@ def reply_problems(text):
                 problems.append("the reply location does not pin the id length, so it matches other paths")
             if route.fullmatch("/threads/" + "z" * 36 + "/reply") is not None:
                 problems.append("the reply location matches 36 characters that cannot be in a thread id")
+            # A class that matches on past the id, and one that makes the id optional, pass
+            # every probe above: both accept a real id and refuse the wrong width and
+            # alphabet. What they also accept is a path that is not a thread id at all.
+            if route.fullmatch("/threads/" + str(uuid.uuid4()) + "x/reply") is not None:
+                problems.append("the reply location accepts a path that runs on past the thread id")
+            if route.fullmatch("/threads//reply") is not None:
+                problems.append("the reply location accepts a request with no thread id")
     # The condition lines, not the words "return 405": `= POST` refuses the wrong requests and
-    # `!= 0` inverts the gate, and both still leave the phrase in the block. The 405 runs first
-    # so an unauthenticated GET cannot learn whether the route exists.
+    # `!= 0` inverts the gate, and both still leave the phrase in the block. The order is about
+    # the status a caller gets, not about what it learns: 405 and 401 are both emitted from
+    # inside a location that already matched the shape, so either one confirms the route. A
+    # non-POST should be refused as a method, not invited to retry with a token.
     method_guard = "if ($request_method != POST) { return 405; }"
     gate_guard = "if ($wake_reply_has_auth = 0) { return 401; }"
     if method_guard not in block:
-        problems.append("§6.5 does not refuse a non-POST with 405")
+        problems.append(f"§6.5 does not carry {method_guard} as written")
     if gate_guard not in block:
-        problems.append("§6.5 does not refuse a credential-less request with 401")
+        problems.append(f"§6.5 does not carry {gate_guard} as written")
     if method_guard in block and gate_guard in block and block.index(method_guard) > block.index(gate_guard):
-        problems.append("§6.5 checks the credential before the method, so a GET learns whether the route exists")
+        problems.append("§6.5 checks the credential before the method, so a non-POST gets a 401 instead of a 405")
     if "limit_except" in block:
         problems.append("§6.5 gates the method with limit_except, which runs after the 401 check")
     proxy = re.search(r"proxy_pass\s+(\S+);", block)
@@ -219,6 +228,33 @@ class ReplyRoutePublishTest(unittest.TestCase):
         self.assertNotEqual(text, read(), "the runbook no longer uses the hex-or-dash id class")
         self.assertNotEqual(reply_problems(text), [])
 
+    def test_a_class_that_matches_on_past_the_id_is_caught(self):
+        # `[0-9a-fA-F-]{36}.*` accepts a real id and refuses the wrong width and alphabet,
+        # and also accepts `/threads/<uuid>x/reply`.
+        text = read().replace("[0-9a-fA-F-]{36}", "[0-9a-fA-F-]{36}.*")
+        self.assertNotEqual(text, read(), "the runbook no longer uses the hex-or-dash id class")
+        self.assertIn("runs on past the thread id", " ".join(reply_problems(text)))
+
+    def test_an_optional_thread_id_is_caught(self):
+        # `([0-9a-fA-F-]{36})?` also accepts `/threads//reply`, which no handler answers.
+        text = read().replace("[0-9a-fA-F-]{36}", "([0-9a-fA-F-]{36})?")
+        self.assertNotEqual(text, read(), "the runbook no longer uses the hex-or-dash id class")
+        self.assertIn("no thread id", " ".join(reply_problems(text)))
+
+    def test_a_class_with_no_width_limit_is_caught(self):
+        # `[0-9a-fA-F-]+` matches a single character, so the width probe is the only check
+        # that refuses `/threads/a/reply`. Deleting it used to leave this suite green.
+        text = read().replace("[0-9a-fA-F-]{36}", "[0-9a-fA-F-]+")
+        self.assertNotEqual(text, read(), "the runbook no longer uses the hex-or-dash id class")
+        self.assertIn("does not pin the id length", " ".join(reply_problems(text)))
+
+    def test_an_uncompilable_class_is_caught(self):
+        # Silencing the re.error branch made this report no problems at all, so a runbook
+        # whose class does not compile shipped unaudited.
+        text = read().replace("[0-9a-fA-F-]{36}", "[0-9a-fA-F-{36}")
+        self.assertNotEqual(text, read(), "the runbook no longer uses the hex-or-dash id class")
+        self.assertIn("not a valid regex", " ".join(reply_problems(text)))
+
     def test_the_method_guard_flipped_is_caught(self):
         # `= POST` keeps the words "return 405" in the block and refuses every legitimate reply.
         text = read().replace("if ($request_method != POST)", "if ($request_method = POST)")
@@ -231,7 +267,7 @@ class ReplyRoutePublishTest(unittest.TestCase):
         self.assertNotEqual(text, read(), "the runbook no longer shows the gate as written")
         self.assertNotEqual(reply_problems(text), [])
 
-    def test_the_guards_are_pinned_in_the_order_that_hides_the_route(self):
+    def test_the_guards_are_pinned_in_the_order_the_runbook_states(self):
         block = read()
         swapped = block.replace(
             "        if ($request_method != POST) { return 405; }\n"
