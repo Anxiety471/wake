@@ -795,11 +795,49 @@ class BuildRefTestCase(unittest.TestCase):
         # The commit is written beside the installed file, so status can answer about the host
         # rather than about what this checkout last built.
         log = self.logged()
-        self.assertIn("cat > /opt/wake.commit", log)
-        self.assertIn(self.main, log.split("cat > /opt/wake.commit", 1)[1].split("\n--\n", 1)[0])
+        self.assertIn("sudo -n tee /opt/wake.commit", log)
+        self.assertIn(self.main, log.split("sudo -n tee /opt/wake.commit", 1)[1].split("\n--\n", 1)[0])
         self.assertIn(
             "install -o root -g wake -m 644 /opt/wake.commit /opt/wake/index.commit", log, "the record is not installed"
         )
+
+    def test_a_non_root_operator_stages_and_cleans_up_through_sudo(self):
+        # #109: /opt is root-owned, so an unprivileged `cat >` there is a permission error and an
+        # unprivileged `rm` cannot remove what install(1) placed. Both must go through priv().
+        r = run("wake-host-deploy", "build", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run("wake-host-deploy", "install", env=dict(self.env, WAKE_NODE="/usr/bin/node"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.logged()
+        for needed in (
+            "sudo -n install -o root -g wake -m 644 /dev/null /opt/wake.index.mjs",
+            "sudo -n tee /opt/wake.index.mjs",
+            "sudo -n rm -f /opt/wake.index.mjs",
+            "sudo -n install -o root -g wake -m 644 /dev/null /opt/wake.commit",
+            "sudo -n rm -f /opt/wake.commit",
+        ):
+            self.assertIn(needed, log)
+        self.assertNotIn("cat > /opt/wake", log, "a staging file is written without sudo")
+        self.assertNotIn("&& rm -f /opt/wake", log, "the cleanup is not privileged")
+
+    def test_the_root_operator_gets_no_sudo_prefix(self):
+        # WAKE_SUDO="" is the root case; priv() has to disappear rather than emit a bare space.
+        r = run("wake-host-deploy", "build", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run("wake-host-deploy", "install", env=dict(self.env, WAKE_NODE="/usr/bin/node", WAKE_SUDO=""))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.logged()
+        self.assertIn("install -o root -g wake -m 644 /dev/null /opt/wake.index.mjs", log)
+        self.assertIn("tee /opt/wake.index.mjs", log)
+        self.assertNotIn("sudo", log)
+
+    def test_a_dry_run_prints_the_staging_step_without_touching_the_host(self):
+        r = run("wake-host-deploy", "build", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run("wake-host-deploy", "install", "--dry-run", env=dict(self.env, WAKE_NODE="/usr/bin/node"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("put ", r.stdout)
+        self.assertEqual(self.logged(), "", "a dry run wrote to the host")
 
     def test_status_prints_the_commit_beside_the_installed_file(self):
         # The old line printed the last build's commit from the state directory: build B after

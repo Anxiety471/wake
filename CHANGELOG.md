@@ -93,6 +93,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   no migrations and fails if any `*.sql` reaches the host at all, the other requires each shipped
   migration to be chmodded by name; both fail against the old line
   ([#106](https://github.com/Anxiety471/wake/issues/106)).
+- **`install` stages and cleans up as root, so the documented non-root operator works.** `put()`
+  wrote the staging file with `cat >` as the operator into root-owned `/opt`, and the line after the
+  swap ran `rm -f` unprivileged: a `rakops` deploy holding `sudo -n` failed at the first staging
+  write, and after a hand-made staging file it exited `FAILED` with the new `index.mjs` already in
+  place and the staging file left behind, which reads as "nothing changed" to anything that trusts
+  the exit code. `put()` now creates the file through `install(1)` and fills it through `priv()`
+  (the ssh transport lands the bytes in the operator's own `/tmp` first, because scp cannot write
+  through sudo), both cleanups are privileged, and `WAKE_SUDO=""` still yields a command with no
+  prefix for the root case. Tests assert the exact host commands for a non-root and a root operator,
+  and that a dry run writes nothing
+  ([#109](https://github.com/Anxiety471/wake/issues/109)).
 
 - **The reply token never reaches the request log.** A woken bot's whole credential is the
   `X-Wake-Reply-Token` header on `POST /threads/:id/reply`, the one request the API logs without a

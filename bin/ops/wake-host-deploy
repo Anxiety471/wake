@@ -154,21 +154,36 @@ def host(command, data=None, check=True):
 
 
 def put(local, remote):
+    """Write `local` to `remote` as root, over whichever transport is configured.
+
+    Every caller stages into the install dir's parent, which is root-owned, and the documented
+    operator is a non-root account with `sudo -n` (#109): an unprivileged `cat > /opt/wake.index.mjs`
+    is a permission error, so the file is created through install(1) and filled through priv().
+    The ssh transport lands the bytes in the operator's own /tmp first and install(1) moves them,
+    because scp has no way to write through sudo.
+    """
     dest = os.environ.get("WAKE_HOST_SSH")
     if DRY:
         print(f"  $ put {local} -> {remote}")
         return
+    quoted = shlex.quote(remote)
     if dest:
+        staged = f"/tmp/wake-put-{os.getpid()}-{os.path.basename(remote)}"
         r = subprocess.run(
-            ["scp", "-q", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", local, f"{dest}:{remote}"],
+            ["scp", "-q", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", local, f"{dest}:{staged}"],
             capture_output=True,
             text=True,
         )
         if r.returncode != 0:
             sys.exit(f"scp failed: {r.stderr[-400:]}")
+        host(
+            f"{priv('install')} -o root -g {SERVICE_GROUP} -m 644 {shlex.quote(staged)} {quoted} && "
+            f"{priv('rm')} -f {shlex.quote(staged)}"
+        )
         return
+    host(f"{priv('install')} -o root -g {SERVICE_GROUP} -m 644 /dev/null {quoted}")
     with open(local, encoding="utf-8") as f:
-        host(f"cat > {shlex.quote(remote)}", data=f.read())
+        host(f"{priv('tee')} {quoted} >/dev/null", data=f.read())
 
 
 def sql_name(variable, value):
@@ -552,7 +567,8 @@ def step_install():
         put(os.path.join(out, "index.mjs"), f"{INSTALL_DIR}.index.mjs")
     host(
         f"{priv('install')} -o root -g {SERVICE_GROUP} -m 644 {INSTALL_DIR}.index.mjs {INSTALL_DIR}/index.mjs "
-        f"&& rm -f {INSTALL_DIR}.index.mjs"
+        # The staging file is root-owned now, so the cleanup has to be privileged too.
+        f"&& {priv('rm')} -f {INSTALL_DIR}.index.mjs"
     )
     migrations = os.path.join(out, "migrations") if out else None
     names, payload = migration_payload(migrations) if migrations else ([], "")
@@ -585,7 +601,7 @@ def step_install():
         put(sidecar, f"{INSTALL_DIR}.commit")
         host(
             f"{priv('install')} -o root -g {SERVICE_GROUP} -m 644 {INSTALL_DIR}.commit {INSTALL_DIR}/index.commit "
-            f"&& rm -f {INSTALL_DIR}.commit"
+            f"&& {priv('rm')} -f {INSTALL_DIR}.commit"
         )
     else:
         # An unnamed build must not inherit the previous install's name.
