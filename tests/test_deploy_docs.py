@@ -12,6 +12,7 @@ down, so a location that drifts in the runbook drifts on the next host.
 import os
 import re
 import unittest
+import uuid
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 README = os.path.join(ROOT, "deploy", "README.md")
@@ -85,12 +86,32 @@ def reply_problems(text):
             problems.append("the reply location is not anchored to the start of the path")
         if not pattern.endswith("/reply$"):
             problems.append("the reply location does not end at /reply$")
-        if "{36}" not in pattern:
-            problems.append("the reply location does not pin the id length, so it matches other paths")
-    if "return 405" not in block:
+        # Compile it both ways. A substring check on "{36}" passes a class that can never
+        # fill a thread id (`[0-9a-f]{36}` has no dashes) and a wildcard width (`.{36}` matches
+        # any 36 characters). The class the runbook uses is hex-or-dash, so a real id has to
+        # match, and a path of the wrong width or alphabet has to be refused.
+        try:
+            route = re.compile(pattern)
+        except re.error as error:
+            problems.append(f"the reply location is not a valid regex: {error}")
+        else:
+            if route.fullmatch("/threads/" + str(uuid.uuid4()) + "/reply") is None:
+                problems.append("the reply location does not match a thread id")
+            if route.fullmatch("/threads/" + "a" * 35 + "/reply") is not None:
+                problems.append("the reply location does not pin the id length, so it matches other paths")
+            if route.fullmatch("/threads/" + "z" * 36 + "/reply") is not None:
+                problems.append("the reply location matches 36 characters that cannot be in a thread id")
+    # The condition lines, not the words "return 405": `= POST` refuses the wrong requests and
+    # `!= 0` inverts the gate, and both still leave the phrase in the block. The 405 runs first
+    # so an unauthenticated GET cannot learn whether the route exists.
+    method_guard = "if ($request_method != POST) { return 405; }"
+    gate_guard = "if ($wake_reply_has_auth = 0) { return 401; }"
+    if method_guard not in block:
         problems.append("§6.5 does not refuse a non-POST with 405")
-    if "return 401" not in block:
+    if gate_guard not in block:
         problems.append("§6.5 does not refuse a credential-less request with 401")
+    if method_guard in block and gate_guard in block and block.index(method_guard) > block.index(gate_guard):
+        problems.append("§6.5 checks the credential before the method, so a GET learns whether the route exists")
     if "limit_except" in block:
         problems.append("§6.5 gates the method with limit_except, which runs after the 401 check")
     proxy = re.search(r"proxy_pass\s+(\S+);", block)
@@ -184,6 +205,42 @@ class ReplyRoutePublishTest(unittest.TestCase):
     def test_a_route_without_the_credential_gate_is_caught(self):
         self.assertNotEqual(reply_problems(read().replace("return 401", "return 404")), [])
         self.assertNotEqual(reply_problems(read().replace("return 405", "return 404")), [])
+
+    def test_a_class_that_cannot_match_a_thread_id_is_caught(self):
+        # `[0-9a-f]{36}` still contains "{36}", so the substring check passed it, but a thread
+        # id is dash-separated and this route would publish nothing.
+        text = read().replace("[0-9a-fA-F-]{36}", "[0-9a-f]{36}")
+        self.assertNotEqual(text, read(), "the runbook no longer uses the hex-or-dash id class")
+        self.assertNotEqual(reply_problems(text), [])
+
+    def test_a_wildcard_width_is_caught(self):
+        # `.{36}` also contains "{36}" and matches any 36 characters, not a thread id.
+        text = read().replace("[0-9a-fA-F-]{36}", ".{36}")
+        self.assertNotEqual(text, read(), "the runbook no longer uses the hex-or-dash id class")
+        self.assertNotEqual(reply_problems(text), [])
+
+    def test_the_method_guard_flipped_is_caught(self):
+        # `= POST` keeps the words "return 405" in the block and refuses every legitimate reply.
+        text = read().replace("if ($request_method != POST)", "if ($request_method = POST)")
+        self.assertNotEqual(text, read(), "the runbook no longer shows the method guard as written")
+        self.assertNotEqual(reply_problems(text), [])
+
+    def test_the_credential_gate_inverted_is_caught(self):
+        # `!= 0` keeps "return 401" and opens the route to every credential-less request.
+        text = read().replace("if ($wake_reply_has_auth = 0)", "if ($wake_reply_has_auth != 0)")
+        self.assertNotEqual(text, read(), "the runbook no longer shows the gate as written")
+        self.assertNotEqual(reply_problems(text), [])
+
+    def test_the_guards_are_pinned_in_the_order_that_hides_the_route(self):
+        block = read()
+        swapped = block.replace(
+            "        if ($request_method != POST) { return 405; }\n"
+            "        if ($wake_reply_has_auth = 0) { return 401; }",
+            "        if ($wake_reply_has_auth = 0) { return 401; }\n"
+            "        if ($request_method != POST) { return 405; }",
+        )
+        self.assertNotEqual(swapped, block, "the runbook no longer shows the two guards on consecutive lines")
+        self.assertNotEqual(reply_problems(swapped), [])
 
     def test_a_gate_that_ignores_the_bearer_is_caught(self):
         # A bot with its own agent token answers this route too; gating on the reply

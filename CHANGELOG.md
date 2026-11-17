@@ -306,6 +306,15 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   hid it. The module is loaded the same way those loaders load theirs, and a test runs a
   bare interpreter over the suite and fails if `bin/__pycache__` appears.
 
+- **The reply-route guard compiles the pattern instead of looking for `{36}`.** A substring check
+  passed `[0-9a-f]{36}` (no dashes, so it matches no thread id) and `.{36}` (any 36 characters),
+  and the method and credential checks looked for `return 405` and `return 401` anywhere in the
+  block, so `= POST` and `!= 0` passed as well and the order was never asserted. The guard now
+  compiles §6.5's pattern and requires it to match a real uuid and refuse a 35-character path and a
+  non-hex one, pins the two condition lines, and requires the 405 before the 401 so an
+  unauthenticated `GET` cannot learn the route exists
+  ([#118](https://github.com/Anxiety471/wake/issues/118)).
+
 ### Security
 
 - **`wake-pingall` keeps every alias a bot name before it becomes a path or an argument.**
