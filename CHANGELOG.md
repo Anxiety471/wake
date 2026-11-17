@@ -81,6 +81,19 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **`install` stops chmodding a migrations glob it did not fill.** A build carrying no migrations
+  printed `migrations: 0 (this build carries none)` and then ran
+  `chown -R … && chmod 644 …/migrations/*.sql` anyway. On a first install that directory is empty,
+  the shell leaves the pattern literal, `chmod` exits 1 on a path that does not exist, and the step
+  reported `FAILED` after `index.mjs` and `index.commit` were already in place - a partial deploy
+  that says nothing changed, and re-running failed the same way. The `chown` is its own command now
+  (the directory always exists, because the same step creates it) and the `chmod` names the files
+  the build actually shipped instead of globbing, so a directory holding something else cannot be
+  reached by it. Two tests drive the real helper against a recording host: one installs a build with
+  no migrations and fails if any `*.sql` reaches the host at all, the other requires each shipped
+  migration to be chmodded by name; both fail against the old line
+  ([#106](https://github.com/Anxiety471/wake/issues/106)).
+
 - **The reply token never reaches the request log.** A woken bot's whole credential is the
   `X-Wake-Reply-Token` header on `POST /threads/:id/reply`, the one request the API logs without a
   bearer, and the `incoming request` line wrote it in plaintext: `headersForLog` and `REDACT_PATHS`

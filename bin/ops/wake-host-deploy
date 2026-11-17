@@ -569,10 +569,15 @@ def step_install():
             f'cd {INSTALL_DIR}/migrations && for f in *.sql; do [ -e "$f" ] || continue; '
             f'case " {keep} " in *" $f "*) ;; *) {priv("rm")} -f "$f" ;; esac; done'
         )
-    host(
-        f"{priv('chown')} -R root:{SERVICE_GROUP} {INSTALL_DIR}/migrations && "
-        f"{priv('chmod')} 644 {INSTALL_DIR}/migrations/*.sql"
-    )
+    # The directory exists either way (the `install -d` at the top of this step makes it), so a
+    # chown here cannot fail on a build that carries no migrations (#106).
+    host(f"{priv('chown')} -R root:{SERVICE_GROUP} {INSTALL_DIR}/migrations")
+    if names:
+        # Exact names, never a glob. `chmod 644 <dir>/*.sql` in a directory that matches
+        # nothing hands chmod the literal pattern, chmod exits 1, and install reports FAILED
+        # after index.mjs is already in place: a partial deploy that says nothing changed.
+        files = " ".join(shlex.quote(name) for name in names)
+        host(f"cd {INSTALL_DIR}/migrations && {priv('chmod')} 644 {files}")
     if commit:
         sidecar = os.path.join(out, "index.commit")
         with open(sidecar, "w", encoding="utf-8") as f:
