@@ -323,9 +323,15 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   and the method and credential checks looked for `return 405` and `return 401` anywhere in the
   block, so `= POST` and `!= 0` passed as well and the order was never asserted. The guard now
   compiles §6.5's pattern and requires it to match a real uuid and refuse a 35-character path and a
-  non-hex one, pins the two condition lines, and requires the 405 before the 401 so an
-  unauthenticated `GET` cannot learn the route exists
+  non-hex one, pins the two condition lines, and requires the 405 before the 401 so a
+  non-POST is refused as a method rather than answered with a 401 that invites a retry
   ([#118](https://github.com/Anxiety471/wake/issues/118)).
+- **The reply-route guard refuses a path that runs on past the id, and checks itself.** Two
+  classes that passed every earlier probe, `[0-9a-fA-F-]{36}.*` and `([0-9a-fA-F-]{36})?`, also
+  accept `/threads/<uuid>x/reply` and `/threads//reply`, so the guard probes both. The width
+  probe and the `not a valid regex` branch had no test of their own: deleting either left the
+  doc suite green, and a runbook whose class does not compile reported no problems at all
+  ([#117](https://github.com/Anxiety471/wake/issues/117)).
 
 ### Security
 
