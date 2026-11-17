@@ -750,6 +750,40 @@ class BuildRefTestCase(unittest.TestCase):
             self.assertEqual(sorted(tar.getnames()), ["0001_built.sql"], "an uncommitted migration was shipped")
             self.assertEqual(tar.extractfile("0001_built.sql").read(), b"select 1;\n", "the edited bytes were shipped")
 
+    def test_a_build_with_no_migrations_never_globs_the_migrations_directory(self):
+        # #106: the host's migrations directory is empty on a first install, so a glob there
+        # stays a literal, chmod exits 1, and install says FAILED after index.mjs landed.
+        r = run("wake-host-deploy", "build", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("migrations: 0", r.stdout)
+        r = run("wake-host-deploy", "install", env=dict(self.env, WAKE_NODE="/usr/bin/node"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("migrations: 0 (this build carries none", r.stdout)
+        log = self.logged()
+        self.assertNotIn("*.sql", log, "install still globs a directory it did not fill")
+        self.assertIn(
+            "chown -R root:wake /opt/wake/migrations", log, "the directory is still handed to the service group"
+        )
+        self.assertNotIn("chmod", log, "install chmods files that are not there")
+
+    def test_the_shipped_migrations_are_chmodded_by_name(self):
+        # The positive control for #106: with migrations carried, each one is named, so a
+        # directory that holds something else cannot be reached by the same command.
+        migrations = os.path.join(self.repo, "apps", "api", "src", "migrations")
+        os.makedirs(migrations)
+        write(os.path.join(migrations, "0001_built.sql"), "select 1;\n")
+        self.git("add", "-A")
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "migrations")
+        self.main = self.git("rev-parse", "HEAD")
+        self.git("update-ref", "refs/remotes/origin/main", self.main)
+        r = run("wake-host-deploy", "build", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = run("wake-host-deploy", "install", env=dict(self.env, WAKE_NODE="/usr/bin/node"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.logged()
+        self.assertIn("chmod 644 0001_built.sql", log)
+        self.assertNotIn("chmod 644 /opt/wake/migrations/*.sql", log)
+
     def test_main_is_built_and_the_commit_reaches_install_and_status(self):
         r = run("wake-host-deploy", "build", env=self.env)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
