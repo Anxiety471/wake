@@ -1,10 +1,12 @@
-"""Guards for `deploy/README.md`: the nginx snippet decides what the internet reaches.
+"""Guards for `deploy/README.md`: the nginx snippets decide what the internet reaches.
 
 The publish step is a single `location` block in a runbook, so nothing compiles it and
 nothing runs it. A prefix match there (the first attempt) forwarded `/mcp/audit/prune`,
 `/mcp/identity` and the identity rotate/revoke routes to the app as well, collapsing the
-operator secret and the public token into one tier. These tests read the file the operator
-pastes from, which is the only place that boundary is written down.
+operator secret and the public token into one tier. The reply route has the same failure
+mode one route further on: a prefix there publishes every thread in the store. These tests
+read the file the operator pastes from, which is the only place that boundary is written
+down, so a location that drifts in the runbook drifts on the next host.
 """
 
 import os
@@ -14,6 +16,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 README = os.path.join(ROOT, "deploy", "README.md")
 UNITS = {"k": 1024, "m": 1024 * 1024, None: 1}
+HEADING = "### 6.5 Public reply route"
 
 
 def read():
@@ -21,10 +24,111 @@ def read():
         return handle.read()
 
 
-def nginx_block(text):
-    blocks = re.findall(r"```nginx\n(.*?)```", text, re.S)
-    assert len(blocks) == 1, f"expected one nginx block, found {len(blocks)}"
+def nginx_blocks(text):
+    return re.findall(r"```nginx\n(.*?)```", text, re.S)
+
+
+def nginx_block(text, needle="= /mcp"):
+    """The one nginx block that holds `needle`; asserts the runbook shows it exactly once."""
+    blocks = [block for block in nginx_blocks(text) if needle in block]
+    assert len(blocks) == 1, f"expected one nginx block with {needle!r}, found {len(blocks)}"
     return blocks[0]
+
+
+def section(text, heading):
+    """One `###` heading up to the next heading of the same or a higher level."""
+    if heading not in text:
+        return ""
+    start = text.index(heading)
+    ends = [
+        pos
+        for pos in (text.find("\n### ", start + 1), text.find("\n## ", start + 1))
+        if pos != -1
+    ]
+    return text[start : min(ends)] if ends else text[start:]
+
+
+def reply_blocks(text):
+    return nginx_blocks(section(text, HEADING))
+
+
+def reply_block(text):
+    """The location block of §6.5: the second of its two nginx blocks."""
+    blocks = reply_blocks(text)
+    assert len(blocks) == 2, f"§6.5 shows {len(blocks)} nginx blocks, expected the map and the location"
+    return blocks[1]
+
+
+def reply_problems(text):
+    """What §6.5 must publish, and every way it has gone wrong before.
+
+    Returns problems rather than raising, so a runbook that dropped the location reports
+    "no regex location" and "a prefix for /threads" instead of an IndexError.
+    """
+    problems = []
+    blocks = nginx_blocks(text)
+    if len(blocks) != 3:
+        problems.append(f"expected the runbook's three audited nginx blocks, found {len(blocks)}")
+    if HEADING not in text:
+        return problems + ["§6.5 is gone from the runbook"]
+    local = reply_blocks(text)
+    if len(local) != 2:
+        problems.append(f"§6.5 shows {len(local)} nginx blocks, expected the map and the location")
+    gate = local[0] if local else ""
+    block = local[1] if len(local) > 1 else ""
+
+    locations = re.findall(r"^\s*location\s+(.*?)\s*\{?\s*$", block, re.M)
+    if len(locations) != 1:
+        problems.append(f"§6.5 publishes {len(locations)} locations, expected 1: {locations}")
+    match = re.search(r'^\s*location\s+~\s+"([^"]+)"\s*\{', block, re.M)
+    if match is None:
+        problems.append("§6.5 no longer uses a quoted regex location")
+    else:
+        pattern = match.group(1)
+        if not pattern.startswith("^/threads/"):
+            problems.append("the reply location is not anchored to the start of the path")
+        if not pattern.endswith("/reply$"):
+            problems.append("the reply location does not end at /reply$")
+        if "{36}" not in pattern:
+            problems.append("the reply location does not pin the id length, so it matches other paths")
+    if "return 405" not in block:
+        problems.append("§6.5 does not refuse a non-POST with 405")
+    if "return 401" not in block:
+        problems.append("§6.5 does not refuse a credential-less request with 401")
+    if "limit_except" in block:
+        problems.append("§6.5 gates the method with limit_except, which runs after the 401 check")
+    proxy = re.search(r"proxy_pass\s+(\S+);", block)
+    if proxy is None or proxy.group(1) != "http://127.0.0.1:3001":
+        problems.append("§6.5 does not proxy to the loopback API")
+    ceiling = re.search(r"client_max_body_size\s+(\d+)([km])?;", block)
+    if ceiling is None:
+        problems.append("§6.5 does not bound the request body")
+    else:
+        size = int(ceiling.group(1)) * UNITS[ceiling.group(2)]
+        if not 8 * 1024 <= size <= 64 * 1024:
+            problems.append(f"§6.5 body ceiling {size} B is not between the app's 8 KiB and 64k")
+    if "map " in block:
+        problems.append("the map sits inside the server block; sites-enabled files are included in http")
+
+    # The map that feeds the 401 gate names both credentials: a bot with its own agent
+    # token answers this route too, so gating on the reply token alone refuses it.
+    if not re.search(
+        r'^map\s+"\$http_x_wake_reply_token\|\$http_authorization"\s+\$wake_reply_has_auth\s*\{',
+        gate,
+        re.M,
+    ):
+        problems.append("§6.5 no longer defines $wake_reply_has_auth from both headers")
+    if not re.search(r'^\s*"\|"\s+0;', gate, re.M):
+        problems.append("the map no longer maps the two-empty case to 0")
+    if not re.search(r"^\s*default\s+1;", gate, re.M):
+        problems.append("the map no longer defaults to 1")
+    if "location" in gate:
+        problems.append("the gate block carries a location; a map belongs at http level")
+
+    # A prefix anywhere would publish the rest of /threads, whatever §6.5 says.
+    if re.search(r"^\s*location\s+(?:\^~|~\*?|=\s*)?\s*/threads", text, re.M):
+        problems.append("the runbook carries a prefix location for /threads")
+    return problems
 
 
 class PublishSnippetTest(unittest.TestCase):
@@ -53,6 +157,62 @@ class PublishSnippetTest(unittest.TestCase):
         local = {name for name in os.listdir(os.path.join(ROOT, "deploy", "ops")) if name.endswith(".py")}
         cited = set(re.findall(r"/opt/wake/ops/([\w.-]+\.py)", body))
         self.assertEqual(cited - local, set())
+
+
+class ReplyRoutePublishTest(unittest.TestCase):
+    def test_the_runbook_publishes_the_reply_route_and_only_that_route(self):
+        self.assertEqual(reply_problems(read()), [])
+
+    def test_the_runbook_shows_three_audited_blocks_and_no_fourth(self):
+        blocks = nginx_blocks(read())
+        self.assertEqual(len(blocks), 3)
+        self.assertEqual(sum('= /mcp' in b for b in blocks), 1)
+        self.assertEqual(sum('$wake_reply_has_auth' in b and 'location' not in b for b in blocks), 1)
+        self.assertEqual(sum('/reply' in b for b in blocks), 1)
+
+    def test_a_prefix_location_for_threads_is_caught(self):
+        """The first attempt at /mcp, one route further on: it publishes the whole store."""
+        text = read().replace(
+            'location ~ "^/threads/[0-9a-fA-F-]{36}/reply$"', "location ^~ /threads/"
+        )
+        problems = reply_problems(text)
+        self.assertNotEqual(problems, [])
+
+    def test_an_unanchored_route_is_caught(self):
+        for old, new in (
+            ('"^/threads/[0-9a-fA-F-]{36}/reply$"', '"/threads/[0-9a-fA-F-]{36}/reply$"'),
+            ('"^/threads/[0-9a-fA-F-]{36}/reply$"', '"^/threads/[0-9a-fA-F-]{36}/reply"'),
+            ('"^/threads/[0-9a-fA-F-]{36}/reply$"', '"^/threads/.+/reply$"'),
+        ):
+            with self.subTest(pattern=new):
+                self.assertNotEqual(reply_problems(read().replace(old, new)), [])
+
+    def test_a_route_without_the_credential_gate_is_caught(self):
+        self.assertNotEqual(reply_problems(read().replace("return 401", "return 404")), [])
+        self.assertNotEqual(reply_problems(read().replace("return 405", "return 404")), [])
+
+    def test_a_gate_that_ignores_the_bearer_is_caught(self):
+        # A bot with its own agent token answers this route too; gating on the reply
+        # token alone would refuse it, and the map is the only place both are named.
+        text = read().replace(
+            '$http_x_wake_reply_token|$http_authorization', "$http_x_wake_reply_token"
+        )
+        self.assertNotEqual(reply_problems(text), [])
+
+    def test_the_map_and_the_location_have_to_be_in_different_contexts(self):
+        # sites-enabled files are included inside http{}: a map in the server block is a
+        # config error, and one location pasted at http level silently does nothing.
+        self.assertNotIn("map ", reply_block(read()))
+        gate = [b for b in nginx_blocks(read()) if "map " in b]
+        self.assertEqual(len(gate), 1)
+        self.assertNotIn("location", gate[0])
+
+    def test_the_body_ceiling_sits_between_the_apps_limit_and_a_spoolable_body(self):
+        ceiling = re.search(r"client_max_body_size\s+(\d+)([km])?;", reply_block(read()))
+        self.assertIsNotNone(ceiling)
+        size = int(ceiling.group(1)) * UNITS[ceiling.group(2)]
+        self.assertGreaterEqual(size, 8 * 1024)
+        self.assertLessEqual(size, 64 * 1024)
 
 
 class SectionNumberingTest(unittest.TestCase):

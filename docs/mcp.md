@@ -107,6 +107,11 @@ thread `/mcp` opened, so it cannot answer one of those: the route answers `409
 the asker cannot answer its own ask`. A thread opened by the doorbell instead
 carries the reply token above, and its recipient answers it without `/mcp`.
 
+The API listens on loopback, so that answer only reaches it once
+`POST /threads/:id/reply` is published: one UUID-anchored location, documented in
+`deploy/README.md` §6.5, and `WAKE_API` set to the public root on the bots. Without
+it the token is unusable from the bot's own computer and the route answers `404`.
+
 Ten of the tools go to the API. `wake_fleet` is the exception: the routing table lives on the
 client machine, so the stdio bridge answers it itself with the aliases the `wake` CLI reaches —
 `{"registry": "<path>", "bots": [{"alias", "id", "name", "kind", "role", "reach"}]}`, where `reach`
