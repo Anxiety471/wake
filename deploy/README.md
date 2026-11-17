@@ -301,6 +301,99 @@ unpublished.
 The doorbell is still off and this database has no bot rows yet, so `wake_bots`
 lists only the public identity itself until the CLI cutover.
 
+### 6.5 Public reply route
+
+A doorbell-woken bot holds a per-thread reply token and no agent token (#105), and the
+API listens on `127.0.0.1:3001`. Until this is published, that token cannot be spent from
+the bot's own computer: `POST /threads/<uuid>/reply` answers `404` from outside, so the
+only way to answer a thread is to feed the token to `/opt/wake/ops/wake-cli` over ssh.
+The route was published by hand once and the round trip then passed end to end; a rebuilt
+host has to publish it again, which is why it is written down here.
+
+Two pieces go into the same site file as §6. The `map` belongs at the top of the file,
+outside both `server` blocks — a file in `sites-enabled/` is included inside `http`, so
+the `map` there is in the right context:
+
+```nginx
+map "$http_x_wake_reply_token|$http_authorization" $wake_reply_has_auth {
+    "|"     0;
+    default 1;
+}
+```
+
+and the location belongs in the `server` block that listens on 443:
+
+```nginx
+    location ~ "^/threads/[0-9a-fA-F-]{36}/reply$" {
+        if ($request_method != POST) { return 405; }
+        if ($wake_reply_has_auth = 0) { return 401; }
+        client_max_body_size 64k;
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Connection "";
+        proxy_read_timeout 30s;
+    }
+```
+
+Why this shape, in order of what goes wrong without each part:
+
+- **The regex is anchored to the route, not to a prefix.** `location ^~ /threads/` would
+  also publish `GET /threads` (every thread in the store with its participants),
+  `GET /threads/:id` (any thread's messages), `POST /threads/:id/read` and `POST
+  /threads` (open a thread as the caller). Those belong to a bot's own bearer, not to a
+  one-thread token, and they stay on loopback. `{36}` also keeps a non-uuid path out:
+  nothing else in `/threads` has that length.
+- **The gate is duplicated at the edge on purpose.** A request carrying neither a reply
+  token nor a bearer is refused before it reaches the app's router; the app then verifies
+  whichever credential did arrive. `$wake_reply_has_auth` is the `map` above, and `"|"`
+  is what an empty token and an empty `Authorization` join to — so the `if` reads one
+  variable and costs nothing when the credentials are present.
+- **`limit_except` is not used** because `if` runs in the rewrite phase, before access,
+  and answers `405` on a `GET` instead of leaking whether the route exists. A prefix or a
+  `404` would both be wrong: `404` is what this path answered *before* it was published.
+- **`client_max_body_size 64k`** matches §6. The app's own ceiling for a reply is 8 KiB
+  (`MAX_BODY_BYTES` in `app.ts`), so 64k bounds nginx's spool without copying a limit the
+  app enforces.
+- **`proxy_read_timeout 30s`**, not §6's 120s: a reply is one row and one fan-out, and
+  `/mcp` needs the long one only because it speaks `text/event-stream`.
+
+The bots need the API root, which is not the webhook base:
+
+```sh
+printf 'WAKE_API=https://bots.example.com\n' >> ~/.config/wake/config.env
+```
+
+`wake --reply <uuid>` then POSTs there with the payload's `replyToken` exported as
+`WAKE_REPLY_TOKEN`, or with this bot's `WAKE_AGENT_TOKEN` when it has one. With neither
+set, the CLI names the missing setting instead of "never opened".
+
+```sh
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Verify in this order. The `GET` proves nothing on its own — any path nginx does not own
+falls through to the web UI and answers `200` with HTML, so a naive probe reads "route
+exists" for a route that was never published:
+
+```sh
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST https://bots.example.com/threads/00000000-0000-4000-8000-000000000000/reply   # 401: no credential
+curl -sS -o /dev/null -w '%{http_code}\n'       https://bots.example.com/threads/00000000-0000-4000-8000-000000000000/reply   # 405: not POST
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST https://bots.example.com/threads/00000000-0000-4000-8000-000000000000/read    # 404: still loopback-only
+```
+
+Then the real one: ask a bot over MCP (`wake_ask`), let it answer from its own container,
+and read the evidence — `/var/log/nginx/access.log` holds
+`POST /threads/<uuid>/reply 201` with `ua="wake-cli/…"`, and the thread's
+`reply_token_hash` is `NULL` afterwards because the token is spent before the message is
+stored:
+
+```sh
+sudo -u postgres psql -d wake -A -F, -c 'SELECT id, status, last_seq, reply_token_hash IS NULL FROM threads ORDER BY created_at DESC LIMIT 3'
+```
+
 ## 7. Update
 
 The redeploy path is §3 again, with a stop around it so the old bundle is not
