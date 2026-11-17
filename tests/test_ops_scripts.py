@@ -178,6 +178,19 @@ class OpsFilesTestCase(unittest.TestCase):
         # runs this script (it needs Postgres and bun), so pin the shape here.
         self.assertNotRegex(read("wake-api-e2e"), r"\.\[1\]\.result\.tools\s*\|\s*length")
 
+    def test_the_e2e_bridge_step_reads_the_tool_names(self):
+        # The negative pin above names one shape. These are the shapes that would slip past
+        # it (#81): `.[-2].result.tools | length`, `map(.name) | length == 10`, or a rewrite
+        # that re-indexes the replies. What the step has to do is read the names and compare
+        # them to the ten the server ships, so that is what is asserted here.
+        script = read("wake-api-e2e")
+        self.assertRegex(
+            script,
+            r"\[\.\[1\]\.result\.tools\[\]\.name\]\s*as\s*\$n",
+            "the bridge step no longer collects the tool names",
+        )
+        self.assertIn('["wake_ask","wake_reply"', script, "the expected name list is gone")
+
     def test_the_e2e_script_refuses_a_missing_checkout(self):
         r = run("wake-api-e2e", env={"WAKE_REPO": tempfile.mkdtemp(prefix="not-a-checkout-")})
         self.assertEqual(r.returncode, 1)
