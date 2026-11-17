@@ -11,6 +11,7 @@ import base64
 import contextlib
 import io
 import os
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -586,25 +587,25 @@ class ScpTransportTestCase(unittest.TestCase):
             executable=True,
         )
 
-    def ssh(self, warning):
+    def ssh(self, warning, silent=False):
         """A host that answers `mktemp` the way mktemp does: creates the file 0600 and prints it.
 
         `warning` is what ssh itself writes to stderr (a host-key notice), which the helper reads
-        back together with stdout.
+        back together with stdout. `silent` is a host that answers nothing at all, the way a
+        failed `mktemp` does.
         """
         body = "#!/bin/sh\nfor last; do :; done\n"
         if warning:
             body += 'printf "%s\\n" "$WAKE_SSH_WARNING" >&2\n'
-        body += (
-            'printf "SSH: %s\\n" "$last" >> "$STUB_LOG"\n'
-            'case "$last" in\n'
-            '  "mktemp "*)\n'
-            "      set -- $last; shift\n"
-            '      p=$(mktemp "$1") || exit 1\n'
-            '      chmod 600 "$p"\n'
-            '      printf "%s\\n" "$p" ;;\n'
-            "esac\n"
-        )
+        body += 'printf "SSH: %s\\n" "$last" >> "$STUB_LOG"\ncase "$last" in\n  "mktemp "*)\n'
+        if not silent:
+            body += (
+                "      set -- $last; shift\n"
+                '      p=$(mktemp "$1") || exit 1\n'
+                '      chmod 600 "$p"\n'
+                '      printf "%s\\n" "$p"\n'
+            )
+        body += "      ;;\nesac\n"
         path = os.path.join(self.bin, "ssh")
         write(path, body, executable=True)
         if warning:
@@ -640,8 +641,12 @@ class ScpTransportTestCase(unittest.TestCase):
         for line in log.splitlines():
             if line.startswith("SCP "):
                 self.assertIn("mode=600", line, line)
-        # And install(1) moves the very file scp wrote.
-        self.assertIn(f"install -o root -g wake -m 644 {paths[0]} /opt/wake.index.mjs", log)
+        # And install(1) moves the very file scp wrote. The mode on that intermediate is
+        # incidental (root reads it, and the bundle the service runs is installed from it next),
+        # so this pins the move, not the mode.
+        self.assertRegex(log, rf"install -o root -g wake -m \d+ {re.escape(paths[0])} /opt/wake\.index\.mjs")
+        # The mode that decides whether the service can read its bundle is on the destination.
+        self.assertIn("install -o root -g wake -m 644 /opt/wake.index.mjs /opt/wake/index.mjs", log)
 
     def test_a_host_notice_on_stderr_never_becomes_part_of_the_staged_path(self):
         # host() returns stdout and stderr together, so a host-key notice is spliced into the name
@@ -654,6 +659,15 @@ class ScpTransportTestCase(unittest.TestCase):
         self.assertNotIn("REFUSED", log, "a staged path carried the host's stderr")
         self.assertNotIn("Warning", log, log[:400])
         self.assertEqual(len(self.staged()), 1, log)
+
+    def test_a_host_that_names_nothing_stops_before_scp(self):
+        # `mktemp` on the host can fail and answer nothing. scp would then be handed an empty
+        # path and write into the operator's own directory, so put() has to stop first (#117).
+        self.ssh(warning=None, silent=True)
+        r = self.install("silent")
+        self.assertNotEqual(r.returncode, 0, "a deploy went ahead with no staged file")
+        self.assertIn("did not name a staging file", r.stdout + r.stderr)
+        self.assertNotIn("SCP ", self.logged(), "scp was handed no staged path")
 
 
 class BuildStateTestCase(unittest.TestCase):
