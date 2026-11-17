@@ -497,6 +497,55 @@ class HostDeployTestCase(unittest.TestCase):
             "the staged file must be renamed after it is written",
         )
 
+    def test_install_stages_every_file_as_the_privileged_user(self):
+        # /opt is root-owned and the operator is not root, so `cat > /opt/wake.index.mjs` was
+        # refused with Permission denied and the install died before it started (#109). This stub
+        # refuses exactly what the kernel refuses there; the fix writes through the privileged
+        # user, so it never sends those shapes.
+        strict = write(
+            os.path.join(self.dir, "hostops-strict"),
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            '  "cat > /opt/"*|"rm -f /opt/"*) echo "Permission denied" >&2; exit 1 ;;\n'
+            "esac\n"
+            "{ printf 'CMD: %s\\n' \"$1\"; cat; printf '\\n--\\n'; } >> \"$STUB_LOG\"\n",
+            executable=True,
+        )
+        state = os.path.join(self.dir, "state")
+        build = make_build(self.dir)
+        record(state, build)
+        env = dict(self.env, WAKE_HOSTOPS=strict, WAKE_DEPLOY_STATE=state, WAKE_NODE="/usr/bin/node")
+        r = run("wake-host-deploy", "install", env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.logged()
+        self.assertIn("sudo -n tee /opt/wake.index.mjs", log)
+        self.assertNotIn("cat > /opt/wake.index.mjs", log)
+        self.assertIn("&& sudo -n rm -f /opt/wake.index.mjs", log)
+
+    def test_a_build_that_carries_no_migrations_never_runs_the_empty_glob(self):
+        # A real shell fails `chmod 644 <dir>/*.sql` when the glob matches nothing, and that ran
+        # after index.mjs had already been replaced: a build with no migrations reported FAILED
+        # for a host it had just installed (#106). The stub fails that exact glob, as the host does.
+        glob = write(
+            os.path.join(self.dir, "hostops-noglob"),
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            '  *"chmod 644 /opt/wake/migrations/*.sql"*)'
+            " echo \"chmod: cannot access '/opt/wake/migrations/*.sql': No such file or directory\" >&2;"
+            " exit 1 ;;\n"
+            "esac\n"
+            "{ printf 'CMD: %s\\n' \"$1\"; cat; printf '\\n--\\n'; } >> \"$STUB_LOG\"\n",
+            executable=True,
+        )
+        state = os.path.join(self.dir, "state")
+        build = make_build(self.dir)  # no migrations/ directory: the build carries none
+        record(state, build)
+        env = dict(self.env, WAKE_HOSTOPS=glob, WAKE_DEPLOY_STATE=state, WAKE_NODE="/usr/bin/node")
+        r = run("wake-host-deploy", "install", env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("migrations: 0", r.stdout)
+        self.assertNotIn("chmod 644 /opt/wake/migrations/*.sql", self.logged())
+
 
 class BuildStateTestCase(unittest.TestCase):
     """The files that remember a build: nobody else's directory, and a dry run never dies."""
