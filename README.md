@@ -142,10 +142,11 @@ Every setting is an environment variable; the same names can be set in `~/.confi
 | `WAKE_API` | *(empty: no API calls)* | wake API root the CLI may call, e.g. `http://127.0.0.1:3001`; `wake --reply` uses it for a thread the shared folder does not hold |
 | `WAKE_AGENT_TOKEN` | *(empty: no API calls)* | this bot's own agent token (the one `POST /agents` returned for it), so `wake --reply` can answer an API thread as this bot. The `mcp` token is not a substitute: it is the asker of every thread it opened, and the route refuses the asker |
 | `WAKE_CONFIG_DIR` | `~/.config/wake` | where `config.env`, `bots.tsv` and keys live by default |
-| `WAKE_CONFIG` | `$WAKE_CONFIG_DIR/config.env` | config file path |
+| `WAKE_CONFIG` | `$WAKE_CONFIG_DIR/config.env` | config file path; when it is not set, `/etc/wake/config.env` is read first and `$WAKE_CONFIG_DIR/config.env` overrides it |
+| `WAKE_SYSTEM_CONFIG` | `/etc/wake/config.env` | the host site file, read under the user's config; empty switches that layer off (a test run, or an account that must not see it) |
 | `WAKE_REGISTRY` | `$WAKE_CONFIG_DIR/bots.tsv` | bot registry |
 | `WAKE_KEY_DIR` | `$WAKE_CONFIG_DIR` | `<bot-id>.key` files |
-| `WAKE_STATE_DIR` | `/var/lib/wake` | shared `threads/` and `inbox/`; a deployment may patch the host copy to a site directory of its own |
+| `WAKE_STATE_DIR` | `/var/lib/wake` | shared `threads/` and `inbox/`; a deployment sets its own store in `/etc/wake/config.env`, which every account reads |
 | `WAKE_HOSTOPS` | *(empty: this is the host)* | guest mode: executable that runs `$1` as a shell command on the host, stdin passed through |
 | `WAKE_KEY_HELPER` | `wake-webhook-key` | host command that mints keys (see protocol doc) |
 | `WAKE_GROUP` | `wake` | group allowed to read keys; used by the `sg` fallback |
