@@ -56,7 +56,8 @@ user cannot write exits 1 and names the expected mode.
 - `active/<hash>.json` — liveness marker `{"inbox": "<path>", "pid": <session pid>, ...}`. A reply is delivered to the inbox recorded on the thread if its pid is alive, otherwise to the single live inbox; with two or more live inboxes and no match, nothing is guessed. Markers older than a day are pruned on `register`.
 
 `wake-inbox-io register <hash> [json]` creates both and prints the inbox path; `beat <hash> [json]` rewrites the marker; `read <inbox>` prints the inbox. `<hash>` must be 6 to 32 lowercase hex characters (`[0-9a-f]{6,32}`), and `<inbox>` must be exactly `$WAKE_STATE_DIR/inbox/<hash>.jsonl`; anything else exits 1 before a command runs. A command runs locally when that inbox is
-writable; when it is not but `/etc/group` lists this account for the store's group, it runs
+writable and a read when it is readable; when it is neither but `/etc/group` lists this
+account for the store's group, the command runs
 through `sg <group>`, because a session started before the group existed keeps its old
 supplementary list and `sg` re-reads the group database. When an existing store has no route
 at all and `WAKE_HOSTOPS` is empty, nothing runs: the bridge prints one line saying why and

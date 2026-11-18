@@ -66,7 +66,8 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   patch back to `/var/lib/wake`, a directory the host does not have - so an installed
   `wake-inbox-io` looked at nothing and the session inbox broke on the next copy. `wake_config`
   now reads `/etc/wake/config.env` before `$WAKE_CONFIG_DIR/config.env`; the user's file still
-  wins, an explicit `WAKE_CONFIG` still replaces the search, and no script carries a site path
+  wins, `WAKE_SYSTEM_CONFIG` names the site file (an empty value switches it off), an explicit
+  `WAKE_CONFIG` still replaces the search, and no script carries a site path
   ([#125](https://github.com/Anxiety471/wake/issues/125)).
 
 - **The doorbell names the reply token, not only an agent token.** The reply hint still told a
@@ -121,7 +122,9 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   which is the fallback `bin/wake` already had for an unreadable key file. When no route reaches
   the store it now prints one line and exits 1 before running a command that can only fail, and
   says it once per uid instead of once per poll - the session extension polls every 3 s and its
-  stderr reaches the terminal ([#125](https://github.com/Anxiety471/wake/issues/125)).
+  stderr reaches the terminal. A write needs the inbox writable and a read only readable, so a
+  read-only store still answers `read`, which is what it did before the route decision existed
+  ([#125](https://github.com/Anxiety471/wake/issues/125)).
 - **`install` stops chmodding a migrations glob it did not fill.** A build carrying no migrations
   printed `migrations: 0 (this build carries none)` and then ran
   `chown -R … && chmod 644 …/migrations/*.sql` anyway. On a first install that directory is empty,

@@ -186,6 +186,7 @@ class WakeTestCase(unittest.TestCase):
             "USER": "tester",
             "LANG": "C.UTF-8",
             "WAKE_CONFIG_DIR": self.cfg,
+            "WAKE_SYSTEM_CONFIG": "",  # no /etc/wake/config.env: a test machine must not supply settings
             "WAKE_KEY_DIR": self.keys,
             "WAKE_STATE_DIR": self.state,
             "WAKE_RATE_DIR": self.rate,
@@ -1363,9 +1364,53 @@ class InboxIoUnreachableStoreTests(WakeTestCase):
         self.assertFalse(os.path.exists(log), "a writable store still went through sg")
 
 
+class InboxIoReadOnlyStoreTests(WakeTestCase):
+    """A read needs the store reachable, not writable.
+
+    The store is `root:<group>` 2770, so a member has both. A read-only mount, a snapshot or a
+    store only root may write is still readable, and `read` worked there before the route
+    decision existed; demanding write access would turn a working inbox into one line and
+    exit 1.
+    """
+
+    @unittest.skipIf(IS_ROOT, "root reads regardless of mode")
+    def test_a_read_of_a_read_only_store_answers(self):
+        inbox = os.path.join(self.state, "inbox")
+        os.makedirs(inbox)
+        box = os.path.join(inbox, "abc123.jsonl")
+        with open(box, "w") as f:
+            f.write('{"text": "hi"}\n')
+        os.chmod(inbox, 0o555)
+        self.addCleanup(chmod_if_present, inbox, 0o700)
+        r = self.run_bin("wake-inbox-io", "read", box, env={"WAKE_HOSTOPS": ""})
+        self.assertEqual(r.returncode, 0, (r.stdout, r.stderr))
+        self.assertEqual(r.stdout, '{"text": "hi"}\n')
+        self.assertEqual(r.stderr, "")
+
+    @unittest.skipIf(IS_ROOT, "root reads regardless of mode")
+    def test_a_read_from_an_unreachable_store_says_not_readable(self):
+        os.makedirs(os.path.join(self.state, "inbox"))
+        ns = vars(load_inbox_io(self.state))
+        err = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            # A store nothing can read. Setting the mode to 0000 would block the cleanup walk,
+            # so only the access check is replaced; the route decision runs for real.
+            stack.enter_context(mock.patch.object(ns["os"], "access", lambda path, mode: False))
+            stack.enter_context(mock.patch("sys.stderr", err))
+            stack.enter_context(mock.patch.object(ns["tempfile"], "gettempdir", lambda: self.tmp))
+            with self.assertRaises(SystemExit) as caught:
+                ns["sh"]("cat x", write=False)
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn("is not readable", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+
 class ConfigTests(unittest.TestCase):
     def test_defaults_and_derived_paths(self):
-        cfg = wake_config.load({"HOME": "/nonexistent-home", "WAKE_CONFIG_DIR": "/nonexistent-cfg"})
+        self.assertEqual(wake_config.SYSTEM_CONFIG, "/etc/wake/config.env")
+        cfg = wake_config.load(
+            {"HOME": "/nonexistent-home", "WAKE_CONFIG_DIR": "/nonexistent-cfg", "WAKE_SYSTEM_CONFIG": ""}
+        )
         self.assertEqual(cfg["WAKE_STATE_DIR"], "/var/lib/wake")
         self.assertEqual(cfg["WAKE_RATE_DIR"], "/tmp")
         self.assertEqual(cfg["WAKE_KEY_DIR"], "/nonexistent-cfg")
@@ -1417,6 +1462,24 @@ class ConfigTests(unittest.TestCase):
             with mock.patch.object(wake_config, "SYSTEM_CONFIG", system):
                 cfg = wake_config.load({"WAKE_CONFIG_DIR": os.path.join(tmp, "cfg"), "WAKE_CONFIG": explicit})
         self.assertEqual(cfg["WAKE_STATE_DIR"], "/srv/explicit")
+
+    def test_an_empty_system_config_switches_the_site_file_off(self):
+        """A test run, or an account that must not see the site file, can turn the layer off."""
+        with tempfile.TemporaryDirectory() as tmp:
+            system = os.path.join(tmp, "config.env")
+            with open(system, "w") as f:
+                f.write("WAKE_STATE_DIR=/var/lib/wake-site\n")
+            with mock.patch.object(wake_config, "SYSTEM_CONFIG", system):
+                cfg = wake_config.load({"WAKE_CONFIG_DIR": os.path.join(tmp, "cfg"), "WAKE_SYSTEM_CONFIG": ""})
+        self.assertEqual(cfg["WAKE_STATE_DIR"], "/var/lib/wake")
+
+    def test_the_site_file_can_be_named_in_the_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            system = os.path.join(tmp, "site.env")
+            with open(system, "w") as f:
+                f.write("WAKE_STATE_DIR=/srv/site\n")
+            cfg = wake_config.load({"WAKE_CONFIG_DIR": os.path.join(tmp, "cfg"), "WAKE_SYSTEM_CONFIG": system})
+        self.assertEqual(cfg["WAKE_STATE_DIR"], "/srv/site")
 
 
 class SuiteLeavesNoBytecodeTest(unittest.TestCase):

@@ -1,7 +1,9 @@
 """Shared settings for the wake scripts.
 
 Every setting is read from the environment first, then from a KEY=VALUE file
-($WAKE_CONFIG, default $WAKE_CONFIG_DIR/config.env, default ~/.config/wake/config.env),
+($WAKE_CONFIG, default $WAKE_CONFIG_DIR/config.env, default ~/.config/wake/config.env), then
+from the host site file ($WAKE_SYSTEM_CONFIG, default /etc/wake/config.env; an empty value
+switches that layer off),
 then falls back to the default below. An empty value in the environment counts as set.
 """
 
@@ -59,7 +61,13 @@ def load(environ=None):
     env = os.environ if environ is None else environ
     cdir = config_dir(env)
     explicit = env.get("WAKE_CONFIG")
-    paths = [os.path.expanduser(explicit)] if explicit else [SYSTEM_CONFIG, os.path.join(cdir, "config.env")]
+    if explicit:
+        paths = [os.path.expanduser(explicit)]
+    else:
+        # WAKE_SYSTEM_CONFIG="" is how a test run, or an account that must not see the site
+        # file, switches the system layer off; unset means SYSTEM_CONFIG.
+        system = env["WAKE_SYSTEM_CONFIG"] if "WAKE_SYSTEM_CONFIG" in env else SYSTEM_CONFIG
+        paths = [p for p in (os.path.expanduser(system), os.path.join(cdir, "config.env")) if p]
     filevals = {}
     for path in paths:
         try:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# desc: host/guest bridge for the agent-session wake inbox. `wake-inbox-io register <hash> [json]` makes the inbox and its active marker; `wake-inbox-io read <inbox>` prints the file; `wake-inbox-io beat <hash> [json]` refreshes the marker. Uses the local path when $WAKE_STATE_DIR/inbox is writable; a session that predates the store's group re-enters through `sg`; otherwise the host over WAKE_HOSTOPS.
+# desc: host/guest bridge for the agent-session wake inbox. `wake-inbox-io register <hash> [json]` makes the inbox and its active marker; `wake-inbox-io read <inbox>` prints the file; `wake-inbox-io beat <hash> [json]` refreshes the marker. Uses the local path when $WAKE_STATE_DIR/inbox is writable (a read, when it is readable); a session that predates the store's group re-enters through `sg`; otherwise the host over WAKE_HOSTOPS.
 import grp
 import os
 import pwd
@@ -33,8 +33,16 @@ def valid_inbox(path):
     return d == BASE and name.endswith(".jsonl") and valid_hash(name[: -len(".jsonl")])
 
 
-def local_ok():
-    return os.path.isdir(BASE) and os.access(BASE, os.W_OK)
+def local_ok(write=True):
+    """Can this process use the store directly?
+
+    A write needs the directory writable; a read only needs to reach it, so a store that
+    is readable but not writable still answers reads here instead of being called
+    unreachable.
+    """
+    if not os.path.isdir(BASE):
+        return False
+    return os.access(BASE, os.W_OK if write else os.R_OK | os.X_OK)
 
 
 def store_group():
@@ -73,7 +81,7 @@ def joins_store_group(g):
     return g is not None and g.gr_gid not in os.getgroups() and group_member(g)
 
 
-def unreachable(g):
+def unreachable(g, write):
     """Exit 1 saying why, once per uid.
 
     The caller polls every few seconds and inherits this stderr, so one line per poll floods the
@@ -86,8 +94,9 @@ def unreachable(g):
         hint = f"this account is in group {g.gr_name}, so check the store's mode"
     else:
         hint = f"add this account to group {g.gr_name}, then log in again"
+    need = "writable" if write else "readable"
     text = (
-        f"wake-inbox-io: {BASE} is not writable by uid {os.getuid()} and WAKE_HOSTOPS is empty; "
+        f"wake-inbox-io: {BASE} is not {need} by uid {os.getuid()} and WAKE_HOSTOPS is empty; "
         f"{hint} (nothing was read or written)"
     )
     marker = os.path.join(tempfile.gettempdir(), f".wake-inbox-io-warned-{os.getuid()}")
@@ -104,16 +113,16 @@ def unreachable(g):
     sys.exit(1)
 
 
-def sh(cmd, data=None):
+def sh(cmd, data=None, write=True):
     """Run one command where the store can be reached: here, through sg, or on the host.
 
-    A writable inbox is best. Then `sg`, which lets a session older than the store's group in
-    without a new login. Then WAKE_HOSTOPS, the guest's route. When the store exists and none of
-    those can reach it, say so once instead of running a command that can only fail on every poll;
-    when it does not exist yet, a local run creates it, which is how a first register works on a
-    host with no bridge to anyone else.
+    A reachable inbox is best: writable for a write, readable for a read. Then `sg`, which lets a
+    session older than the store's group in without a new login. Then WAKE_HOSTOPS, the guest's
+    route. When the store exists and none of those can reach it, say so once instead of running a
+    command that can only fail on every poll; when it does not exist yet, a local run creates it,
+    which is how a first register works on a host with no bridge to anyone else.
     """
-    if local_ok():
+    if local_ok(write):
         return subprocess.run(["bash", "-c", cmd], input=data, capture_output=True, text=True)
     g = store_group()
     if joins_store_group(g):
@@ -121,7 +130,7 @@ def sh(cmd, data=None):
     if HOSTOPS:
         return subprocess.run([HOSTOPS, cmd], input=data, capture_output=True, text=True)
     if os.path.isdir(BASE):
-        unreachable(g)
+        unreachable(g, write)
     return subprocess.run(["bash", "-c", cmd], input=data, capture_output=True, text=True)
 
 
@@ -150,8 +159,9 @@ usage: wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]
   read <inbox>             print the inbox
   beat <hash> [json]       refresh the active marker; the JSON is stored beside it
 
-  Markers older than 24 hours are pruned when a session registers. A command runs locally when
-  $WAKE_STATE_DIR/inbox is writable. When it is not, but /etc/group lists this account for the
+  Markers older than 24 hours are pruned when a session registers. A write runs locally when
+  $WAKE_STATE_DIR/inbox is writable, and a read when it is readable. When it is neither, but
+  /etc/group lists this account for the
   store's group, it re-enters through `sg <group>`: a shell started before the group existed keeps
   its old supplementary list, and `sg` re-reads the group database without a new login. Otherwise
   it goes over WAKE_HOSTOPS.
@@ -189,7 +199,7 @@ def main():
     if op == "read":
         if not valid_inbox(key):
             sys.exit(f"bad inbox path: expected {BASE}/<hash>.jsonl")
-        sys.stdout.write(sh(f"cat {q(key)} 2>/dev/null").stdout)
+        sys.stdout.write(sh(f"cat {q(key)} 2>/dev/null", write=False).stdout)
         return
     if op == "beat":
         checked(sh(f"cat > {q(f'{ACTIVE}/{key}.json')}", meta))
