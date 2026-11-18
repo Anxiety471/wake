@@ -12,10 +12,10 @@ Every shell step below is safe to re-run; §7 is the re-run path after a code ch
 
 ## The CLI store is a site setting
 
-Every `bin/*` script reads `WAKE_STATE_DIR` from the environment, then from
-`$WAKE_CONFIG_DIR/config.env`, then from `/etc/wake/config.env`, then from its built-in
-default `/var/lib/wake`. A host whose store is somewhere else says so once, in the system
-file, so `wake-deploy` can replace `bin/*` without taking the store with it:
+Every `bin/*` script takes `WAKE_STATE_DIR` from the environment or from a config file, and
+falls back to the built-in default `/var/lib/wake`. A host whose store is somewhere else
+says so once, in the system file, so `wake-deploy` can replace `bin/*` without taking the
+store with it:
 
 ```bash
 sudo install -d -m 755 /etc/wake
@@ -23,8 +23,28 @@ printf 'WAKE_STATE_DIR=/var/lib/wake-site\n' | sudo tee /etc/wake/config.env >/d
 sudo chmod 644 /etc/wake/config.env
 ```
 
-Every account and every installed copy reads it; a user's own `config.env` still wins, and
-an explicit `WAKE_CONFIG` replaces the search entirely.
+Write that file **before** the first deploy of `bin/*`, not after it. The order is the
+point and the wrong one is silent: the installed default is `/var/lib/wake`, which a host
+that keeps its store elsewhere does not have. `wake --inbox` then exits 0 printing
+`no threads opened by human:unknown`, `wake-inbox-io read` prints nothing, and the next
+append runs `mkdir -p` under the default and creates a second, empty store. `register` is
+the one command that checks the result — an account that cannot create the path sees an
+error, and root creates the default store instead. Writing the file after the deploy points
+the scripts at the real store and leaves behind whatever already landed in the wrong one.
+
+Confirm what an installed copy resolves, from an account that runs it, with the prefix
+`wake-deploy` installed into:
+
+```sh
+python3 -c 'import sys; sys.path.insert(0, "/usr/local/bin"); import wake_config; print(wake_config.load()["WAKE_STATE_DIR"])'
+```
+
+It has to print the store the host keeps, not `/var/lib/wake`. Precedence, highest first:
+the environment, then the user's own `$WAKE_CONFIG_DIR/config.env`, then
+`/etc/wake/config.env`, then the built-in default. An explicit `WAKE_CONFIG` replaces the
+search entirely, and `WAKE_SYSTEM_CONFIG` names the system file (an empty value switches
+that layer off). Every account and every installed copy reads the system file, so keep it
+root-owned, mode 644, and put no secrets in it.
 
 ## Layout
 

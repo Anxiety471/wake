@@ -90,6 +90,15 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **`deploy/README.md` says when to write `/etc/wake/config.env`, not only what goes in it.** The
+  section named the file and the harness that reads it but not the order, and the wrong order is
+  silent rather than loud: with no site file, `wake --inbox` exits 0 printing
+  `no threads opened by human:unknown`, `wake-inbox-io read` prints nothing, and the next append
+  runs `mkdir -p` and creates the default `/var/lib/wake` beside the real store. The runbook now
+  writes the file before the first deploy, shows the command that prints the resolved store,
+  states the precedence highest-first, and says to keep the file root-owned 644 with no secrets;
+  `tests/test_deploy_docs.py` runs that command against a site file and fails if the order or the
+  command drifts ([#135](https://github.com/Anxiety471/wake/issues/135)).
 - **A failed `scp` no longer leaves its half-written bundle in the host's `/tmp`.** `put()` sent the
   file, checked `scp`'s status and exited *before* the `try` that collects a refused install, so a
   dropped connection left a truncated `index.mjs` staged with nothing to remove it - the same leak

@@ -11,6 +11,9 @@ down, so a location that drifts in the runbook drifts on the next host.
 
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 import uuid
 
@@ -388,6 +391,84 @@ class UnpublishRollbackTest(unittest.TestCase):
             "cp /etc/nginx/sites-available/wake-mcp.bak-2026-11-15 /etc/nginx/sites-available/wake-mcp",
         )
         self.assertNotEqual(unpublish_problems(literal), [], "a hard-coded rollback passed")
+
+
+def cli_store_section(text):
+    """The CLI-store section, from its heading to the next top-level one."""
+    if "## The CLI store is a site setting" not in text:
+        return ""
+    start = text.index("## The CLI store is a site setting")
+    end = text.index("\n## ", start + 1)
+    return text[start:end]
+
+
+def confirm_command(text):
+    """The section's one `sh` block: the operator's check of the resolved store."""
+    blocks = re.findall(r"```sh\n(.*?)```", cli_store_section(text), re.S)
+    assert len(blocks) == 1, f"the CLI-store section shows {len(blocks)} sh blocks, expected one"
+    return blocks[0].strip()
+
+
+def cli_store_problems(text):
+    """The order is the fix, and the runbook is the only place it is written down.
+
+    The wrong order is silent: `wake --inbox` exits 0, `wake-inbox-io read` prints nothing,
+    and the next append creates the default store - so a runbook that deploys first and
+    writes the file afterwards is the failure, not a typo. The confirm command is checked
+    here because it is prose until someone runs it.
+    """
+    if not cli_store_section(text):
+        return ["the CLI-store section is gone from the runbook"]
+    block = cli_store_section(text)
+    problems = []
+    if "**before** the first deploy" not in block:
+        problems.append("the section no longer says the file is written before the deploy")
+    if "no threads opened by human:unknown" not in block:
+        problems.append("the section no longer shows the silent failure it exists to prevent")
+    try:
+        command = confirm_command(text)
+    except AssertionError as error:
+        return problems + [str(error)]
+    if "/usr/local/bin" not in command:
+        problems.append("the confirm command does not name the prefix the scripts live in")
+    if "WAKE_STATE_DIR" not in command:
+        problems.append("the confirm command does not print the resolved store")
+    return problems
+
+
+class CliStoreSectionTest(unittest.TestCase):
+    def test_the_runbook_writes_the_site_file_before_the_deploy(self):
+        self.assertEqual(cli_store_problems(read()), [])
+
+    def test_the_confirm_command_prints_what_the_site_file_sets(self):
+        """Run the runbook's own command: a wrong one makes the operator's check lie."""
+        command = confirm_command(read())
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = os.path.join(tmp, "bin")
+            os.mkdir(prefix)
+            shutil.copy(os.path.join(ROOT, "bin", "wake_config.py"), prefix)
+            home = os.path.join(tmp, "home")
+            os.mkdir(home)
+            site = os.path.join(tmp, "site.env")
+            with open(site, "w", encoding="utf-8") as handle:
+                handle.write("WAKE_STATE_DIR=/srv/site-store\n")
+            run = subprocess.run(
+                ["sh", "-c", command.replace("/usr/local/bin", prefix)],
+                capture_output=True,
+                text=True,
+                env={
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "HOME": home,
+                    "WAKE_SYSTEM_CONFIG": site,
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                },
+            )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "/srv/site-store", run.stderr)
+
+    def test_a_section_that_deploys_before_writing_the_file_is_caught(self):
+        text = read().replace("Write that file **before** the first deploy", "Write that file after the first deploy")
+        self.assertNotEqual(cli_store_problems(text), [])
 
 
 if __name__ == "__main__":
