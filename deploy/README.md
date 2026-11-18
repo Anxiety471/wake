@@ -26,20 +26,28 @@ sudo chmod 644 /etc/wake/config.env
 Write that file **before** the first deploy of `bin/*`, not after it. The order is the
 point and the wrong one is silent: the installed default is `/var/lib/wake`, which a host
 that keeps its store elsewhere does not have. `wake --inbox` then exits 0 printing
-`no threads opened by human:unknown`, `wake-inbox-io read` prints nothing, and the next
+`no threads opened by human:<account>` (the label is the `human:` prefix plus `$USER`),
+`wake-inbox-io read` prints nothing, and the next
 append runs `mkdir -p` under the default and creates a second, empty store. `register` is
 the one command that checks the result — an account that cannot create the path sees an
 error, and root creates the default store instead. Writing the file after the deploy points
 the scripts at the real store and leaves behind whatever already landed in the wrong one.
 
-Confirm what an installed copy resolves, from an account that runs it, with the prefix
-`wake-deploy` installed into:
+Confirm what the copy that will run resolves, from an account that runs it. Before the
+first deploy, run the check from the checkout (from the repository root), so a wrong file
+is still cheap to fix:
+
+```sh
+python3 -c 'import sys; sys.path.insert(0, "bin"); import wake_config; print(wake_config.load()["WAKE_STATE_DIR"])'
+```
+
+After the deploy, run it against the prefix `wake-deploy` installed into:
 
 ```sh
 python3 -c 'import sys; sys.path.insert(0, "/usr/local/bin"); import wake_config; print(wake_config.load()["WAKE_STATE_DIR"])'
 ```
 
-It has to print the store the host keeps, not `/var/lib/wake`. Precedence, highest first:
+Both have to print the store the host keeps, not `/var/lib/wake`. Precedence, highest first:
 the environment, then the user's own `$WAKE_CONFIG_DIR/config.env`, then
 `/etc/wake/config.env`, then the built-in default. An explicit `WAKE_CONFIG` replaces the
 search entirely, and `WAKE_SYSTEM_CONFIG` names the system file (an empty value switches
