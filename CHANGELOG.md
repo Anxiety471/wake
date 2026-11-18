@@ -90,6 +90,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **The `wake-wait` interrupt test no longer measures how the suite was launched.** It slept a
+  blind 1.5 s and then sent `SIGINT`, so it silently required the first poll to return inside that
+  window - and it failed every time the runner was a background job, because POSIX starts those
+  with `SIGINT` ignored, Python keeps an inherited `SIG_IGN`, and bash cannot trap a signal that
+  was ignored on entry: the wait polled until the test's own 20 s window closed and reported a
+  `TimeoutExpired` that said nothing about the trap. Measured here: the test passes 50 times out of
+  50 (25 quiet, 25 under four CPU hogs), and passes against a stub whose first poll takes 2 s - a
+  slow poll only defers the trap, which is correct - while the same suite started with `nohup`
+  fails. The test now gives the child `SIG_DFL` before exec, waits for the stub's first recorded
+  call instead of guessing, and asserts that the wait really polled
+  ([#121](https://github.com/Anxiety471/wake/issues/121)).
 - **`deploy/README.md` says when to write `/etc/wake/config.env`, not only what goes in it.** The
   section named the file and the harness that reads it but not the order, and the wrong order is
   silent rather than loud: with no site file, `wake --inbox` exits 0 printing

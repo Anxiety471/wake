@@ -514,6 +514,17 @@ class OpsBehaviourTestCase(unittest.TestCase):
         self.assertNotIn("none  coordinator", r.stdout)
 
 
+def _sigint_default():
+    """Give the child a definite SIGINT disposition before exec.
+
+    Python leaves an inherited SIG_IGN alone, and a child that starts with SIGINT ignored keeps
+    it ignored (bash refuses to trap such a signal), so the test would time out wherever the
+    runner itself was started as a background job. Reset in the child, not in the test process,
+    so the suite's own signal handling is untouched.
+    """
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
 class WakeWaitTestCase(unittest.TestCase):
     """wake-wait blocks on one thread. Its only interface is `wake --thread`, so a stub stands in
     for the CLI here: the real store is exercised by tests/test_wake.py."""
@@ -611,6 +622,11 @@ class WakeWaitTestCase(unittest.TestCase):
         # The trap that cleaned up on INT also deleted the baseline while the loop kept going, and
         # with no baseline every reply in the thread looks new: Ctrl-C printed an older answer and
         # exited 0. An interrupt must end the wait, not answer it.
+        # Two things this test must not depend on: how the runner was launched (POSIX starts a
+        # background job of a non-interactive shell with SIGINT ignored, and bash cannot trap a
+        # signal that was ignored on entry, so a nohup'd or backgrounded suite would poll for the
+        # whole 20 s window and report a timeout that says nothing about wake-wait) and machine
+        # speed (a slow first poll defers the trap; that is correct behaviour, not a failure).
         ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
         old = "[2026-11-15T12:01] bot-other (reply): an older answer"
         self.stub_rounds([[ask, old]])
@@ -625,9 +641,16 @@ class WakeWaitTestCase(unittest.TestCase):
             text=True,
             env=base,
             start_new_session=True,
+            preexec_fn=_sigint_default,
         )
         try:
-            time.sleep(1.5)  # one poll has taken its baseline and is between polls
+            # The condition the sleep below only guessed at: the stub has answered once, so the
+            # wait has its baseline and is between polls. A blind sleep made the test measure the
+            # machine, not the trap.
+            deadline = time.time() + 10
+            while not self.called() and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(self.called(), "the stub was never polled, so nothing was interrupted")
             proc.send_signal(signal.SIGINT)
             out, err = proc.communicate(timeout=20)
         finally:
@@ -636,6 +659,7 @@ class WakeWaitTestCase(unittest.TestCase):
                 proc.communicate()
         self.assertEqual(proc.returncode, 130, out + err)
         self.assertEqual(out, "", "an interrupt printed an answer")
+        self.assertGreaterEqual(len(self.called()), 1, "the interrupt arrived before the wait ever polled")
 
     # ---- --from --------------------------------------------------------------------
 
