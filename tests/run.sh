@@ -5,7 +5,7 @@
 cd "$(dirname "$0")/.." || exit 1
 PYTHON=${PYTHON:-python3}
 if [ "$(id -u)" = 0 ]; then
-    echo "note: running as root; the two sg fallback tests will be skipped (root ignores file modes). Run as a non-root user to cover them." >&2
+    echo "note: running as root; the sg fallback tests will be skipped (root ignores file modes). Run as a non-root user to cover them." >&2
 fi
 exec env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY \
     PYTHONDONTWRITEBYTECODE=1 \

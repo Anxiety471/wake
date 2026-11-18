@@ -9,6 +9,11 @@ import os
 
 VERSION = "0.2.0"
 
+#: Site settings every account on a host shares, read before the user's config file so a
+#: deployment sets WAKE_STATE_DIR (and friends) once and a keep-the-scripts deploy cannot
+#: take the store with it. WAKE_CONFIG overrides this; the user's config wins over it.
+SYSTEM_CONFIG = "/etc/wake/config.env"
+
 DEFAULTS = {
     "WAKE_API_BASE": "",  # e.g. https://bots.example.com/api/v1/bots ; POST {base}/{bot-id}/webhook
     "WAKE_MCP_API": "http://127.0.0.1:3001",  # API base for the wake-mcp stdio bridge: POST {api}/mcp
@@ -53,15 +58,18 @@ def load(environ=None):
     """Resolved settings as a dict, including the derived paths WAKE_CONFIG_DIR, WAKE_KEY_DIR and WAKE_REGISTRY."""
     env = os.environ if environ is None else environ
     cdir = config_dir(env)
-    path = os.path.expanduser(env.get("WAKE_CONFIG") or os.path.join(cdir, "config.env"))
-    try:
-        # UTF-8 with replacement, never the locale codec: one stray byte in a
-        # comment used to end wake-mcp at import with UnicodeDecodeError, before
-        # it could answer a single message.
-        with open(path, encoding="utf-8", errors="replace") as f:
-            filevals = parse_env_file(f.read())
-    except OSError:
-        filevals = {}
+    explicit = env.get("WAKE_CONFIG")
+    paths = [os.path.expanduser(explicit)] if explicit else [SYSTEM_CONFIG, os.path.join(cdir, "config.env")]
+    filevals = {}
+    for path in paths:
+        try:
+            # UTF-8 with replacement, never the locale codec: one stray byte in a
+            # comment used to end wake-mcp at import with UnicodeDecodeError, before
+            # it could answer a single message.
+            with open(path, encoding="utf-8", errors="replace") as f:
+                filevals.update(parse_env_file(f.read()))
+        except OSError:
+            continue
 
     def get(k, default):
         if k in env:

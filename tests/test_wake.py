@@ -4,7 +4,9 @@ Every webhook call goes to a fake HTTP server on 127.0.0.1; nothing touches the 
 the real ~/.config/wake, the real rate log in /tmp, or a real host. Run: python3 -m unittest discover -s tests
 """
 
+import contextlib
 import datetime
+import io
 import json
 import os
 import re
@@ -19,6 +21,7 @@ import time
 import types
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "bin")
@@ -153,6 +156,12 @@ def slurp(path):
 def write_json(path, obj):
     with open(path, "w") as f:
         json.dump(obj, f)
+
+
+def chmod_if_present(path, mode):
+    """Restore a mode during cleanup without failing when tearDown already removed the path."""
+    if os.path.exists(path):
+        os.chmod(path, mode)
 
 
 class WakeTestCase(unittest.TestCase):
@@ -1128,7 +1137,7 @@ class InboxIoFailureTests(WakeTestCase):
             chmod 0500 {inbox}
             """,
         )
-        self.addCleanup(os.chmod, inbox, 0o700)
+        self.addCleanup(chmod_if_present, inbox, 0o700)
         r = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env={"WAKE_HOSTOPS": hostops})
         self.assertEqual(r.returncode, 75, (r.stdout, r.stderr))
         self.assertIn("the gate refused", r.stderr)
@@ -1145,7 +1154,7 @@ class InboxIoFailureTests(WakeTestCase):
             f.write('{"pid": 1}')
         # A read-only inbox directory is what a guest shell sees, so the write goes to the host.
         os.chmod(inbox, 0o500)
-        self.addCleanup(os.chmod, inbox, 0o700)
+        self.addCleanup(chmod_if_present, inbox, 0o700)
         r = self.run_bin("wake-inbox-io", "beat", "abc123", '{"pid": 2}', env=self.env_host)
         self.assertEqual(r.returncode, 75, (r.stdout, r.stderr))
         self.assertIn("the gate refused", r.stderr)
@@ -1166,6 +1175,194 @@ class InboxIoFailureTests(WakeTestCase):
         self.assertEqual(r.stderr, "")
 
 
+def load_inbox_io(state_dir):
+    """Execute bin/wake-inbox-io as a module with the store pointed at state_dir.
+
+    The script calls main() only under __main__, so loading it runs nothing; its module-level
+    wake_config.load() reads the environment here, which is why the store is passed in.
+    """
+    module = types.ModuleType("wake_inbox_io")
+    path = os.path.join(BIN, "wake-inbox-io")
+    module.__file__ = path
+    env = {"WAKE_STATE_DIR": state_dir, "WAKE_HOSTOPS": ""}
+    saved = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
+    try:
+        with open(path, encoding="utf-8") as f:
+            exec(compile(f.read(), path, "exec"), module.__dict__)  # noqa: S102 - the module under test
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return module
+
+
+class FakeGroup:
+    """A group-database row, the shape grp.getgrgid returns."""
+
+    def __init__(self, gid, name, members):
+        self.gr_gid = gid
+        self.gr_name = name
+        self.gr_mem = members
+
+
+class InboxIoSgFallbackTests(unittest.TestCase):
+    """A session whose supplementary groups predate the store's group reaches it through `sg`.
+
+    Linux fixes a process's supplementary groups at exec time, so a shell started before the
+    `wake` group existed never sees it - the session on the host carried `Groups: 27 1003` while
+    the store's group is 1005 - and every child it starts inherits the same list. The store is
+    `root:wake` mode 2770, so `local_ok()` is false for the life of that session even though a new
+    login would work. `sg` re-reads the group database, which is what the CLI already does for a
+    key file.
+
+    The group database is the one thing a subprocess cannot be handed, so these drive the module
+    in-process with grp, pwd and getgroups replaced. The subprocess tests below cover the marker
+    and the writable-store path end to end.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="wake-inbox-sg-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.inbox = os.path.join(self.tmp, "state", "inbox")
+        os.makedirs(self.inbox)
+        os.chmod(self.inbox, 0o500)  # the store as a session without its group sees it
+        self.addCleanup(chmod_if_present, self.inbox, 0o700)
+        self.mod = load_inbox_io(os.path.dirname(self.inbox))
+        self.ns = vars(self.mod)
+
+    def surroundings(self, members, groups):
+        """The group database a session sees: uid 1003 `agent` in group 1005 `wake`."""
+        wake = FakeGroup(1005, "wake", members)
+        return (
+            mock.patch.object(self.ns["grp"], "getgrgid", lambda gid: wake),
+            mock.patch.object(self.ns["pwd"], "getpwuid", lambda uid: types.SimpleNamespace(pw_name="agent")),
+            mock.patch.object(self.ns["os"], "getgroups", lambda: groups),
+            mock.patch.object(self.ns["os"], "getuid", lambda: 1003),
+        )
+
+    @unittest.skipIf(IS_ROOT, ROOT_SKIP)
+    def test_a_session_that_predates_the_store_group_reads_through_sg(self):
+        calls = []
+
+        def run(argv, **kw):
+            calls.append((argv, kw.get("input")))
+            return subprocess.CompletedProcess(argv, 0, "hi\n", "")
+
+        path = os.path.join(self.inbox, "s1.jsonl")
+        with contextlib.ExitStack() as stack:
+            for patch in self.surroundings(["agent"], [27, 1003]):
+                stack.enter_context(patch)
+            stack.enter_context(mock.patch.object(self.ns["subprocess"], "run", run))
+            self.ns["sh"](f"cat {path}")
+        [(argv, data)] = calls
+        self.assertEqual(argv[:3], ["sg", "wake", "-c"], argv)
+        self.assertEqual(argv[3], f"cat {path}")
+        self.assertIsNone(data)
+
+    @unittest.skipIf(IS_ROOT, ROOT_SKIP)
+    def test_a_write_through_sg_carries_its_stdin(self):
+        calls = []
+
+        def run(argv, **kw):
+            calls.append((argv, kw.get("input")))
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        path = os.path.join(self.inbox, "active", "s1.json")
+        with contextlib.ExitStack() as stack:
+            for patch in self.surroundings(["agent"], [27, 1003]):
+                stack.enter_context(patch)
+            stack.enter_context(mock.patch.object(self.ns["subprocess"], "run", run))
+            self.ns["sh"](f"cat > {path}", '{"pid": 1}')
+        [(argv, data)] = calls
+        self.assertEqual(argv[:3], ["sg", "wake", "-c"], argv)
+        self.assertEqual(data, '{"pid": 1}', "the marker JSON never reached sg's stdin")
+
+    @unittest.skipIf(IS_ROOT, ROOT_SKIP)
+    def test_sg_wins_over_a_host_round_trip(self):
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with contextlib.ExitStack() as stack:
+            for patch in self.surroundings(["agent"], [27, 1003]):
+                stack.enter_context(patch)
+            stack.enter_context(mock.patch.object(self.ns["subprocess"], "run", run))
+            stack.enter_context(mock.patch.dict(self.ns, {"HOSTOPS": "/usr/local/bin/hostops"}))
+            self.ns["sh"]("cat x")
+        [argv] = calls
+        self.assertEqual(argv[:3], ["sg", "wake", "-c"], "a store sg can enter went over the bridge instead")
+
+    @unittest.skipIf(IS_ROOT, ROOT_SKIP)
+    def test_an_account_with_no_claim_gets_one_line_and_no_command(self):
+        calls = []
+        err = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for patch in self.surroundings(["someone-else"], [27, 1003]):
+                stack.enter_context(patch)
+            stack.enter_context(mock.patch.object(self.ns["subprocess"], "run", lambda *a, **k: calls.append(a)))
+            stack.enter_context(mock.patch("sys.stderr", err))
+            stack.enter_context(mock.patch.object(self.ns["tempfile"], "gettempdir", lambda: self.tmp))
+            with self.assertRaises(SystemExit) as caught:
+                self.ns["sh"]("cat x")
+        self.assertEqual(caught.exception.code, 1)
+        self.assertEqual(calls, [], "a command ran even though nothing could reach the store")
+        self.assertIn("is not writable", err.getvalue())
+        self.assertIn("add this account to group wake", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+    @unittest.skipIf(IS_ROOT, ROOT_SKIP)
+    def test_an_account_that_has_the_group_is_told_the_store_mode_is_the_problem(self):
+        err = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for patch in self.surroundings(["agent"], [27, 1003, 1005]):
+                stack.enter_context(patch)
+            stack.enter_context(mock.patch.object(self.ns["subprocess"], "run", lambda *a, **k: None))
+            stack.enter_context(mock.patch("sys.stderr", err))
+            stack.enter_context(mock.patch.object(self.ns["tempfile"], "gettempdir", lambda: self.tmp))
+            with self.assertRaises(SystemExit):
+                self.ns["sh"]("cat x")
+        self.assertIn("this account is in group wake", err.getvalue())
+        self.assertNotIn("add this account", err.getvalue(), "it already has the group; joining again is not the fix")
+
+
+class InboxIoUnreachableStoreTests(WakeTestCase):
+    """When no route reaches the store, say it once and run nothing.
+
+    The session extension polls every 3 s and inherits this process's stderr, so the failure used
+    to appear once per poll and flood the terminal.
+    """
+
+    @unittest.skipIf(IS_ROOT, "root ignores the mode that makes the store unreachable")
+    def test_the_line_is_printed_once_and_nothing_is_created(self):
+        inbox = os.path.join(self.state, "inbox")
+        os.makedirs(inbox)
+        os.chmod(inbox, 0o500)
+        self.addCleanup(chmod_if_present, inbox, 0o700)
+        env = {"WAKE_HOSTOPS": "", "TMPDIR": self.tmp}
+        first = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
+        self.assertEqual(first.returncode, 1, (first.stdout, first.stderr))
+        self.assertIn("is not writable", first.stderr)
+        self.assertEqual(first.stdout, "", "a register that wrote nothing printed an inbox path")
+        self.assertEqual(os.listdir(inbox), [], "a command ran even though nothing could reach the store")
+        marker = os.path.join(self.tmp, f".wake-inbox-io-warned-{os.getuid()}")
+        self.assertTrue(os.path.exists(marker), "no marker, so the next poll prints the line again")
+        second = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
+        self.assertEqual(second.returncode, 1)
+        self.assertEqual(second.stderr, "", "the second poll printed the same line again")
+
+    def test_a_writable_store_never_shells_out_to_sg(self):
+        log = os.path.join(self.tmp, "sg.log")
+        write_exe(os.path.join(self.fakebin, "sg"), f'#!/bin/sh\necho "$@" >> {log}\n')
+        r = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env={"WAKE_HOSTOPS": ""})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(log), "a writable store still went through sg")
+
+
 class ConfigTests(unittest.TestCase):
     def test_defaults_and_derived_paths(self):
         cfg = wake_config.load({"HOME": "/nonexistent-home", "WAKE_CONFIG_DIR": "/nonexistent-cfg"})
@@ -1184,6 +1381,42 @@ class ConfigTests(unittest.TestCase):
             (cfg["WAKE_STATE_DIR"], cfg["WAKE_GROUP"], cfg["WAKE_BOT"], cfg["WAKE_KEY_DIR"]),
             ("/srv/wake", "team", "ops", "/k"),
         )
+
+    def test_a_site_config_sets_the_store_for_every_account(self):
+        """A deployment says where the store is once, not by patching installed scripts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            system = os.path.join(tmp, "config.env")
+            with open(system, "w") as f:
+                f.write("WAKE_STATE_DIR=/var/lib/wake-site\n")
+            with mock.patch.object(wake_config, "SYSTEM_CONFIG", system):
+                cfg = wake_config.load({"WAKE_CONFIG_DIR": os.path.join(tmp, "cfg")})
+        self.assertEqual(cfg["WAKE_STATE_DIR"], "/var/lib/wake-site")
+
+    def test_the_user_config_still_wins_over_the_site_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            system = os.path.join(tmp, "config.env")
+            with open(system, "w") as f:
+                f.write("WAKE_STATE_DIR=/var/lib/wake-site\nWAKE_API=http://127.0.0.1:3999\n")
+            cdir = os.path.join(tmp, "cfg")
+            os.makedirs(cdir)
+            with open(os.path.join(cdir, "config.env"), "w") as f:
+                f.write("WAKE_STATE_DIR=/home/me/store\n")
+            with mock.patch.object(wake_config, "SYSTEM_CONFIG", system):
+                cfg = wake_config.load({"WAKE_CONFIG_DIR": cdir})
+        self.assertEqual(cfg["WAKE_STATE_DIR"], "/home/me/store")
+        self.assertEqual(cfg["WAKE_API"], "http://127.0.0.1:3999", "a key only the site file sets is still read")
+
+    def test_an_explicit_config_replaces_the_search(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            system = os.path.join(tmp, "config.env")
+            with open(system, "w") as f:
+                f.write("WAKE_STATE_DIR=/var/lib/wake-site\n")
+            explicit = os.path.join(tmp, "explicit.env")
+            with open(explicit, "w") as f:
+                f.write("WAKE_STATE_DIR=/srv/explicit\n")
+            with mock.patch.object(wake_config, "SYSTEM_CONFIG", system):
+                cfg = wake_config.load({"WAKE_CONFIG_DIR": os.path.join(tmp, "cfg"), "WAKE_CONFIG": explicit})
+        self.assertEqual(cfg["WAKE_STATE_DIR"], "/srv/explicit")
 
 
 class SuiteLeavesNoBytecodeTest(unittest.TestCase):

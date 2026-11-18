@@ -2,13 +2,29 @@
 
 Native systemd + nginx, no containers. The API runs on the VPS host next to Rakazo,
 listening on loopback only. Nothing in this document touches the CLI store
-(`WAKE_STATE_DIR` — `/var/lib/wake` in the checkout, a site directory such as
-/var/lib/wake-site on a host whose `/usr/local/bin/wake` is patched to one):
+(`WAKE_STATE_DIR` — `/var/lib/wake` in the checkout, or the store a host sets in
+`/etc/wake/config.env`; a deploy reads that file and never patches the scripts):
 the API can be installed, started and stopped without affecting any bot until
 `bin/wake` is switched over to it. `ls -ld` the path before trusting either name; the
 store and the API's `wake` database are separate.
 
 Every shell step below is safe to re-run; §7 is the re-run path after a code change.
+
+## The CLI store is a site setting
+
+Every `bin/*` script reads `WAKE_STATE_DIR` from the environment, then from
+`$WAKE_CONFIG_DIR/config.env`, then from `/etc/wake/config.env`, then from its built-in
+default `/var/lib/wake`. A host whose store is somewhere else says so once, in the system
+file, so `wake-deploy` can replace `bin/*` without taking the store with it:
+
+```bash
+sudo install -d -m 755 /etc/wake
+printf 'WAKE_STATE_DIR=/var/lib/wake-site\n' | sudo tee /etc/wake/config.env >/dev/null
+sudo chmod 644 /etc/wake/config.env
+```
+
+Every account and every installed copy reads it; a user's own `config.env` still wins, and
+an explicit `WAKE_CONFIG` replaces the search entirely.
 
 ## Layout
 
@@ -452,8 +468,8 @@ undone.
 ## Cutover from the CLI store
 
 Nothing above changes how bots work. Each bot runs `bin/wake`, keeps its threads and
-inbox under `WAKE_STATE_DIR` (the checkout's default is `/var/lib/wake`; a host whose
-`bin/wake` is patched to a site directory uses that one instead) and
+inbox under `WAKE_STATE_DIR` (the default is `/var/lib/wake`; a host that keeps its store
+elsewhere sets that path in `/etc/wake/config.env`) and
 sends to the webhook prefix in `WAKE_API_BASE`; the API is a second, compatible store
 that no bot reads yet.
 

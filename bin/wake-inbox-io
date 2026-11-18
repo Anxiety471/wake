@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-# desc: host/guest bridge for the agent-session wake inbox. `wake-inbox-io register <hash> [json]` makes the inbox and its active marker; `wake-inbox-io read <inbox>` prints the file; `wake-inbox-io beat <hash> [json]` refreshes the marker. Uses the local path when $WAKE_STATE_DIR/inbox is writable (or WAKE_HOSTOPS is unset), otherwise the host over WAKE_HOSTOPS.
+# desc: host/guest bridge for the agent-session wake inbox. `wake-inbox-io register <hash> [json]` makes the inbox and its active marker; `wake-inbox-io read <inbox>` prints the file; `wake-inbox-io beat <hash> [json]` refreshes the marker. Uses the local path when $WAKE_STATE_DIR/inbox is writable; a session that predates the store's group re-enters through `sg`; otherwise the host over WAKE_HOSTOPS.
+import grp
 import os
+import pwd
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import wake_config  # noqa: E402
@@ -34,10 +37,92 @@ def local_ok():
     return os.path.isdir(BASE) and os.access(BASE, os.W_OK)
 
 
+def store_group():
+    """The group that owns the store: BASE itself, or the directory that would hold it.
+
+    The store is `root:<group>` mode 2770, so that group is the only way in for a process that is
+    neither root nor the owner. A store that does not exist yet is judged by its parent, so the
+    first register on a fresh host still finds the group it has to enter.
+    """
+    for path in (BASE, os.path.dirname(BASE)):
+        try:
+            return grp.getgrgid(os.stat(path).st_gid)
+        except (KeyError, OSError):
+            continue
+    return None
+
+
+def group_member(g):
+    """True when /etc/group lists this user in the group's member list."""
+    if g is None:
+        return False
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name in g.gr_mem
+    except KeyError:
+        return False
+
+
+def joins_store_group(g):
+    """True when /etc/group lists this user for the store's group but this process lacks it.
+
+    Linux fixes a process's supplementary groups at exec time: a shell started before the group
+    existed never sees it, and every child it starts inherits the same list, so the store stays
+    unreachable for the life of that session even though a new login would work. `sg` re-reads the
+    group database, so it can enter the group without a new login.
+    """
+    return g is not None and g.gr_gid not in os.getgroups() and group_member(g)
+
+
+def unreachable(g):
+    """Exit 1 saying why, once per uid.
+
+    The caller polls every few seconds and inherits this stderr, so one line per poll floods the
+    session's terminal. The first line is the one that tells the operator what to do.
+    """
+    if g is None:
+        hint = "the store has no group that can be joined"
+    elif g.gr_gid in os.getgroups():
+        # A new login would not change anything: this session already has the group
+        hint = f"this account is in group {g.gr_name}, so check the store's mode"
+    else:
+        hint = f"add this account to group {g.gr_name}, then log in again"
+    text = (
+        f"wake-inbox-io: {BASE} is not writable by uid {os.getuid()} and WAKE_HOSTOPS is empty; "
+        f"{hint} (nothing was read or written)"
+    )
+    marker = os.path.join(tempfile.gettempdir(), f".wake-inbox-io-warned-{os.getuid()}")
+    try:
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        sys.exit(1)
+    except OSError:
+        sys.stderr.write(text + "\n")
+        sys.exit(1)
+    with os.fdopen(fd, "w") as f:
+        f.write(BASE + "\n")
+    sys.stderr.write(text + "\n")
+    sys.exit(1)
+
+
 def sh(cmd, data=None):
-    if local_ok() or not HOSTOPS:
+    """Run one command where the store can be reached: here, through sg, or on the host.
+
+    A writable inbox is best. Then `sg`, which lets a session older than the store's group in
+    without a new login. Then WAKE_HOSTOPS, the guest's route. When the store exists and none of
+    those can reach it, say so once instead of running a command that can only fail on every poll;
+    when it does not exist yet, a local run creates it, which is how a first register works on a
+    host with no bridge to anyone else.
+    """
+    if local_ok():
         return subprocess.run(["bash", "-c", cmd], input=data, capture_output=True, text=True)
-    return subprocess.run([HOSTOPS, cmd], input=data, capture_output=True, text=True)
+    g = store_group()
+    if joins_store_group(g):
+        return subprocess.run(["sg", g.gr_name, "-c", cmd], input=data, capture_output=True, text=True)
+    if HOSTOPS:
+        return subprocess.run([HOSTOPS, cmd], input=data, capture_output=True, text=True)
+    if os.path.isdir(BASE):
+        unreachable(g)
+    return subprocess.run(["bash", "-c", cmd], input=data, capture_output=True, text=True)
 
 
 def checked(r):
@@ -65,13 +150,17 @@ usage: wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]
   read <inbox>             print the inbox
   beat <hash> [json]       refresh the active marker; the JSON is stored beside it
 
-  Markers older than 24 hours are pruned when a session registers. Every write goes through the
-  local path when $WAKE_STATE_DIR/inbox is writable, otherwise over WAKE_HOSTOPS.
+  Markers older than 24 hours are pruned when a session registers. A command runs locally when
+  $WAKE_STATE_DIR/inbox is writable. When it is not, but /etc/group lists this account for the
+  store's group, it re-enters through `sg <group>`: a shell started before the group existed keeps
+  its old supplementary list, and `sg` re-reads the group database without a new login. Otherwise
+  it goes over WAKE_HOSTOPS.
 
   environment   WAKE_STATE_DIR, WAKE_HOSTOPS   (both read by bin/wake_config.py)
 
-  exit 0 on success; 1 on usage or a hash that is not 6-32 lowercase hex characters. If the command
-  it runs on the host fails, its stderr is printed and its status is returned; a refused register
+  exit 0 on success; 1 on usage or a hash that is not 6-32 lowercase hex characters, or when the
+  store is unreachable and WAKE_HOSTOPS is empty (that line is printed once per uid). If the
+  command it runs fails, its stderr is printed and its status is returned; a refused register
   never prints an inbox path.
 """
 
@@ -108,4 +197,5 @@ def main():
     sys.exit("unknown op " + op)
 
 
-main()
+if __name__ == "__main__":
+    main()
