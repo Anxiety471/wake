@@ -81,6 +81,30 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **A failed `scp` no longer leaves its half-written bundle in the host's `/tmp`.** `put()` sent the
+  file, checked `scp`'s status and exited *before* the `try` that collects a refused install, so a
+  dropped connection left a truncated `index.mjs` staged with nothing to remove it - the same leak
+  as #117, one branch earlier. The transfer and the install now share one cleanup: any `SystemExit`
+  after the host has named a staging file removes it, and a test drives an `scp` that writes half a
+  file and says `lost connection`
+  ([#129](https://github.com/Anxiety471/wake/issues/129)).
+- **The four `host_out()` reads that had no test now have one each.** Three of the seven call sites
+  were pinned; reverting `command -v node` (`:605`), `cat index.commit` (`:597`) or either
+  `psql -tAc` probe (`:266`, `:271`) to `host()` left the module green, and no install test drove
+  the node fallback at all because they all set `WAKE_NODE` - the branch that once produced
+  `install: cannot stat`. Each now has a test that a warning on stderr changes nothing: the node
+  path stays a path, the commit prints alone, and the probes still answer `db: already present` and
+  `owner: wake` instead of running `createdb` against an existing database
+  ([#129](https://github.com/Anxiety471/wake/issues/129)).
+- **The scp tests stop leaking real `/tmp/.wake-deploy.*` files.** The fake host answered `mktemp`
+  and swallowed `install … && rm -f`, so every install the class drove left a staged file behind
+  (three per module run) - invisible to a green CI. The stub now runs the cleanup the real command
+  carries, and a test requires the file `scp` wrote to be gone after the run
+  ([#129](https://github.com/Anxiety471/wake/issues/129)).
+- **`--help` states that `WAKE_HOSTOPS` wins when both transports are set.** `transport_kind()` made
+  that the rule and `deploy/README.md` says so, but the text an operator reads at 2 a.m. still
+  offered "one is required" and left the tie unexplained; a test pins the sentence
+  ([#129](https://github.com/Anxiety471/wake/issues/129)).
 - **`install` stops chmodding a migrations glob it did not fill.** A build carrying no migrations
   printed `migrations: 0 (this build carries none)` and then ran
   `chown -R … && chmod 644 …/migrations/*.sql` anyway. On a first install that directory is empty,
