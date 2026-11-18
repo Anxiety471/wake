@@ -427,6 +427,18 @@ def cli_store_problems(text):
         problems.append("the section no longer shows the silent failure it exists to prevent")
     if "`human:` prefix plus `$USER`" not in block:
         problems.append("the section pins one account instead of saying the label varies")
+    if "no bot is registered" not in block:
+        problems.append("the label parenthetical does not say when the human: form applies")
+    if "Nothing in the API steps below touches the CLI store" not in text:
+        problems.append("the opening claims the whole document leaves the store alone")
+    if "`read` is the one command that discards the result" not in block:
+        problems.append("the section no longer says which command discards the result")
+    if "`register` and `beat`" not in block:
+        problems.append("the section names only one command that checks the store")
+    if "`bin/ops/wake-keys`" not in block:
+        problems.append("the section claims every script reads a config file")
+    if "does not reach it" not in block:
+        problems.append("the section does not warn that the shell helpers miss the system file")
     try:
         commands = confirm_commands(text)
     except AssertionError as error:
@@ -440,6 +452,20 @@ def cli_store_problems(text):
             problems.append("a confirm command does not print the resolved store")
     if "Precedence, highest first" not in block:
         problems.append("the section no longer states the precedence order")
+    else:
+        # The tokens can all be present and the order still wrong, which reads as another rule.
+        tail = block[block.index("Precedence, highest first") :]
+        at = [
+            tail.find(layer)
+            for layer in (
+                "the environment",
+                "$WAKE_CONFIG_DIR/config.env",
+                "/etc/wake/config.env",
+                "built-in default",
+            )
+        ]
+        if any(index < 0 for index in at) or at != sorted(at):
+            problems.append("the precedence sentence does not run highest-first")
     for layer in (
         "$WAKE_CONFIG_DIR/config.env",
         "/etc/wake/config.env",
@@ -507,6 +533,45 @@ class CliStoreSectionTest(unittest.TestCase):
 
     def test_a_section_that_pins_one_account_is_caught(self):
         text = read().replace("`human:` prefix plus `$USER`", "human:unknown")
+        self.assertNotEqual(cli_store_problems(text), [])
+
+    def test_an_opening_that_leaves_out_the_section_is_caught(self):
+        """An operator who takes line 4 literally deploys first: the failure the section prevents."""
+        text = read().replace(
+            "Nothing in the API steps below touches the CLI store",
+            "Nothing in this document touches the CLI store",
+        )
+        self.assertNotEqual(cli_store_problems(text), [])
+
+    def test_a_section_that_reverses_the_precedence_is_caught(self):
+        """Every layer named and the order wrong is a different rule, so it has to bite."""
+        text = read().replace(
+            "the environment, then the user's own `$WAKE_CONFIG_DIR/config.env`, then\n"
+            "`/etc/wake/config.env`, then the built-in default.",
+            "`/etc/wake/config.env`, then the user's own `$WAKE_CONFIG_DIR/config.env`, then\n"
+            "the environment, then the built-in default.",
+        )
+        self.assertNotEqual(cli_store_problems(text), [])
+
+    def test_a_section_that_says_every_script_reads_a_config_file_is_caught(self):
+        """`bin/ops/wake-keys` resolves its own default; the claim has to name that line."""
+        text = read().replace("`bin/ops/wake-keys`", "every `bin/*` script")
+        self.assertNotEqual(cli_store_problems(text), [])
+
+    def test_a_section_that_says_only_register_checks_the_store_is_caught(self):
+        """`beat` is wrapped in checked() too; `read` is the one that discards the result."""
+        text = read().replace(
+            "`read` is the one command that discards the result",
+            "`register` is the one command that checks the result",
+        )
+        self.assertNotEqual(cli_store_problems(text), [])
+
+    def test_a_section_that_does_not_say_when_the_human_label_applies_is_caught(self):
+        """A registered bot prints bot:<alias>, so the human: form needs its condition."""
+        text = read().replace(
+            "`$USER` when\nno bot is registered; a registered bot prints `bot:<alias>`",
+            "`$USER`",
+        )
         self.assertNotEqual(cli_store_problems(text), [])
 
 
