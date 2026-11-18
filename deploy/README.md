@@ -1,21 +1,26 @@
 # Deploying the wake API
 
 Native systemd + nginx, no containers. The API runs on the VPS host next to Rakazo,
-listening on loopback only. Nothing in this document touches the CLI store
+listening on loopback only. Nothing in the API steps below touches the CLI store
 (`WAKE_STATE_DIR` — `/var/lib/wake` in the checkout, or the store a host sets in
 `/etc/wake/config.env`; a deploy reads that file and never patches the scripts):
 the API can be installed, started and stopped without affecting any bot until
-`bin/wake` is switched over to it. `ls -ld` the path before trusting either name; the
-store and the API's `wake` database are separate.
+`bin/wake` is switched over to it. One section outside those steps does decide the
+store — *The CLI store is a site setting* — and its step runs before the first
+deploy of `bin/*`. `ls -ld` the path before trusting either name; the store and the
+API's `wake` database are separate.
 
 Every shell step below is safe to re-run; §7 is the re-run path after a code change.
 
 ## The CLI store is a site setting
 
-Every `bin/*` script takes `WAKE_STATE_DIR` from the environment or from a config file, and
-falls back to the built-in default `/var/lib/wake`. A host whose store is somewhere else
-says so once, in the system file, so `wake-deploy` can replace `bin/*` without taking the
-store with it:
+The Python scripts in `bin/` take `WAKE_STATE_DIR` from the environment or from a config
+file and fall back to the built-in default `/var/lib/wake`. The one helper in `bin/ops`
+that resolves the store, `bin/ops/wake-keys`, is a shell script: it reads the environment
+only (`WAKE_HOST_KEY_DIR` first, then `WAKE_STATE_DIR`) with the same default, so run it
+with `WAKE_STATE_DIR` set on a host whose store is not the default — the system file
+does not reach it. A host whose store is somewhere else says so once, in the system file,
+so `wake-deploy` can replace `bin/*` without taking the store with it:
 
 ```bash
 sudo install -d -m 755 /etc/wake
@@ -26,12 +31,13 @@ sudo chmod 644 /etc/wake/config.env
 Write that file **before** the first deploy of `bin/*`, not after it. The order is the
 point and the wrong one is silent: the installed default is `/var/lib/wake`, which a host
 that keeps its store elsewhere does not have. `wake --inbox` then exits 0 printing
-`no threads opened by human:<account>` (the label is the `human:` prefix plus `$USER`),
-`wake-inbox-io read` prints nothing, and the next
-append runs `mkdir -p` under the default and creates a second, empty store. `register` is
-the one command that checks the result — an account that cannot create the path sees an
-error, and root creates the default store instead. Writing the file after the deploy points
-the scripts at the real store and leaves behind whatever already landed in the wrong one.
+`no threads opened by human:<account>` (the label is the `human:` prefix plus `$USER` when
+no bot is registered; a registered bot prints `bot:<alias>`), `wake-inbox-io read` prints
+nothing, and the next append runs `mkdir -p` under the default and creates a second, empty
+store. `read` is the one command that discards the result — `register` and `beat` print an
+error when the store is missing, and `register` creates the store instead whenever the
+account can write where it goes. Writing the file after the deploy points the scripts at
+the real store and leaves behind whatever already landed in the wrong one.
 
 Confirm what the copy that will run resolves, from an account that runs it. Before the
 first deploy, run the check from the checkout (from the repository root), so a wrong file
