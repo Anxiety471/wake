@@ -129,17 +129,38 @@ def priv(command):
     return f"{SUDO} {command}" if SUDO else command
 
 
-def transport(command):
-    hostops = os.environ.get("WAKE_HOSTOPS")
-    if hostops:
-        return [hostops, command]
-    dest = os.environ.get("WAKE_HOST_SSH")
-    if dest:
-        return ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", dest, command]
+def transport_kind():
+    """Which transport is in use: WAKE_HOSTOPS, else WAKE_HOST_SSH, else none.
+
+    host() and put() both ask this one question, so they cannot disagree about where a command
+    goes and where a file goes: with both variables set, put() used to stage over scp while every
+    command around it ran through the runner (#117).
+    """
+    if os.environ.get("WAKE_HOSTOPS"):
+        return "hostops"
+    if os.environ.get("WAKE_HOST_SSH"):
+        return "ssh"
     return None
 
 
-def host(command, data=None, check=True):
+def transport(command):
+    kind = transport_kind()
+    if kind == "hostops":
+        return [os.environ["WAKE_HOSTOPS"], command]
+    if kind == "ssh":
+        return [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            os.environ["WAKE_HOST_SSH"],
+            command,
+        ]
+    return None
+
+
+def _run(command, data, check, streams):
     argv = transport(command)
     if argv is None:
         sys.exit("wake-host-deploy: set WAKE_HOSTOPS (a runner for one shell command) or WAKE_HOST_SSH (a destination)")
@@ -147,10 +168,25 @@ def host(command, data=None, check=True):
         print(f"  $ {command}")
         return ""
     r = subprocess.run(argv, input=data if data is not None else "", capture_output=True, text=True)
-    out = (r.stdout + r.stderr).strip()
     if check and r.returncode != 0:
-        sys.exit(f"FAILED: {command[:70]}\n{out[-800:]}")
-    return out
+        sys.exit(f"FAILED: {command[:70]}\n{(r.stdout + r.stderr).strip()[-800:]}")
+    return (r.stdout + r.stderr).strip() if streams == "both" else r.stdout.strip()
+
+
+def host(command, data=None, check=True):
+    """Run a command whose output a human reads: stdout and stderr together, as one block."""
+    return _run(command, data, check, "both")
+
+
+def host_out(command, data=None, check=True):
+    """Run a command for a value: stdout only.
+
+    stderr is the host's own chatter (a host-key notice, a warning from a wrapper around the
+    runner) and must never become part of an answer. Spliced into a value it has named a file
+    that does not exist, reported an account that was never created, and written a warning into
+    api.env (#117).
+    """
+    return _run(command, data, check, "stdout")
 
 
 def put(local, remote):
@@ -162,16 +198,16 @@ def put(local, remote):
     The ssh transport lands the bytes in the operator's own /tmp first and install(1) moves them,
     because scp has no way to write through sudo.
     """
-    dest = os.environ.get("WAKE_HOST_SSH")
     if DRY:
         print(f"  $ put {local} -> {remote}")
         return
     quoted = shlex.quote(remote)
-    if dest:
-        # host() returns stdout and stderr together: a host-key notice would otherwise splice a
-        # newline into the name scp is handed, scp writes a file by that name, and install then
-        # fails with "No such file or directory" (#117). The path mktemp prints is the first line.
-        answer = host("mktemp /tmp/.wake-deploy.XXXXXX").strip().splitlines()
+    if transport_kind() == "ssh":
+        dest = os.environ["WAKE_HOST_SSH"]
+        # host_out, not host: the name mktemp prints is stdout, and stderr is the host's own
+        # chatter. A host-key notice spliced into the name made scp write a file by that name and
+        # install then fail with "No such file or directory" (#117).
+        answer = host_out("mktemp /tmp/.wake-deploy.XXXXXX").splitlines()
         if not answer:
             sys.exit("wake-host-deploy: the host did not name a staging file")
         staged = answer[0]
@@ -182,10 +218,16 @@ def put(local, remote):
         )
         if r.returncode != 0:
             sys.exit(f"scp failed: {r.stderr[-400:]}")
-        host(
-            f"{priv('install')} -o root -g {SERVICE_GROUP} -m 644 {shlex.quote(staged)} {quoted} && "
-            f"{priv('rm')} -f {shlex.quote(staged)}"
-        )
+        try:
+            host(
+                f"{priv('install')} -o root -g {SERVICE_GROUP} -m 644 {shlex.quote(staged)} {quoted} && "
+                f"{priv('rm')} -f {shlex.quote(staged)}"
+            )
+        except SystemExit:
+            # The install and the cleanup were one `&&` chain, so a refused install left the
+            # operator's copy of the bundle in the host's /tmp with nothing to collect it (#117).
+            host(f"{priv('rm')} -f {shlex.quote(staged)}", check=False)
+            raise
         return
     host(f"{priv('install')} -o root -g {SERVICE_GROUP} -m 644 /dev/null {quoted}")
     with open(local, encoding="utf-8") as f:
@@ -221,12 +263,14 @@ def step_db():
         "END $do$;\n"
     )
     print("role:", host(f"{PSQL} -v ON_ERROR_STOP=1 -q -f -", data=body) or "ok")
-    present = host(f"""{PSQL} -tAc "select 1 from pg_database where datname = '{name}'" """.strip())
+    present = host_out(f"""{PSQL} -tAc "select 1 from pg_database where datname = '{name}'" """.strip())
     if present.strip() != "1":
         print("db:", host(f"{priv('createdb')} -O {role} {name}"))
     else:
         print("db: already present")
-    owner = host(f"""{PSQL} -tAc "select pg_get_userbyid(datdba) from pg_database where datname='{name}'" """.strip())
+    owner = host_out(
+        f"""{PSQL} -tAc "select pg_get_userbyid(datdba) from pg_database where datname='{name}'" """.strip()
+    )
     print("owner:", owner)
 
 
@@ -237,7 +281,7 @@ def step_user():
         "group:",
         host(f"getent group {SERVICE_GROUP} >/dev/null || {priv('groupadd')} --system {SERVICE_GROUP}"),
     )
-    found = host("getent passwd " + SERVICE_USER + " || true")
+    found = host_out("getent passwd " + SERVICE_USER + " || true")
     if found.strip():
         print("user: exists ->", found.strip())
         return
@@ -550,7 +594,7 @@ def installed_commit():
     `status` used to print the last build's commit from this operator's state directory, which
     answers a different question: build B after installing A said B while the host ran A.
     """
-    out = host(f"cat {INSTALL_DIR}/index.commit 2>/dev/null || true", check=False)
+    out = host_out(f"cat {INSTALL_DIR}/index.commit 2>/dev/null || true", check=False)
     return out.strip() or None
 
 
@@ -558,7 +602,7 @@ def step_install():
     out = build_dir()
     commit = build_commit()
     print("install: commit", commit or "unknown (this build was recorded without one: run the build step again)")
-    node = os.environ.get("WAKE_NODE") or host("command -v node").strip()
+    node = os.environ.get("WAKE_NODE") or host_out("command -v node")
     if not node:
         if DRY:
             print("  $ node: the host's `command -v node`")
@@ -675,7 +719,7 @@ def step_env():
         no_control(key, value)
     existing = ""
     if not DRY:
-        existing = host(f"{priv('cat')} {ENV_FILE} 2>/dev/null || true")
+        existing = host_out(f"{priv('cat')} {ENV_FILE} 2>/dev/null || true")
     body = merge_env(existing, values)
     directory = os.path.dirname(ENV_FILE)
     host(f"{priv('install')} -d -o root -g {SERVICE_GROUP} -m 750 {directory}")

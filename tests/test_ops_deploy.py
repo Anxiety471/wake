@@ -331,6 +331,47 @@ class HostDeployTestCase(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("not a private directory", r.stderr)
 
+    def test_a_value_read_never_takes_the_hosts_stderr_with_it(self):
+        # host() returns stdout and stderr together, so a warning from a wrapper around the runner
+        # became the value: `getent passwd` found nothing and reported "user: exists", so the step
+        # skipped useradd and the install it guards failed later, further from the cause (#117).
+        noisy = write(
+            os.path.join(self.dir, "hostops-noisy"),
+            "#!/bin/sh\n"
+            "{ printf 'CMD: %s\\n' \"$1\"; cat; printf '\\n--\\n'; } >> \"$STUB_LOG\"\n"
+            'case "$1" in\n'
+            "  'getent passwd '*) echo 'Warning: Permanently added example to the list of known hosts.' >&2 ;;\n"
+            "esac\n"
+            "exit 0\n",
+            executable=True,
+        )
+        r = run("wake-host-deploy", "user", env=dict(self.env, WAKE_HOSTOPS=noisy))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("user: exists", r.stdout, "stderr was read as an account")
+        self.assertIn("useradd", self.logged(), "the account was never created")
+        self.assertNotIn("Permanently added", r.stdout)
+
+    def test_a_warning_on_stderr_never_lands_in_the_environment_file(self):
+        # The same splice wrote the warning into api.env: the existing file is read for its keys,
+        # and everything read back was merged into what gets installed (#117).
+        noisy = write(
+            os.path.join(self.dir, "hostops-warn-env"),
+            "#!/bin/sh\n"
+            "{ printf 'CMD: %s\\n' \"$1\"; cat; printf '\\n--\\n'; } >> \"$STUB_LOG\"\n"
+            'case "$1" in\n'
+            "  *'cat /etc/wake/api.env'*)\n"
+            "      printf 'WAKE_PORT=3001\\n'\n"
+            "      echo 'Warning: Permanently added example to the list of known hosts.' >&2 ;;\n"
+            "esac\n"
+            "exit 0\n",
+            executable=True,
+        )
+        r = run("wake-host-deploy", "env", env=dict(self.env, WAKE_HOSTOPS=noisy))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.logged()
+        self.assertIn("WAKE_PORT=3001", log, "the file's own keys were dropped")
+        self.assertNotIn("Permanently added", log, "a warning was written into api.env")
+
     def test_dry_run_install_needs_no_build_and_no_node(self):
         # Both branches used to exit 1: no build found, and `command -v node` empty under dry-run.
         env = dict(self.env, WAKE_DEPLOY_STATE=os.path.join(self.dir, "state"))
@@ -591,8 +632,9 @@ class ScpTransportTestCase(unittest.TestCase):
         """A host that answers `mktemp` the way mktemp does: creates the file 0600 and prints it.
 
         `warning` is what ssh itself writes to stderr (a host-key notice), which the helper reads
-        back together with stdout. `silent` is a host that answers nothing at all, the way a
-        failed `mktemp` does.
+        back together with stdout. `silent` is a transport that exits 0 and names no file — a
+        wrapper that swallows `mktemp`'s failure. A `mktemp` that fails exits non-zero and
+        `host()` stops the run before put() can ask it for a name.
         """
         body = "#!/bin/sh\nfor last; do :; done\n"
         if warning:
@@ -621,6 +663,12 @@ class ScpTransportTestCase(unittest.TestCase):
         build = make_build(os.path.join(self.dir, name))
         record(state, build)
         return run("wake-host-deploy", "install", env=dict(self.env, WAKE_DEPLOY_STATE=state))
+
+    def run_install(self, env=None):
+        state = os.path.join(self.dir, "state")
+        build = make_build(os.path.join(self.dir, "build"))
+        record(state, build)
+        return run("wake-host-deploy", "install", env=dict(self.env, WAKE_DEPLOY_STATE=state, **(env or {})))
 
     def staged(self):
         return [line.split()[1] for line in self.logged().splitlines() if line.startswith("SCP ")]
@@ -660,9 +708,87 @@ class ScpTransportTestCase(unittest.TestCase):
         self.assertNotIn("Warning", log, log[:400])
         self.assertEqual(len(self.staged()), 1, log)
 
+    def test_a_refused_install_does_not_leave_the_staged_file_behind(self):
+        # install and the cleanup were one `&&` chain, so a refused install left the operator's
+        # copy of the bundle in the host's /tmp, 0600 and collected by nothing (#117).
+        bindir = os.path.join(self.dir, "bin-fail")
+        os.makedirs(bindir)
+        write(
+            os.path.join(bindir, "ssh"),
+            "#!/bin/sh\n"
+            "for last; do :; done\n"
+            'printf "SSH: %s\\n" "$last" >> "$STUB_LOG"\n'
+            'case "$last" in\n'
+            '  "mktemp "*)\n'
+            '      set -- $last; shift; p=$(mktemp "$1") || exit 1; chmod 600 "$p"; printf "%s\\n" "$p" ;;\n'
+            '  "rm -f "*)\n'
+            '      set -- $last; shift; rm -f "$@" ;;\n'
+            '  "install -o root"*)\n'
+            '      echo "install: cannot create regular file: Permission denied" >&2; exit 1 ;;\n'
+            "esac\n",
+            executable=True,
+        )
+        write(
+            os.path.join(bindir, "scp"),
+            '#!/bin/sh\nfor a in "$@"; do from=$to; to=$a; done\ncp "$from" "${to#*:}"\n',
+            executable=True,
+        )
+        env = dict(self.env, PATH=bindir + ":" + os.environ.get("PATH", "/usr/bin:/bin"))
+        r = self.run_install(env)
+        self.assertNotEqual(r.returncode, 0, "a refused install reported success")
+        log = self.logged()
+        staged = re.search(r"SSH: install -o root -g wake -m \d+ (\S+) /opt/wake\.index\.mjs", log)
+        self.assertIsNotNone(staged, log)
+        self.assertFalse(os.path.exists(staged.group(1)), "the staged copy was left in /tmp")
+        self.assertIn(f"SSH: rm -f {staged.group(1)}", log, "the cleanup never ran")
+
+    def test_one_transport_decides_where_the_bytes_go(self):
+        # put() picked scp from WAKE_HOST_SSH while host() preferred WAKE_HOSTOPS, so with both set
+        # the bytes travelled a different route than every command around them (#117).
+        runner = write(
+            os.path.join(self.dir, "hostops-both"),
+            "#!/bin/sh\n{ printf 'CMD: %s\\n' \"$1\"; cat; printf '\\n--\\n'; } >> \"$STUB_LOG\"\n",
+            executable=True,
+        )
+        env = dict(self.env, WAKE_HOSTOPS=runner)
+        r = self.run_install(env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.logged()
+        self.assertNotIn("SCP ", log, "scp staged the bytes while every command went through the runner")
+        self.assertIn("CMD: install -o root -g wake -m 644 /dev/null /opt/wake.index.mjs", log)
+
+    def test_a_stderr_only_answer_is_not_a_staging_file(self):
+        # The old read took the first line of stdout and stderr together, which is the same thing
+        # until stdout is empty: a wrapper that warns and names nothing then handed scp the warning
+        # as a path. Only a value read that ignores stderr stops here (#117).
+        bindir = os.path.join(self.dir, "bin-warn")
+        os.makedirs(bindir)
+        write(
+            os.path.join(bindir, "ssh"),
+            "#!/bin/sh\n"
+            "for last; do :; done\n"
+            'printf "SSH: %s\\n" "$last" >> "$STUB_LOG"\n'
+            'case "$last" in\n'
+            '  "mktemp "*)'
+            " echo 'Warning: Permanently added example to the list of known hosts.' >&2 ;;\n"
+            "esac\n",
+            executable=True,
+        )
+        write(
+            os.path.join(bindir, "scp"),
+            '#!/bin/sh\nfor a in "$@"; do from=$to; to=$a; done\nprintf "SCP %s\\n" "${to#*:}" >> "$STUB_LOG"\n',
+            executable=True,
+        )
+        env = dict(self.env, PATH=bindir + ":" + os.environ.get("PATH", "/usr/bin:/bin"))
+        r = self.run_install(env)
+        self.assertNotEqual(r.returncode, 0, "a deploy went ahead with a warning as its path")
+        self.assertIn("did not name a staging file", r.stdout + r.stderr)
+        self.assertNotIn("SCP ", self.logged(), "scp was handed the warning as a path")
+
     def test_a_host_that_names_nothing_stops_before_scp(self):
-        # `mktemp` on the host can fail and answer nothing. scp would then be handed an empty
-        # path and write into the operator's own directory, so put() has to stop first (#117).
+        # A transport can exit 0 and name no file — a `WAKE_HOST_SSH` wrapper that swallows the
+        # failure. scp would then be handed an empty path and write into the operator's own
+        # directory, so put() has to stop first (#117).
         self.ssh(warning=None, silent=True)
         r = self.install("silent")
         self.assertNotEqual(r.returncode, 0, "a deploy went ahead with no staged file")

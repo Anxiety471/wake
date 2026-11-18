@@ -332,6 +332,18 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   probe and the `not a valid regex` branch had no test of their own: deleting either left the
   doc suite green, and a runbook whose class does not compile reported no problems at all
   ([#117](https://github.com/Anxiety471/wake/issues/117)).
+- **A value read from the host is stdout only, and a refused install leaves nothing behind.**
+  `host()` returns stdout and stderr together, which is right for a block a human reads and
+  wrong for a value: a warning from a wrapper around the runner became the answer, so
+  `getent passwd` reported an account that did not exist and the step skipped `useradd`,
+  `command -v node` handed `install` a path with the warning spliced into it, and the existing
+  `api.env` was read with the warning inside it and written back that way. `host_out()` is the
+  value read, and every one of those reads uses it. In the same file, `put()` decided between
+  `scp` and the runner from `WAKE_HOST_SSH` while every command around it preferred
+  `WAKE_HOSTOPS`, so with both set the bytes took a different route than the commands: one
+  `transport_kind()` answers for both. The staged copy is removed even when the install that
+  follows it fails, which the single `&&` chain could not do
+  ([#117](https://github.com/Anxiety471/wake/issues/117)).
 
 ### Security
 

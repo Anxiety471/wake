@@ -119,6 +119,15 @@ checksum, so a renamed or deleted `.sql` would otherwise stay in
 `/opt/wake/migrations` and be applied again at the next boot — after the file it
 belongs to no longer exists.
 
+`bin/ops/wake-host-deploy install` does the same thing over `ssh` without a shared
+filesystem: it asks the host for a name with `mktemp /tmp/.wake-deploy.XXXXXX`
+(0600, owned by the operator), `scp`s the bundle there, and moves it into place with
+`install`. The staged copy is removed afterwards, including when the install itself
+is refused — an install that failed used to leave the bundle in the host's `/tmp`
+with nothing to collect it. When `WAKE_HOSTOPS` is set it wins over `WAKE_HOST_SSH`
+and both the commands and the bytes travel through that one runner; the two are
+never mixed.
+
 ## 4. Service
 
 ```sh
