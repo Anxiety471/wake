@@ -290,6 +290,13 @@ class HostDeployTestCase(unittest.TestCase):
         for step in ("db", "user", "build", "install", "env", "unit", "status", "log"):
             self.assertIn(step, r.stdout)
 
+    def test_help_says_which_transport_wins(self):
+        # transport_kind() made WAKE_HOSTOPS win when both are set, and deploy/README.md says so,
+        # but the text an operator reads at 2 a.m. still offered "one is required" (#129).
+        r = run("wake-host-deploy", "--help", env=self.env)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("WAKE_HOSTOPS wins when both", r.stdout)
+
     def test_the_user_step_makes_the_group_before_the_account(self):
         # On a clean host, `useradd --gid wake` fails with "group 'wake' does not exist", so the
         # documented order stopped at its second step and nothing after it could run.
@@ -588,6 +595,78 @@ class HostDeployTestCase(unittest.TestCase):
         self.assertIn("migrations: 0", r.stdout)
         self.assertNotIn("chmod 644 /opt/wake/migrations/*.sql", self.logged())
 
+    def test_the_node_read_ignores_a_warning_on_stderr(self):
+        # install looks the host's node up with `command -v node`; a warning on stderr was spliced
+        # into the path handed to install(1), which then said "cannot stat" and stopped the deploy
+        # on a host that had node all along (#129). Every other install test sets WAKE_NODE, so the
+        # fallback branch had no test at all.
+        noisy = write(
+            os.path.join(self.dir, "hostops-node"),
+            "#!/bin/sh\n"
+            "{ printf 'CMD: %s\\n' \"$1\"; cat; printf '\\n--\\n'; } >> \"$STUB_LOG\"\n"
+            'case "$1" in\n'
+            "  'command -v node')\n"
+            "      printf '/usr/bin/node\\n'\n"
+            "      echo 'Warning: Permanently added example to the list of known hosts.' >&2 ;;\n"
+            "esac\n"
+            "exit 0\n",
+            executable=True,
+        )
+        state = os.path.join(self.dir, "state")
+        build = make_build(self.dir)
+        record(state, build)
+        r = run("wake-host-deploy", "install", env=dict(self.env, WAKE_HOSTOPS=noisy, WAKE_DEPLOY_STATE=state))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.logged()
+        self.assertIn("install -m 755 /usr/bin/node /opt/wake/node", log)
+        self.assertNotIn("Permanently added", log, log[:400])
+
+    def test_the_installed_commit_is_a_value_not_a_block(self):
+        # `status` prints the commit beside the installed file, and with stderr spliced in the
+        # value an operator reads back carried the transport's own notice (#129).
+        noisy = write(
+            os.path.join(self.dir, "hostops-commit"),
+            "#!/bin/sh\n"
+            "{ printf 'CMD: %s\\n' \"$1\"; cat; printf '\\n--\\n'; } >> \"$STUB_LOG\"\n"
+            'case "$1" in\n'
+            "  'cat /opt/wake/index.commit 2>/dev/null || true')\n"
+            "      printf 'abc1234\\n'\n"
+            "      echo 'Warning: Permanently added example to the list of known hosts.' >&2 ;;\n"
+            "esac\n"
+            "exit 0\n",
+            executable=True,
+        )
+        r = run("wake-host-deploy", "status", env=dict(self.env, WAKE_HOSTOPS=noisy))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("installed commit: abc1234", r.stdout)
+        self.assertNotIn("Permanently added", r.stdout)
+
+    def test_the_database_probes_are_values_not_blocks(self):
+        # The two psql probes are compared and printed, never read by a human: a NOTICE on stderr
+        # made `present` differ from "1", so createdb ran against an existing database, and the
+        # owner line carried the notice (#129).
+        noisy = write(
+            os.path.join(self.dir, "hostops-psql"),
+            "#!/bin/sh\n"
+            "{ printf 'CMD: %s\\n' \"$1\"; cat; printf '\\n--\\n'; } >> \"$STUB_LOG\"\n"
+            'case "$1" in\n'
+            "  *'select 1 from pg_database'*)\n"
+            "      printf '1\\n'\n"
+            "      echo 'NOTICE: relation does not exist, skipping' >&2 ;;\n"
+            "  *'pg_get_userbyid'*)\n"
+            "      printf 'wake\\n'\n"
+            "      echo 'NOTICE: relation does not exist, skipping' >&2 ;;\n"
+            "esac\n"
+            "exit 0\n",
+            executable=True,
+        )
+        r = run("wake-host-deploy", "db", env=dict(self.env, WAKE_HOSTOPS=noisy))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("db: already present", r.stdout, "a spliced probe value ran createdb anyway")
+        self.assertNotIn("createdb", self.logged())
+        self.assertIn("owner: wake", r.stdout)
+        self.assertNotIn("NOTICE", r.stdout)
+
 
 class ScpTransportTestCase(unittest.TestCase):
     """The ssh transport stages in the operator's /tmp before install(1) moves the bytes.
@@ -647,7 +726,13 @@ class ScpTransportTestCase(unittest.TestCase):
                 '      chmod 600 "$p"\n'
                 '      printf "%s\\n" "$p"\n'
             )
-        body += "      ;;\nesac\n"
+        body += "      ;;\n"
+        # The fake host also runs the cleanup the real command carries: `install … && rm -f` is
+        # logged only (never executed against /opt), and the trailing rm removes the staged file the
+        # way the operator's host does. While the stub swallowed that chain, every run of this class
+        # left a real /tmp/.wake-deploy.* file behind - a leak a green CI never sees (#129).
+        body += '  *"rm -f "*) p=${last##*rm -f }; rm -f "$p" ;;\n'
+        body += "esac\n"
         path = os.path.join(self.bin, "ssh")
         write(path, body, executable=True)
         if warning:
@@ -794,6 +879,38 @@ class ScpTransportTestCase(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, "a deploy went ahead with no staged file")
         self.assertIn("did not name a staging file", r.stdout + r.stderr)
         self.assertNotIn("SCP ", self.logged(), "scp was handed no staged path")
+
+    def test_the_harness_removes_the_staging_file_it_created(self):
+        # The fake host answered `mktemp` and swallowed `install … && rm -f`, so one run of this
+        # class left a real /tmp/.wake-deploy.* behind for every install it drove (#129).
+        r = self.install("leak")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        paths = self.staged()
+        self.assertEqual(len(paths), 1, self.logged())
+        self.assertFalse(os.path.exists(paths[0]), "the fake host left the staged file behind")
+
+    def test_a_failed_scp_does_not_leave_its_half_written_file_behind(self):
+        # scp truncates the staged file before the transfer ends, so a connection that drops
+        # mid-copy leaves half a bundle in the host's /tmp. put() checked scp's status and exited
+        # before its cleanup, so nothing collected it (#129).
+        write(
+            os.path.join(self.bin, "scp"),
+            "#!/bin/sh\n"
+            'for a in "$@"; do from=$to; to=$a; done\n'
+            "p=${to#*:}\n"
+            'printf "half a bundle" > "$p"\n'
+            'printf "SCP %s mode=written\\n" "$p" >> "$STUB_LOG"\n'
+            'echo "lost connection" >&2\n'
+            "exit 1\n",
+            executable=True,
+        )
+        r = self.run_install()
+        self.assertNotEqual(r.returncode, 0, "a failed scp reported success")
+        self.assertIn("scp failed", r.stdout + r.stderr)
+        paths = self.staged()
+        self.assertEqual(len(paths), 1, self.logged())
+        self.assertFalse(os.path.exists(paths[0]), "scp's half-written file was left in /tmp")
+        self.assertIn(f"SSH: rm -f {paths[0]}", self.logged(), "the cleanup never ran")
 
 
 class BuildStateTestCase(unittest.TestCase):

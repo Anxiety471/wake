@@ -57,7 +57,8 @@ env merges: lines the operator added stay, the five keys below are (re)written, 
 WAKE_MCP_ENABLED comes from this environment - default false, so a deploy does not
 republish a /mcp endpoint that was halted on purpose.
 
-Env: WAKE_HOSTOPS or WAKE_HOST_SSH (one is required), WAKE_SUDO (`sudo -n`),
+Env: WAKE_HOSTOPS or WAKE_HOST_SSH (one is required; WAKE_HOSTOPS wins when both
+are set, and the bytes then travel through the runner, never scp), WAKE_SUDO (`sudo -n`),
 WAKE_REPO (checkout), WAKE_SERVICE (wake-api), WAKE_SERVICE_USER / WAKE_SERVICE_GROUP
 (wake), WAKE_INSTALL_DIR (/opt/wake), WAKE_ENV_FILE (/etc/wake/api.env),
 WAKE_UNIT_DIR (/etc/systemd/system), WAKE_DB_NAME / WAKE_DB_ROLE (wake),
@@ -211,21 +212,33 @@ def put(local, remote):
         if not answer:
             sys.exit("wake-host-deploy: the host did not name a staging file")
         staged = answer[0]
-        r = subprocess.run(
-            ["scp", "-q", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", local, f"{dest}:{staged}"],
-            capture_output=True,
-            text=True,
-        )
-        if r.returncode != 0:
-            sys.exit(f"scp failed: {r.stderr[-400:]}")
         try:
+            r = subprocess.run(
+                [
+                    "scp",
+                    "-q",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "StrictHostKeyChecking=accept-new",
+                    local,
+                    f"{dest}:{staged}",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if r.returncode != 0:
+                # scp truncates the staged file before the transfer ends, so a dropped connection
+                # leaves half a bundle behind: the failure is collected like a refused install (#129).
+                sys.exit(f"scp failed: {r.stderr[-400:]}")
             host(
                 f"{priv('install')} -o root -g {SERVICE_GROUP} -m 644 {shlex.quote(staged)} {quoted} && "
                 f"{priv('rm')} -f {shlex.quote(staged)}"
             )
         except SystemExit:
-            # The install and the cleanup were one `&&` chain, so a refused install left the
-            # operator's copy of the bundle in the host's /tmp with nothing to collect it (#117).
+            # Nothing may strand the operator's copy of the bundle in the host's /tmp: the install
+            # and its cleanup were one `&&` chain, so a refused install never ran the rm (#117), and
+            # a failed scp used to exit before this try existed (#129).
             host(f"{priv('rm')} -f {shlex.quote(staged)}", check=False)
             raise
         return
