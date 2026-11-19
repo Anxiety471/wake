@@ -90,6 +90,34 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **A later outage of the store is reported again, and a `root:root` store is told to `chgrp`.**
+  `wake-inbox-io` wrote its once-per-uid line marker and never removed it, so the first outage in
+  the life of an account was the only one ever reported: every later one, and any other store,
+  exited 1 with an empty stderr. The marker is now cleared on every route that reaches the store,
+  so break, recover and break again reports twice. A store owned by group `root` - the ownership
+  mistake these routes exist to catch - no longer suggests joining group `root`, which nobody is
+  added to; it says to `chgrp` the store to a group the account is in
+  ([#135](https://github.com/Anxiety471/wake/issues/135)).
+
+- **`wake-keys` reads the site file.** It is a shell helper and resolved `WAKE_STATE_DIR` from the
+  environment only, so on a host whose store is set in `/etc/wake/config.env` it looked in
+  `/var/lib/wake` and printed `none` with exit 0 for every bot: a silent "no key". It now asks the
+  same resolver the CLI ships (`wake_config.load()`), which reads the environment, the user file and
+  the site file in that order; `WAKE_HOST_KEY_DIR` still wins, and the built-in default stands when
+  the resolver is not beside the script
+  ([#135](https://github.com/Anxiety471/wake/issues/135)).
+
+- **`wake-host-deploy` no longer turns a missing local `scp` into a traceback and a stranded file,
+  and cannot silently empty `api.env`.** A machine without `scp` raised `FileNotFoundError` (an
+  `OSError`, not the `SystemExit` the cleanup caught), leaving the staged bundle in the host's
+  `/tmp`; the cleanup now covers both. A host without `node` printed `FAILED: command -v node`
+  instead of the message that names `WAKE_NODE`, because the probe exited on a failed command. And
+  the `api.env` read answered the same for a missing file and for a refused read, so a rewrite
+  merged from an empty string dropped every key the file carried: the three cases are now named
+  apart, and an unreadable file stops the step
+  ([#134](https://github.com/Anxiety471/wake/issues/134),
+  [#131](https://github.com/Anxiety471/wake/issues/131)).
+
 - **The `wake-wait` interrupt test no longer measures how the suite was launched.** It slept a
   blind 1.5 s and then sent `SIGINT`, so it silently required the first poll to return inside that
   window - and it failed every time the runner was a background job, because POSIX starts those

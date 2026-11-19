@@ -92,6 +92,10 @@ def unreachable(g, write):
     elif g.gr_gid in os.getgroups():
         # A new login would not change anything: this session already has the group
         hint = f"this account is in group {g.gr_name}, so check the store's mode"
+    elif g.gr_gid == 0:
+        # root:root is the ownership mistake these routes exist to catch (the store must belong to
+        # a group the bots are in). No one is added to root, so a join cannot be the fix (#135 F4).
+        hint = "the store belongs to group root: chgrp it to a group this account is in, then log in again"
     else:
         hint = f"add this account to group {g.gr_name}, then log in again"
     need = "writable" if write else "readable"
@@ -113,6 +117,20 @@ def unreachable(g, write):
     sys.exit(1)
 
 
+def clear_unreachable_marker():
+    """Re-arm the once-per-uid line: a route exists again, so the next outage must be reported.
+
+    The marker is written by unreachable() and was never removed, so the first outage in the life
+    of an account was the only one ever reported: every later one, and any other store, exited 1
+    with an empty stderr (#135 F2). It is cleared on the route rather than compared in the marker
+    because the question is not which store failed, it is whether this account reaches the store.
+    """
+    try:
+        os.unlink(os.path.join(tempfile.gettempdir(), f".wake-inbox-io-warned-{os.getuid()}"))
+    except OSError:
+        pass
+
+
 def sh(cmd, data=None, write=True):
     """Run one command where the store can be reached: here, through sg, or on the host.
 
@@ -123,11 +141,14 @@ def sh(cmd, data=None, write=True):
     which is how a first register works on a host with no bridge to anyone else.
     """
     if local_ok(write):
+        clear_unreachable_marker()
         return subprocess.run(["bash", "-c", cmd], input=data, capture_output=True, text=True)
     g = store_group()
     if joins_store_group(g):
+        clear_unreachable_marker()
         return subprocess.run(["sg", g.gr_name, "-c", cmd], input=data, capture_output=True, text=True)
     if HOSTOPS:
+        clear_unreachable_marker()
         return subprocess.run([HOSTOPS, cmd], input=data, capture_output=True, text=True)
     if os.path.isdir(BASE):
         unreachable(g, write)
@@ -161,17 +182,16 @@ usage: wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]
 
   Markers older than 24 hours are pruned when a session registers. A write runs locally when
   $WAKE_STATE_DIR/inbox is writable, and a read when it is readable. When it is neither, but
-  /etc/group lists this account for the
-  store's group, it re-enters through `sg <group>`: a shell started before the group existed keeps
-  its old supplementary list, and `sg` re-reads the group database without a new login. Otherwise
-  it goes over WAKE_HOSTOPS.
+  /etc/group lists this account for the store's group, it re-enters through `sg <group>`: a shell
+  started before the group existed keeps its old supplementary list, and `sg` re-reads the group
+  database without a new login. Otherwise it goes over WAKE_HOSTOPS.
 
   environment   WAKE_STATE_DIR, WAKE_HOSTOPS   (both read by bin/wake_config.py)
 
   exit 0 on success; 1 on usage or a hash that is not 6-32 lowercase hex characters, or when the
-  store is unreachable and WAKE_HOSTOPS is empty (that line is printed once per uid). If the
-  command it runs fails, its stderr is printed and its status is returned; a refused register
-  never prints an inbox path.
+  store is unreachable and WAKE_HOSTOPS is empty (that line is printed once per uid per outage,
+  and again after a command reaches the store). If the command it runs fails, its stderr is
+  printed and its status is returned; a refused register never prints an inbox path.
 """
 
 

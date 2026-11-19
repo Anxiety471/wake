@@ -11,8 +11,21 @@ KEY_DIR=${WAKE_KEY_DIR:-$CFG}
 # The registry sits in the config dir, where bin/wake looks (bin/wake_config.py),
 # so moving the saved keys with WAKE_KEY_DIR never hides it.
 REG=${WAKE_REGISTRY:-$CFG/bots.tsv}
-# Where the host keeps <bot-id>.key: the shared state dir unless told otherwise.
-HOST_KEY_DIR=${WAKE_HOST_KEY_DIR:-${WAKE_STATE_DIR:-/var/lib/wake}}
+# Where the host keeps <bot-id>.key: the environment first, then the user and site config
+# files, then the built-in default - the order wake_config.load() uses. A second parser here would
+# be a second answer, so ask the resolver the CLI already ships with (bin/wake_config.py, installed
+# beside this helper), and keep the default for a bare copy of bin/ops on a machine without it.
+resolve_store() {
+    local d
+    for d in "$(dirname "$0")" "$(dirname "$0")/.." "$(dirname "$0")/../.."; do
+        [ -r "$d/wake_config.py" ] || continue
+        (cd "$d" && python3 -c 'import wake_config; print(wake_config.load()["WAKE_STATE_DIR"])' 2>/dev/null) && return 0
+    done
+    return 1
+}
+
+HOST_KEY_DIR=${WAKE_HOST_KEY_DIR:-${WAKE_STATE_DIR:-$(resolve_store)}}
+[ -n "$HOST_KEY_DIR" ] || HOST_KEY_DIR=/var/lib/wake
 
 usage() {
     cat <<'EOF'
@@ -31,7 +44,8 @@ usage: wake-keys [--force]
   environment   WAKE_REGISTRY        the bot registry ($WAKE_CONFIG_DIR/bots.tsv)
                 WAKE_CONFIG_DIR      default ~/.config/wake
                 WAKE_KEY_DIR         where keys are saved (defaults to WAKE_CONFIG_DIR)
-                WAKE_HOST_KEY_DIR    where the host keeps <bot-id>.key ($WAKE_STATE_DIR)
+                WAKE_HOST_KEY_DIR    where the host keeps <bot-id>.key (default: WAKE_STATE_DIR
+                                     from the environment or the config files, then /var/lib/wake)
                 WAKE_HOSTOPS         the command that reaches the host, from a guest
 
   exit 0 when every bot was ok, skip or none; 1 when a saved key was bad, a fetch failed, or

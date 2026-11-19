@@ -5,10 +5,10 @@ listening on loopback only. Nothing in the API steps below touches the CLI store
 (`WAKE_STATE_DIR` — `/var/lib/wake` in the checkout, or the store a host sets in
 `/etc/wake/config.env`; a deploy reads that file and never patches the scripts):
 the API can be installed, started and stopped without affecting any bot until
-`bin/wake` is switched over to it. One section outside those steps does decide the
-store — *The CLI store is a site setting* — and its step runs before the first
-deploy of `bin/*`. `ls -ld` the path before trusting either name; the store and the
-API's `wake` database are separate.
+`bin/wake` is switched over to it. One section outside those steps does decide the store —
+*The CLI store is a site setting* — and its step runs before the first deploy of `bin/*`;
+`ls -ld` the path before trusting either name; the store and the API's `wake` database are
+separate.
 
 Every shell step below is safe to re-run; §7 is the re-run path after a code change.
 
@@ -16,11 +16,10 @@ Every shell step below is safe to re-run; §7 is the re-run path after a code ch
 
 The Python scripts in `bin/` take `WAKE_STATE_DIR` from the environment or from a config
 file and fall back to the built-in default `/var/lib/wake`. The one helper in `bin/ops`
-that resolves the store, `bin/ops/wake-keys`, is a shell script: it reads the environment
-only (`WAKE_HOST_KEY_DIR` first, then `WAKE_STATE_DIR`) with the same default, so run it
-with `WAKE_STATE_DIR` set on a host whose store is not the default — the system file
-does not reach it. A host whose store is somewhere else says so once, in the system file,
-so `wake-deploy` can replace `bin/*` without taking the store with it:
+that resolves the store, `bin/ops/wake-keys`, asks the same resolver (`wake_config.load()`)
+and so reads the same files in the same order; `WAKE_HOST_KEY_DIR` still wins over the
+resolved store when it is set. A host whose store is somewhere else says so once, in the
+system file, so `wake-deploy` can replace `bin/*` without taking the store with it:
 
 ```bash
 sudo install -d -m 755 /etc/wake
@@ -32,12 +31,13 @@ Write that file **before** the first deploy of `bin/*`, not after it. The order 
 point and the wrong one is silent: the installed default is `/var/lib/wake`, which a host
 that keeps its store elsewhere does not have. `wake --inbox` then exits 0 printing
 `no threads opened by human:<account>` (the label is the `human:` prefix plus `$USER` when
-no bot is registered; a registered bot prints `bot:<alias>`), `wake-inbox-io read` prints
-nothing, and the next append runs `mkdir -p` under the default and creates a second, empty
-store. `read` is the one command that discards the result — `register` and `beat` print an
-error when the store is missing, and `register` creates the store instead whenever the
-account can write where it goes. Writing the file after the deploy points the scripts at
-the real store and leaves behind whatever already landed in the wrong one.
+no bot is registered, `bot:<alias>` for a registered bot, `bot:container` when `WAKE_HOSTOPS`
+is set, and `WAKE_SOURCE` overrides any of them), and the next append runs `mkdir -p` under
+the default and creates a second, empty store. `read` is the one command that discards the result
+— it prints nothing; of the other two, `register` is the quiet one, because it creates the store
+whenever the account can write where it goes, so a host whose store is elsewhere gets a second
+store and exit 0, and only `beat` fails with an error. Writing the file after the deploy points
+the scripts at the real store and leaves behind whatever already landed in the wrong one.
 
 Confirm what the copy that will run resolves, from an account that runs it. Before the
 first deploy, run the check from the checkout (from the repository root), so a wrong file
@@ -57,8 +57,11 @@ Both have to print the store the host keeps, not `/var/lib/wake`. Precedence, hi
 the environment, then the user's own `$WAKE_CONFIG_DIR/config.env`, then
 `/etc/wake/config.env`, then the built-in default. An explicit `WAKE_CONFIG` replaces the
 search entirely, and `WAKE_SYSTEM_CONFIG` names the system file (an empty value switches
-that layer off). Every account and every installed copy reads the system file, so keep it
-root-owned, mode 644, and put no secrets in it.
+that layer off). A key set to an empty value counts as set, so a line that is just
+`WAKE_STATE_DIR=` — in the environment or in the file — resolves to `/`, not to the next
+layer, and a root step would create `/inbox`: never write a key without a value. Every Python
+`bin/*` script and `bin/ops/wake-keys` read the system file, so keep it root-owned, mode 644,
+and put no secrets in it.
 
 ## Layout
 
