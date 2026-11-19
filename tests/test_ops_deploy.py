@@ -465,6 +465,34 @@ class HostDeployTestCase(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("WAKE_RATE_LIMIT=5", self.logged(), "a key the file carried was dropped")
 
+    def test_an_env_file_with_no_final_newline_keeps_every_key(self):
+        # `cat` of a file whose last line has no newline put the marker on that line, so the answer
+        # named no state, the read came back "", and the rewrite dropped every key (#135 review).
+        env_file = os.path.join(self.dir, "api.env")
+        with open(env_file, "w", encoding="utf-8") as f:
+            f.write("WAKE_RATE_LIMIT=5")
+        stub = write(os.path.join(self.dir, "hostops-bash"), '#!/bin/sh\nexec bash -c "$1"\n', executable=True)
+        module = load_host_deploy()
+        saved = dict(os.environ)
+        try:
+            os.environ["WAKE_HOSTOPS"] = stub
+            module.ENV_FILE = env_file
+            module.SUDO = ""
+            text = module.env_file_text()
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+        self.assertIn("WAKE_RATE_LIMIT=5", text, "a file without a trailing newline was read as empty")
+
+    def test_an_answer_that_names_no_state_is_refused(self):
+        # A glued marker used to read as "the file is empty", which is how every key disappeared.
+        module = load_host_deploy()
+        module.host_out = lambda *a, **k: "WAKE_RATE_LIMIT=5__wake_env:read__"
+        with self.assertRaises(SystemExit) as caught:
+            module.env_file_text()
+        self.assertIn("refusing to rewrite", str(caught.exception))
+        self.assertIn("none of", str(caught.exception))
+
     def test_env_merge_keeps_what_the_operator_added(self):
         merge = load_host_deploy().merge_env
         existing = "DATABASE_URL=postgres://old\nWAKE_RATE_LIMIT=5\nWAKE_MCP_ENABLED=true\n# a note the operator left\n"
@@ -943,7 +971,8 @@ class ScpTransportTestCase(unittest.TestCase):
         os.symlink(os.path.join(self.bin, "ssh"), os.path.join(only, "ssh"))
         r = self.run_install(env={"PATH": only})
         self.assertNotEqual(r.returncode, 0, "a missing scp reported success")
-        self.assertIn("No such file or directory", r.stdout + r.stderr)
+        self.assertIn("could not run scp", r.stderr, "a missing scp is still a traceback")
+        self.assertNotIn("Traceback", r.stdout + r.stderr, "a missing scp is still a traceback")
         cleaned = [line.split("rm -f ", 1)[1] for line in self.logged().splitlines() if "rm -f " in line]
         self.assertEqual(len(cleaned), 1, self.logged())
         self.assertFalse(os.path.exists(cleaned[0]), "the staged file was stranded when scp was missing")

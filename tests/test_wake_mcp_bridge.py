@@ -250,6 +250,11 @@ class BridgeTest(unittest.TestCase):
         self.fake.requests.clear()
         self.stealer.requests.clear()
 
+    def test_the_child_env_keeps_the_hosts_site_file_out(self):
+        # The site layer is switched off by name, not left to the host's default path.
+        self.assertIn("WAKE_SYSTEM_CONFIG", self.env(), "the host's site file is back in the bridge's env")
+        self.assertEqual(self.env()["WAKE_SYSTEM_CONFIG"], "")
+
     def env(
         self,
         token=TOKEN,
@@ -264,6 +269,10 @@ class BridgeTest(unittest.TestCase):
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "WAKE_MCP_API": api or f"http://127.0.0.1:{self.fake.port}",
             "PYTHONDONTWRITEBYTECODE": "1",  # the bridge imports wake_config.py: keep bin/ clean
+            # tests/run.sh switches the site layer off, but this child is built from scratch, so the
+            # host's /etc/wake/config.env reached it anyway: a site file carrying WAKE_MCP_TOKEN
+            # failed four bridge tests (#135 review).
+            "WAKE_SYSTEM_CONFIG": "",
         }
         if drop_config:
             # Legacy on purpose: nothing names a config file or a directory for

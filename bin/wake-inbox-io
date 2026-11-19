@@ -5,6 +5,7 @@ import os
 import pwd
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -107,6 +108,16 @@ def unreachable(g, write):
     try:
         fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError:
+        # A regular file is this account's own marker, so the outage was already reported. Anything
+        # else at that path is not ours to delete, and `clear_unreachable_marker` cannot remove it
+        # either: treating it as "already reported" silenced the line for good (#135 review).
+        try:
+            ours = stat.S_ISREG(os.lstat(marker).st_mode)
+        except OSError:
+            ours = False
+        if ours:
+            sys.exit(1)
+        sys.stderr.write(f"{text}\n{marker} is not a regular file; remove it\n")
         sys.exit(1)
     except OSError:
         sys.stderr.write(text + "\n")

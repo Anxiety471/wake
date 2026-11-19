@@ -118,6 +118,21 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   ([#134](https://github.com/Anxiety471/wake/issues/134),
   [#131](https://github.com/Anxiety471/wake/issues/131)).
 
+- **A review of the store-path batch found four holes, and they are closed here.** `env_file_text()`
+  read the state marker from the last line, and `cat` of an `api.env` whose last line has no
+  newline put the marker on the end of that line (`5__wake_env:read__`): no state matched, the read
+  came back empty, and the rewrite dropped every key - the failure #131 is about. The shell now
+  prints a newline before the marker, and an answer that names none of the three states refuses the
+  rewrite instead of reading as an empty file. The bridge builds its child environment from
+  scratch, so `tests/run.sh`'s `WAKE_SYSTEM_CONFIG=` never reached it and a host site file carrying
+  `WAKE_MCP_TOKEN` failed four bridge tests; that environment now names the empty site path. A
+  directory planted at `/tmp/.wake-inbox-io-warned-<uid>` (sticky `/tmp`, any account) silenced the
+  once-per-outage line for good, because the marker is created `O_EXCL` and
+  `clear_unreachable_marker` cannot unlink a directory: a path that is not this account's regular
+  file now prints the line and names what to remove. And a missing local `scp` is one line instead
+  of a traceback, which is what the entry above already claimed
+  ([#135](https://github.com/Anxiety471/wake/issues/135)).
+
 - **The `wake-wait` interrupt test no longer measures how the suite was launched.** It slept a
   blind 1.5 s and then sent `SIGINT`, so it silently required the first poll to return inside that
   window - and it failed every time the runner was a background job, because POSIX starts those
