@@ -433,12 +433,18 @@ def cli_store_problems(text):
         problems.append("the opening claims the whole document leaves the store alone")
     if "`read` is the one command that discards the result" not in block:
         problems.append("the section no longer says which command discards the result")
-    if "`register` and `beat`" not in block:
-        problems.append("the section names only one command that checks the store")
+    if "only `beat` fails with an error" not in block:
+        problems.append("the section no longer says which command fails with an error")
     if "`bin/ops/wake-keys`" not in block:
         problems.append("the section claims every script reads a config file")
-    if "does not reach it" not in block:
-        problems.append("the section does not warn that the shell helpers miss the system file")
+    if "asks the same resolver" not in block:
+        problems.append("the section no longer says wake-keys resolves the store like the CLI")
+    if "runs before the first deploy of `bin/*`" not in text:
+        problems.append("the opening no longer says the store step comes before the deploy")
+    if "`bin/*` script and `bin/ops/wake-keys` read the system file" not in block:
+        problems.append("the section no longer names which scripts read the system file")
+    if "resolves to `/`, not to the next" not in block:
+        problems.append("the section lost the empty-value rule")
     try:
         commands = confirm_commands(text)
     except AssertionError as error:
@@ -558,6 +564,35 @@ class CliStoreSectionTest(unittest.TestCase):
         text = read().replace("`bin/ops/wake-keys`", "every `bin/*` script")
         self.assertNotEqual(cli_store_problems(text), [])
 
+    def test_a_section_that_names_the_wrong_command_as_the_loud_one_is_caught(self):
+        """Only `beat` fails with an error; `register` succeeds into the wrong store."""
+        text = read().replace(
+            "only `beat` fails with an error",
+            "only `register` fails with an error",
+        )
+        self.assertNotEqual(cli_store_problems(text), [])
+
+    def test_an_opening_that_drops_the_order_is_caught(self):
+        """The sentence that sends the operator to the section first is the point of the section."""
+        text = read().replace(
+            "and its step runs before the first deploy of `bin/*`",
+            "and its step is described below",
+        )
+        self.assertNotEqual(cli_store_problems(text), [])
+
+    def test_a_section_that_drops_the_empty_value_rule_is_caught(self):
+        """`WAKE_STATE_DIR=` resolves to `/`, so a blank value must be named as one."""
+        text = read().replace("resolves to `/`, not to the next", "falls through to the next")
+        self.assertNotEqual(cli_store_problems(text), [])
+
+    def test_a_section_that_widens_the_readers_of_the_system_file_is_caught(self):
+        """wake-keys asks the resolver; other helpers install beside it and read nothing."""
+        text = read().replace(
+            "`bin/*` script and `bin/ops/wake-keys` read the system file",
+            "`bin/*` script and every other helper read the system file",
+        )
+        self.assertNotEqual(cli_store_problems(text), [])
+
     def test_a_section_that_says_only_register_checks_the_store_is_caught(self):
         """`beat` is wrapped in checked() too; `read` is the one that discards the result."""
         text = read().replace(
@@ -569,7 +604,7 @@ class CliStoreSectionTest(unittest.TestCase):
     def test_a_section_that_does_not_say_when_the_human_label_applies_is_caught(self):
         """A registered bot prints bot:<alias>, so the human: form needs its condition."""
         text = read().replace(
-            "`$USER` when\nno bot is registered; a registered bot prints `bot:<alias>`",
+            "`$USER` when\nno bot is registered, `bot:<alias>` for a registered bot",
             "`$USER`",
         )
         self.assertNotEqual(cli_store_problems(text), [])

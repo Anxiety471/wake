@@ -235,10 +235,12 @@ def put(local, remote):
                 f"{priv('install')} -o root -g {SERVICE_GROUP} -m 644 {shlex.quote(staged)} {quoted} && "
                 f"{priv('rm')} -f {shlex.quote(staged)}"
             )
-        except SystemExit:
+        except (SystemExit, OSError):
             # Nothing may strand the operator's copy of the bundle in the host's /tmp: the install
             # and its cleanup were one `&&` chain, so a refused install never ran the rm (#117), and
-            # a failed scp used to exit before this try existed (#129).
+            # a failed scp used to exit before this try existed (#129). OSError is the local scp that
+            # is not installed at all: subprocess.run raises FileNotFoundError, which is not a
+            # SystemExit, so the operator got a traceback and the staged file was left behind (#134).
             host(f"{priv('rm')} -f {shlex.quote(staged)}", check=False)
             raise
         return
@@ -615,7 +617,9 @@ def step_install():
     out = build_dir()
     commit = build_commit()
     print("install: commit", commit or "unknown (this build was recorded without one: run the build step again)")
-    node = os.environ.get("WAKE_NODE") or host_out("command -v node")
+    # check=False: a host without node prints nothing and exits 1, and host_out's default exit
+    # would replace the actionable message below with "FAILED: command -v node" (#134).
+    node = os.environ.get("WAKE_NODE") or host_out("command -v node", check=False)
     if not node:
         if DRY:
             print("  $ node: the host's `command -v node`")
@@ -706,6 +710,38 @@ def no_control(name, value):
         sys.exit(f"wake-host-deploy: {name} has a control character ({bad!r}), which would break the environment file")
 
 
+# The three answers env_file_text() asks for. A real api.env carries KEY=VALUE lines, so a
+# marker line cannot be mistaken for content.
+ENV_READ = "__wake_env:read__"
+ENV_UNREADABLE = "__wake_env:unreadable__"
+ENV_ABSENT = "__wake_env:absent__"
+
+
+def env_file_text():
+    """The live environment file's text, or a refusal when it exists and cannot be read.
+
+    `cat FILE 2>/dev/null || true` answered the same for a missing file and for a read this
+    account was not allowed to make, so a refused read merged into an empty string and the
+    rewrite silently dropped every key the file carried (#131). One command names the case.
+    """
+    path = shlex.quote(ENV_FILE)
+    answer = host_out(
+        f"if {priv('cat')} {path}; then echo {ENV_READ}; "
+        f"elif {priv('test')} -e {path}; then echo {ENV_UNREADABLE}; "
+        f"else echo {ENV_ABSENT}; fi"
+    )
+    lines = answer.splitlines()
+    state = lines[-1] if lines else ENV_ABSENT
+    if state == ENV_READ:
+        return "\n".join(lines[:-1])
+    if state == ENV_UNREADABLE:
+        sys.exit(
+            f"wake-host-deploy: {ENV_FILE} exists but could not be read; refusing to rewrite it, "
+            "which would drop every key it carries"
+        )
+    return ""
+
+
 def step_env():
     password = db_password()
     secret = os.environ.get("WAKE_REGISTRATION_SECRET")
@@ -730,9 +766,7 @@ def step_env():
     # merge_env refuses these too; checked here so a refusal costs no host command at all.
     for key, value in values.items():
         no_control(key, value)
-    existing = ""
-    if not DRY:
-        existing = host_out(f"{priv('cat')} {ENV_FILE} 2>/dev/null || true")
+    existing = "" if DRY else env_file_text()
     body = merge_env(existing, values)
     directory = os.path.dirname(ENV_FILE)
     host(f"{priv('install')} -d -o root -g {SERVICE_GROUP} -m 750 {directory}")

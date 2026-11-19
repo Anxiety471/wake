@@ -60,7 +60,12 @@ def read(name):
 
 def run(name, *args, env=None):
     """Run one helper with a scrubbed environment: never the caller's real config."""
-    base = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tempfile.mkdtemp(prefix="ops-home-")}
+    base = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": tempfile.mkdtemp(prefix="ops-home-"),
+        # A machine that has /etc/wake/config.env must not decide what a helper resolves here.
+        "WAKE_SYSTEM_CONFIG": "",
+    }
     base.update(env or {})
     return subprocess.run([os.path.join(OPS, name), *args], capture_output=True, text=True, env=base, timeout=60)
 
@@ -494,6 +499,39 @@ class OpsBehaviourTestCase(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("no registry", r.stderr)
         self.assertIn("none  coordinator", r.stdout)
+
+    def test_wake_keys_resolves_the_store_from_the_config_files(self):
+        # wake-keys read the environment only, so on a host whose store is in the site file it said
+        # "no key" for every bot and exited 0 (#135 F6).
+        home = tempfile.mkdtemp(prefix="keys-")
+        cfg = os.path.join(home, "cfg")
+        os.makedirs(cfg)
+        store = os.path.join(home, "host-keys")
+        os.makedirs(store)
+        with open(os.path.join(store, "bot-alpha-0001.key"), "w", encoding="utf-8") as f:
+            f.write("k" * 40)
+        site = os.path.join(home, "config.env")
+        with open(site, "w", encoding="utf-8") as f:
+            f.write(f"WAKE_STATE_DIR={store}\n")
+        reg = os.path.join(cfg, "bots.tsv")
+        with open(reg, "w", encoding="utf-8") as f:
+            f.write("alpha\tbot-alpha-0001\tAlpha\topen\tplan\n")
+        r = run(
+            "wake-keys",
+            env={
+                "WAKE_CONFIG_DIR": cfg,
+                "WAKE_KEY_DIR": os.path.join(home, "keys"),
+                "WAKE_SYSTEM_CONFIG": site,
+            },
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok    alpha", r.stdout, "the store in the site file was not read")
+
+    def test_the_runner_switches_the_site_file_off(self):
+        # A site file carrying WAKE_MCP_TOKEN failed three bridge tests on the reviewer's host; the
+        # runner has to switch that layer off itself (#135 F5).
+        body = text(os.path.join(ROOT, "tests", "run.sh"))
+        self.assertRegex(body, r"(?m)^\s+WAKE_SYSTEM_CONFIG=\s*\\$", "tests/run.sh does not switch the site file off")
 
     def test_wake_keys_reports_a_failed_host_fetch_as_an_error(self):
         home = tempfile.mkdtemp(prefix="keys-")

@@ -12,6 +12,7 @@ import contextlib
 import io
 import os
 import re
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -368,6 +369,7 @@ class HostDeployTestCase(unittest.TestCase):
             'case "$1" in\n'
             "  *'cat /etc/wake/api.env'*)\n"
             "      printf 'WAKE_PORT=3001\\n'\n"
+            "      printf '__wake_env:read__\\n'\n"
             "      echo 'Warning: Permanently added example to the list of known hosts.' >&2 ;;\n"
             "esac\n"
             "exit 0\n",
@@ -424,6 +426,44 @@ class HostDeployTestCase(unittest.TestCase):
         r = run("wake-host-deploy", "install", env=env)
         self.assertEqual(r.returncode, 1)
         self.assertIn("not a migration name", r.stderr)
+
+    def test_a_host_without_node_gets_the_message_that_names_wake_node(self):
+        # host_out() exited first with "FAILED: command -v node", so the one line that says what to
+        # do could never be printed (#134).
+        silent = write(os.path.join(self.dir, "hostops-no-node"), "#!/bin/sh\nexit 1\n", executable=True)
+        state = os.path.join(self.dir, "state")
+        record(state, make_build(self.dir))
+        r = run("wake-host-deploy", "install", env=dict(self.env, WAKE_HOSTOPS=silent, WAKE_DEPLOY_STATE=state))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("set WAKE_NODE", r.stdout + r.stderr)
+        self.assertNotIn("FAILED: command -v node", r.stdout + r.stderr)
+
+    def test_a_refused_env_read_stops_before_the_rewrite(self):
+        # `cat FILE 2>/dev/null || true` answered "empty" for a refused read, so the rewrite dropped
+        # every key the file carried (#131).
+        stub = write(
+            os.path.join(self.dir, "hostops-unreadable"),
+            "#!/bin/sh\ncase $1 in *__wake_env:unreadable__*) printf '__wake_env:unreadable__\\n' ;; esac\n",
+            executable=True,
+        )
+        r = run("wake-host-deploy", "env", env=dict(self.env, WAKE_HOSTOPS=stub))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("could not be read", r.stderr)
+        self.assertNotIn("tee /etc/wake/api.env.new", r.stderr)
+
+    def test_an_env_file_that_is_read_keeps_its_keys(self):
+        stub = write(
+            os.path.join(self.dir, "hostops-read"),
+            "#!/bin/sh\n"
+            "case $1 in\n"
+            "  *__wake_env:read__*) printf 'WAKE_RATE_LIMIT=5\\n__wake_env:read__\\n' ;;\n"
+            '  *) printf \'CMD: %s\\n\' "$1" >> "$STUB_LOG"; cat >> "$STUB_LOG" ;;\n'
+            "esac\n",
+            executable=True,
+        )
+        r = run("wake-host-deploy", "env", env=dict(self.env, WAKE_HOSTOPS=stub))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("WAKE_RATE_LIMIT=5", self.logged(), "a key the file carried was dropped")
 
     def test_env_merge_keeps_what_the_operator_added(self):
         merge = load_host_deploy().merge_env
@@ -888,6 +928,25 @@ class ScpTransportTestCase(unittest.TestCase):
         paths = self.staged()
         self.assertEqual(len(paths), 1, self.logged())
         self.assertFalse(os.path.exists(paths[0]), "the fake host left the staged file behind")
+
+    def test_a_local_scp_that_is_missing_still_removes_the_staged_file(self):
+        # subprocess.run raises FileNotFoundError when scp is not installed, which is not a
+        # SystemExit: the cleanup never ran and the bundle stayed in the host's /tmp (#134).
+        only = os.path.join(self.dir, "no-scp")
+        os.makedirs(only)
+        # A PATH with what the helper and the fake host need and no scp: too narrow and the helper's
+        # own `#!/usr/bin/env python3` cannot start, which fails the test for the wrong reason.
+        for tool in ("python3", "mktemp", "chmod", "rm", "cat"):
+            real = shutil.which(tool)
+            self.assertIsNotNone(real, f"{tool} is missing from this machine")
+            os.symlink(real, os.path.join(only, tool))
+        os.symlink(os.path.join(self.bin, "ssh"), os.path.join(only, "ssh"))
+        r = self.run_install(env={"PATH": only})
+        self.assertNotEqual(r.returncode, 0, "a missing scp reported success")
+        self.assertIn("No such file or directory", r.stdout + r.stderr)
+        cleaned = [line.split("rm -f ", 1)[1] for line in self.logged().splitlines() if "rm -f " in line]
+        self.assertEqual(len(cleaned), 1, self.logged())
+        self.assertFalse(os.path.exists(cleaned[0]), "the staged file was stranded when scp was missing")
 
     def test_a_failed_scp_does_not_leave_its_half_written_file_behind(self):
         # scp truncates the staged file before the transfer ends, so a connection that drops

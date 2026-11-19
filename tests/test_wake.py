@@ -1330,6 +1330,29 @@ class InboxIoSgFallbackTests(unittest.TestCase):
         self.assertIn("this account is in group wake", err.getvalue())
         self.assertNotIn("add this account", err.getvalue(), "it already has the group; joining again is not the fix")
 
+    @unittest.skipIf(IS_ROOT, ROOT_SKIP)
+    def test_a_store_owned_by_group_root_is_told_to_chgrp_not_to_join(self):
+        """root:root is the ownership mistake these routes exist to catch; no one joins root (#135 F4)."""
+        ns = self.ns
+        err = io.StringIO()
+        root = FakeGroup(0, "root", [])
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(ns["os"], "access", lambda path, mode: False))
+            stack.enter_context(mock.patch.object(ns["grp"], "getgrgid", lambda gid: root))
+            stack.enter_context(
+                mock.patch.object(ns["pwd"], "getpwuid", lambda uid: types.SimpleNamespace(pw_name="agent"))
+            )
+            stack.enter_context(mock.patch.object(ns["os"], "getgroups", lambda: [27, 1003]))
+            stack.enter_context(mock.patch.object(ns["os"], "getuid", lambda: 1003))
+            stack.enter_context(mock.patch.object(ns["subprocess"], "run", lambda *a, **k: None))
+            stack.enter_context(mock.patch("sys.stderr", err))
+            stack.enter_context(mock.patch.object(ns["tempfile"], "gettempdir", lambda: self.tmp))
+            with self.assertRaises(SystemExit):
+                ns["sh"]("cat x")
+        self.assertIn("belongs to group root", err.getvalue())
+        self.assertIn("chgrp", err.getvalue())
+        self.assertNotIn("add this account to group root", err.getvalue(), "joining root is never the fix")
+
 
 class InboxIoUnreachableStoreTests(WakeTestCase):
     """When no route reaches the store, say it once and run nothing.
@@ -1355,6 +1378,46 @@ class InboxIoUnreachableStoreTests(WakeTestCase):
         second = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
         self.assertEqual(second.returncode, 1)
         self.assertEqual(second.stderr, "", "the second poll printed the same line again")
+
+    @unittest.skipIf(IS_ROOT, "root ignores the mode that makes the store unreachable")
+    def test_a_second_outage_is_reported_after_a_command_succeeds(self):
+        """Break, recover, break again: the second outage has to print the line too.
+
+        The marker was written and never removed, so only the first outage in the life of an
+        account was ever reported - every later one exited 1 with an empty stderr (#135 F2).
+        """
+        inbox = os.path.join(self.state, "inbox")
+        os.makedirs(inbox)
+        os.chmod(inbox, 0o500)
+        self.addCleanup(chmod_if_present, inbox, 0o700)
+        env = {"WAKE_HOSTOPS": "", "TMPDIR": self.tmp}
+        first = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
+        self.assertEqual(first.returncode, 1, (first.stdout, first.stderr))
+        self.assertIn("is not writable", first.stderr)
+        os.chmod(inbox, 0o700)
+        recovered = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        os.chmod(inbox, 0o500)
+        again = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
+        self.assertEqual(again.returncode, 1, (again.stdout, again.stderr))
+        self.assertIn("is not writable", again.stderr, "the second outage was silent: the marker is never cleared")
+
+    def test_a_store_that_does_not_exist_yet_is_judged_by_its_parent(self):
+        """The first register runs before inbox/ exists, so the group comes from the parent (#135)."""
+        parent = os.path.join(self.tmp, "would-hold-it")
+        os.makedirs(parent)
+        parent_gid = os.stat(parent).st_gid
+        ns = vars(load_inbox_io(parent))  # BASE is <state>/inbox, which does not exist yet
+
+        def lookup(gid):
+            if gid == parent_gid:
+                return FakeGroup(gid, "holds-it", [])
+            raise KeyError(gid)
+
+        with mock.patch.object(ns["grp"], "getgrgid", lookup):
+            group = ns["store_group"]()
+        self.assertIsNotNone(group, "a store that does not exist yet lost the group it has to join")
+        self.assertEqual(group.gr_gid, parent_gid)
 
     def test_a_writable_store_never_shells_out_to_sg(self):
         log = os.path.join(self.tmp, "sg.log")
