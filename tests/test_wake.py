@@ -1402,6 +1402,26 @@ class InboxIoUnreachableStoreTests(WakeTestCase):
         self.assertEqual(again.returncode, 1, (again.stdout, again.stderr))
         self.assertIn("is not writable", again.stderr, "the second outage was silent: the marker is never cleared")
 
+    @unittest.skipIf(IS_ROOT, "root ignores the mode that makes the store unreachable")
+    def test_a_marker_that_is_not_a_regular_file_does_not_silence_the_line(self):
+        """Another account can plant a directory in sticky /tmp; that must not end the warnings.
+
+        The marker is created with O_EXCL, and `clear_unreachable_marker` only unlinks (a directory
+        raises EISDIR, swallowed). A directory at that path therefore silenced the line for good:
+        exit 1, empty stderr, forever (#135 review).
+        """
+        inbox = os.path.join(self.state, "inbox")
+        os.makedirs(inbox)
+        os.chmod(inbox, 0o500)
+        self.addCleanup(chmod_if_present, inbox, 0o700)
+        marker = os.path.join(self.tmp, f".wake-inbox-io-warned-{os.getuid()}")
+        os.makedirs(marker)  # inside self.tmp, which the test case removes
+        env = {"WAKE_HOSTOPS": "", "TMPDIR": self.tmp}
+        r = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
+        self.assertEqual(r.returncode, 1, (r.stdout, r.stderr))
+        self.assertIn("is not writable", r.stderr, "a planted directory silenced the outage line")
+        self.assertIn("not a regular file", r.stderr, "the line does not say what to remove")
+
     def test_a_store_that_does_not_exist_yet_is_judged_by_its_parent(self):
         """The first register runs before inbox/ exists, so the group comes from the parent (#135)."""
         parent = os.path.join(self.tmp, "would-hold-it")
