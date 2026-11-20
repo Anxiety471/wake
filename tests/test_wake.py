@@ -1421,6 +1421,90 @@ class InboxIoUnreachableStoreTests(WakeTestCase):
         self.assertEqual(r.returncode, 1, (r.stdout, r.stderr))
         self.assertIn("is not writable", r.stderr, "a planted directory silenced the outage line")
         self.assertIn("not a regular file", r.stderr, "the line does not say what to remove")
+        # Said once per obstruction, not on every poll: the poll runs every few seconds, which is
+        # the flood the marker exists to prevent (#146 nit).
+        again = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
+        self.assertEqual(again.returncode, 1)
+        self.assertEqual(again.stderr, "", "the obstruction was reported on every poll")
+        notices = [n for n in os.listdir(self.tmp) if n.startswith(os.path.basename(marker) + ".noticed-")]
+        self.assertEqual(len(notices), 1, "the obstruction was not recorded, so every poll would print")
+
+    @unittest.skipIf(IS_ROOT, "root ignores the mode that makes the store unreachable")
+    def test_a_regular_file_another_account_owns_does_not_silence_the_line(self):
+        """Sticky /tmp lets another account `touch` this exact name, so the type alone is not enough.
+
+        A regular file was trusted whatever its owner, so `touch` replaced the `mkdir` this route
+        had just closed (#146 F2). One uid in this container: the account is this one, and lstat is
+        what reports the other.
+        """
+        inbox = os.path.join(self.state, "inbox")
+        os.makedirs(inbox)
+        os.chmod(inbox, 0o500)
+        self.addCleanup(chmod_if_present, inbox, 0o700)
+        ns = vars(load_inbox_io(self.state))
+        marker = os.path.join(self.tmp, f".wake-inbox-io-warned-{os.getuid()}")
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write("an older outage\n")
+        real = os.lstat(marker)
+        planted = os.stat_result(
+            (
+                real.st_mode,
+                real.st_ino,
+                real.st_dev,
+                real.st_nlink,
+                os.getuid() + 1,
+                real.st_gid,
+                real.st_size,
+                real.st_atime,
+                real.st_mtime,
+                real.st_ctime,
+            )
+        )
+        real_lstat = os.lstat
+
+        def lstat(path, *a, **k):
+            return planted if path == marker else real_lstat(path, *a, **k)
+
+        def poll():
+            err = io.StringIO()
+            with (
+                mock.patch.object(tempfile, "gettempdir", lambda: self.tmp),
+                mock.patch.object(os, "lstat", lstat),
+                contextlib.redirect_stderr(err),
+                self.assertRaises(SystemExit) as caught,
+            ):
+                ns["unreachable"](None, True)
+            self.assertEqual(caught.exception.code, 1)
+            return err.getvalue()
+
+        first = poll()
+        self.assertIn("is not writable", first, "a regular file planted by another account silenced the line")
+        self.assertIn("another account (uid", first, "the line does not say what holds the path")
+        self.assertEqual(poll(), "", "the obstruction was reported on every poll")
+
+    @unittest.skipIf(IS_ROOT, "root ignores the mode that makes the store unreachable")
+    def test_a_recovered_route_clears_the_obstruction_notice(self):
+        """A notice left behind would hide a later obstruction on a reused inode (#146)."""
+        inbox = os.path.join(self.state, "inbox")
+        os.makedirs(inbox)
+        os.chmod(inbox, 0o500)
+        self.addCleanup(chmod_if_present, inbox, 0o700)
+        marker = os.path.join(self.tmp, f".wake-inbox-io-warned-{os.getuid()}")
+        os.makedirs(marker)
+        env = {"WAKE_HOSTOPS": "", "TMPDIR": self.tmp}
+        first = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
+        self.assertEqual(first.returncode, 1, (first.stdout, first.stderr))
+        prefix = os.path.basename(marker) + ".noticed-"
+        self.assertEqual(len([n for n in os.listdir(self.tmp) if n.startswith(prefix)]), 1)
+        os.rmdir(marker)
+        os.chmod(inbox, 0o700)
+        recovered = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        self.assertEqual(
+            [n for n in os.listdir(self.tmp) if n.startswith(prefix)],
+            [],
+            "a stale notice can hide the next obstruction",
+        )
 
     def test_a_store_that_does_not_exist_yet_is_judged_by_its_parent(self):
         """The first register runs before inbox/ exists, so the group comes from the parent (#135)."""

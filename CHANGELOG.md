@@ -90,6 +90,20 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **The `#144` review's three Lows are closed, and one of them was a secret printed by a refusal.**
+  `parse_env_answer()` echoed up to 120 characters of the line it did not understand, and the last
+  line of an `api.env` is normally a `KEY=value`: a `DATABASE_URL=` line printed the database
+  password and a `REGISTRATION_SECRET=` line printed the registration secret in the exit message.
+  The refusal names the line's length now, never its text. An answer that names no state at all -
+  what a transport that exits 0 with no stdout hands back - read as an absent file and rewrote
+  `api.env` from the managed keys alone, dropping every other key with exit 0; it is a refusal now.
+  The once-per-uid outage marker was trusted whenever it was a regular file, so `touch` at
+  `/tmp/.wake-inbox-io-warned-<uid>` (sticky `/tmp`, any account) silenced the line for good: it
+  must be a regular file this account owns, and a path it does not own is named once per
+  obstruction, cleared with the marker. The missing-`scp` message no longer claims the staged file
+  was removed while the cleanup ran unchecked: the cleanup is checked, and a host that refused it
+  says the file may still be there ([#146](https://github.com/Anxiety471/wake/issues/146)).
+
 - **A later outage of the store is reported again, and a `root:root` store is told to `chgrp`.**
   `wake-inbox-io` wrote its once-per-uid line marker and never removed it, so the first outage in
   the life of an account was the only one ever reported: every later one, and any other store,
@@ -125,11 +139,11 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   prints a newline before the marker, and an answer that names none of the three states refuses the
   rewrite instead of reading as an empty file. The bridge builds its child environment from
   scratch, so `tests/run.sh`'s `WAKE_SYSTEM_CONFIG=` never reached it and a host site file carrying
-  `WAKE_MCP_TOKEN` failed four bridge tests; that environment now names the empty site path. A
+  `WAKE_MCP_TOKEN` failed three bridge tests; that environment now names the empty site path. A
   directory planted at `/tmp/.wake-inbox-io-warned-<uid>` (sticky `/tmp`, any account) silenced the
   once-per-outage line for good, because the marker is created `O_EXCL` and
   `clear_unreachable_marker` cannot unlink a directory: a path that is not this account's regular
-  file now prints the line and names what to remove. And a missing local `scp` is one line instead
+  file now prints the line, names what holds it and says what to remove. And a missing local `scp` is one line instead
   of a traceback, which is what the entry above already claimed
   ([#135](https://github.com/Anxiety471/wake/issues/135)).
 

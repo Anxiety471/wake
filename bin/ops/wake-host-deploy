@@ -242,12 +242,21 @@ def put(local, remote):
             # is not installed at all: subprocess.run raises FileNotFoundError, which is not a
             # SystemExit, so the staged file was left behind (#134). The file is collected here and
             # the failure is one line: a traceback is not a diagnosis, and the changelog said so.
-            host(f"{priv('rm')} -f {shlex.quote(staged)}", check=False)
+            # The cleanup is checked, not assumed: the message claimed the file was removed after a
+            # run with check=False, so a host that refused the rm was reported as a clean one (#146).
+            try:
+                host(f"{priv('rm')} -f {shlex.quote(staged)}")
+            except SystemExit as cleanup:
+                removed, because = False, str(cleanup.code or cleanup)[:200]
+            else:
+                removed, because = True, ""
             if isinstance(e, OSError):
-                sys.exit(
-                    f"wake-host-deploy: could not run scp ({e.strerror or e}); "
-                    "the staged file was removed from the host"
-                )
+                tail = "the staged file was removed from the host"
+                if not removed:
+                    tail = f"the staged file may still be on the host: {because}"
+                sys.exit(f"wake-host-deploy: could not run scp ({e.strerror or e}); {tail}")
+            if not removed:
+                sys.stderr.write(f"wake-host-deploy: the staged file may still be on the host: {because}\n")
             raise
         return
     host(f"{priv('install')} -o root -g {SERVICE_GROUP} -m 644 /dev/null {quoted}")
@@ -730,10 +739,19 @@ def parse_env_answer(answer):
     last line has no newline used to glue the marker onto the value (`5__wake_env:read__`), so the
     last line matched no state, this returned "", and the rewrite dropped every key - the failure
     #131 is about, reintroduced by reading only the last line. A line that is none of the three
-    states is a refusal, never an empty file.
+    states is a refusal, never an empty file, and so is an answer that names nothing at all: a
+    transport that exits 0 with no stdout used to read as an absent file (#146 F3). The refusal
+    names the line's length, never the line: an api.env's last line is normally a KEY=value, and
+    the two that matter carry the database password and the registration secret (#146 F1).
     """
     lines = answer.splitlines()
-    state = lines[-1] if lines else ENV_ABSENT
+    if not lines:
+        sys.exit(
+            f"wake-host-deploy: the answer that names {ENV_FILE}'s state named none of "
+            f"{ENV_READ}, {ENV_UNREADABLE} or {ENV_ABSENT}; refusing to rewrite the file "
+            "(an answer that prints nothing is not an empty file)"
+        )
+    state = lines[-1]
     if state == ENV_READ:
         return "\n".join(lines[:-1])
     if state == ENV_UNREADABLE:
@@ -744,8 +762,10 @@ def parse_env_answer(answer):
     if state == ENV_ABSENT:
         return ""
     sys.exit(
-        f"wake-host-deploy: the answer that names {ENV_FILE}'s state was {state[:120]!r}, which is "
-        f"none of {ENV_READ}, {ENV_UNREADABLE} or {ENV_ABSENT}; refusing to rewrite the file"
+        f"wake-host-deploy: the last line of the answer that names {ENV_FILE}'s state was "
+        f"{len(state)} characters long and matched none of {ENV_READ}, {ENV_UNREADABLE} or "
+        f"{ENV_ABSENT}; refusing to rewrite the file (the line is not repeated here: it is "
+        "normally a KEY=value, and two of those carry a secret)"
     )
 
 
