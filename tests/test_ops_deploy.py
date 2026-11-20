@@ -256,7 +256,10 @@ class HostDeployTestCase(unittest.TestCase):
         self.log = os.path.join(self.dir, "host.log")
         self.hostops = write(
             os.path.join(self.dir, "hostops"),
-            "#!/bin/sh\n{\n  printf 'CMD: %s\\n' \"$1\"\n  cat\n  printf '\\n--\\n'\n} >> \"$STUB_LOG\"\n",
+            "#!/bin/sh\n{\n  printf 'CMD: %s\\n' \"$1\"\n  cat\n  printf '\\n--\\n'\n} >> \"$STUB_LOG\"\n"
+            # A fresh host has no api.env, and the real shell block always names one of the three
+            # states: an answer that names none is a refusal now, so the stub has to answer (#146).
+            "case \"$1\" in *__wake_env:absent__*) printf '__wake_env:absent__\\n' ;; esac\n",
             executable=True,
         )
         self.secret = "regsecret-0123456789-0123456789abc"
@@ -492,6 +495,53 @@ class HostDeployTestCase(unittest.TestCase):
             module.env_file_text()
         self.assertIn("refusing to rewrite", str(caught.exception))
         self.assertIn("none of", str(caught.exception))
+
+    def test_the_refusal_never_repeats_the_line_it_did_not_understand(self):
+        """The last line of an api.env is a KEY=value, and two of those carry a secret (#146 F1).
+
+        The refusal echoed up to 120 characters of it: a runner that dropped the last stdout line
+        printed the registration secret, and a glued line printed the database password.
+        """
+        module = load_host_deploy()
+        for line in (
+            f"DATABASE_URL=postgres://wake:{self.password}@127.0.0.1:5432/wake",
+            f"REGISTRATION_SECRET={self.secret}",
+        ):
+            module.host_out = lambda *a, _line=line, **k: _line + "__wake_env:read__"
+            with self.assertRaises(SystemExit) as caught:
+                module.env_file_text()
+            message = str(caught.exception)
+            self.assertIn("refusing to rewrite", message)
+            self.assertIn(
+                f"{len(line) + len('__wake_env:read__')} characters",
+                message,
+                "the refusal does not say how long the line was",
+            )
+            self.assertNotIn(self.password, message, "the refusal printed the database password")
+            self.assertNotIn(self.secret, message, "the refusal printed the registration secret")
+
+    def test_an_answer_that_names_no_state_at_all_is_refused(self):
+        """A transport that exits 0 and prints nothing handed back "": that read as an absent
+        file, and the rewrite dropped every key the file carried (#146 F3)."""
+        module = load_host_deploy()
+        module.host_out = lambda *a, **k: ""
+        with self.assertRaises(SystemExit) as caught:
+            module.env_file_text()
+        self.assertIn("named none of", str(caught.exception))
+        self.assertIn("refusing to rewrite", str(caught.exception))
+
+    def test_a_transport_that_answers_nothing_stops_before_the_rewrite(self):
+        # The end-to-end shape: a runner that exits 0 and swallows its output is not an empty file,
+        # so the step must stop before install(1) and tee touch api.env (#146 F3).
+        swallowing = write(
+            os.path.join(self.dir, "hostops-silent"),
+            "#!/bin/sh\n{ printf 'CMD: %s\\n' \"$1\"; cat; printf '\\n--\\n'; } >> \"$STUB_LOG\"\n",
+            executable=True,
+        )
+        r = run("wake-host-deploy", "env", env=dict(self.env, WAKE_HOSTOPS=swallowing))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("named none of", r.stderr)
+        self.assertNotIn("tee /etc/wake/api.env.new", r.stderr, "the rewrite ran on an answer that named nothing")
 
     def test_env_merge_keeps_what_the_operator_added(self):
         merge = load_host_deploy().merge_env
@@ -977,6 +1027,36 @@ class ScpTransportTestCase(unittest.TestCase):
         self.assertEqual(len(cleaned), 1, self.logged())
         self.assertFalse(os.path.exists(cleaned[0]), "the staged file was stranded when scp was missing")
 
+    def test_a_cleanup_that_fails_says_the_staged_file_may_remain(self):
+        """The message claimed removal after a cleanup run with check=False (#146).
+
+        The claim was unverified and nothing pinned it, so a host that refused the `rm` was
+        reported as a clean one.
+        """
+        only = os.path.join(self.dir, "no-scp-refused-rm")
+        os.makedirs(only)
+        for tool in ("python3", "mktemp", "chmod", "rm", "cat"):
+            real = shutil.which(tool)
+            self.assertIsNotNone(real, f"{tool} is missing from this machine")
+            os.symlink(real, os.path.join(only, tool))
+        write(
+            os.path.join(only, "ssh"),
+            "#!/bin/sh\n"
+            "for last; do :; done\n"
+            'printf "SSH: %s\\n" "$last" >> "$STUB_LOG"\n'
+            'case "$last" in\n'
+            '  "mktemp "*) set -- $last; shift; p=$(mktemp "$1") || exit 1; chmod 600 "$p"; printf "%s\\n" "$p" ;;\n'
+            '  "rm -f "*) echo "rm: cannot remove: Operation not permitted" >&2; exit 1 ;;\n'
+            "esac\n",
+            executable=True,
+        )
+        r = self.run_install(env={"PATH": only})
+        self.assertNotEqual(r.returncode, 0, "a missing scp reported success")
+        self.assertIn("could not run scp", r.stderr)
+        self.assertIn("may still be on the host", r.stderr, "the cleanup claim is still unverified")
+        self.assertIn("Operation not permitted", r.stderr)
+        self.assertNotIn("Traceback", r.stdout + r.stderr)
+
     def test_a_failed_scp_does_not_leave_its_half_written_file_behind(self):
         # scp truncates the staged file before the transfer ends, so a connection that drops
         # mid-copy leaves half a bundle in the host's /tmp. put() checked scp's status and exited
@@ -1117,7 +1197,10 @@ class BuildRefTestCase(unittest.TestCase):
         self.log = os.path.join(self.dir, "host.log")
         self.hostops = write(
             os.path.join(self.dir, "hostops"),
-            "#!/bin/sh\n{\n  printf 'CMD: %s\\n' \"$1\"\n  cat\n  printf '\\n--\\n'\n} >> \"$STUB_LOG\"\n",
+            "#!/bin/sh\n{\n  printf 'CMD: %s\\n' \"$1\"\n  cat\n  printf '\\n--\\n'\n} >> \"$STUB_LOG\"\n"
+            # A fresh host has no api.env, and the real shell block always names one of the three
+            # states: an answer that names none is a refusal now, so the stub has to answer (#146).
+            "case \"$1\" in *__wake_env:absent__*) printf '__wake_env:absent__\\n' ;; esac\n",
             executable=True,
         )
         self.builder = write(os.path.join(self.dir, "builder"), BUILDER_STUB, executable=True)

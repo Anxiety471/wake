@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # desc: host/guest bridge for the agent-session wake inbox. `wake-inbox-io register <hash> [json]` makes the inbox and its active marker; `wake-inbox-io read <inbox>` prints the file; `wake-inbox-io beat <hash> [json]` refreshes the marker. Uses the local path when $WAKE_STATE_DIR/inbox is writable (a read, when it is readable); a session that predates the store's group re-enters through `sg`; otherwise the host over WAKE_HOSTOPS.
+import glob
 import grp
 import os
 import pwd
@@ -82,8 +83,38 @@ def joins_store_group(g):
     return g is not None and g.gr_gid not in os.getgroups() and group_member(g)
 
 
+def marker_path():
+    """The file that records the outage line already printed for this account (#135 F2)."""
+    return os.path.join(tempfile.gettempdir(), f".wake-inbox-io-warned-{os.getuid()}")
+
+
+def lstat_or_none(path):
+    try:
+        return os.lstat(path)
+    except OSError:
+        return None
+
+
+def ours(st):
+    """True when an lstat result is a regular file this account owns, and so a record of ours.
+
+    The type alone is not enough: sticky /tmp lets another account `touch` the exact name this
+    account uses, and a planted file silenced the line for good (#146 F2).
+    """
+    return st is not None and stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid()
+
+
+def held_by(st):
+    """What occupies the marker path, in words that say what to remove."""
+    if st is None:
+        return "vanished while it was checked"
+    if not stat.S_ISREG(st.st_mode):
+        return "is not a regular file"
+    return f"is a regular file owned by another account (uid {st.st_uid})"
+
+
 def unreachable(g, write):
-    """Exit 1 saying why, once per uid.
+    """Exit 1 saying why: once per uid per outage, and once per obstruction at the marker path.
 
     The caller polls every few seconds and inherits this stderr, so one line per poll floods the
     session's terminal. The first line is the one that tells the operator what to do.
@@ -104,20 +135,33 @@ def unreachable(g, write):
         f"wake-inbox-io: {BASE} is not {need} by uid {os.getuid()} and WAKE_HOSTOPS is empty; "
         f"{hint} (nothing was read or written)"
     )
-    marker = os.path.join(tempfile.gettempdir(), f".wake-inbox-io-warned-{os.getuid()}")
+    marker = marker_path()
     try:
         fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError:
-        # A regular file is this account's own marker, so the outage was already reported. Anything
-        # else at that path is not ours to delete, and `clear_unreachable_marker` cannot remove it
-        # either: treating it as "already reported" silenced the line for good (#135 review).
-        try:
-            ours = stat.S_ISREG(os.lstat(marker).st_mode)
-        except OSError:
-            ours = False
-        if ours:
+        # This account's own marker means the outage was already reported. Anything else at that
+        # path is not ours to delete, and `clear_unreachable_marker` cannot remove it either:
+        # treating it as "already reported" silenced the line for good (#135 review).
+        st = lstat_or_none(marker)
+        if ours(st):
             sys.exit(1)
-        sys.stderr.write(f"{text}\n{marker} is not a regular file; remove it\n")
+        notice = f"{text}\n{marker} {held_by(st)}; remove it to see this line again\n"
+        # Something else holds the path. Say so once per obstruction, not on every poll: this is the
+        # same flood the marker above exists to prevent. The identity in the name is what makes a
+        # *new* obstruction report again rather than hide behind the old notice.
+        identity = "gone" if st is None else f"{st.st_uid}-{st.st_ino}"
+        noticed = f"{marker}.noticed-{identity}"
+        try:
+            fd = os.open(noticed, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            # Only our own record buys silence: one another account planted is ignored.
+            if ours(lstat_or_none(noticed)):
+                sys.exit(1)
+        except OSError:
+            pass  # nowhere to record it, so say it rather than going silent
+        else:
+            os.close(fd)
+        sys.stderr.write(notice)
         sys.exit(1)
     except OSError:
         sys.stderr.write(text + "\n")
@@ -135,11 +179,19 @@ def clear_unreachable_marker():
     of an account was the only one ever reported: every later one, and any other store, exited 1
     with an empty stderr (#135 F2). It is cleared on the route rather than compared in the marker
     because the question is not which store failed, it is whether this account reaches the store.
+    The obstruction notices go too: one left behind would hide a later obstruction that lands on a
+    reused inode (#146).
     """
+    marker = marker_path()
     try:
-        os.unlink(os.path.join(tempfile.gettempdir(), f".wake-inbox-io-warned-{os.getuid()}"))
+        os.unlink(marker)
     except OSError:
         pass
+    for path in glob.glob(glob.escape(marker) + ".noticed-*"):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def sh(cmd, data=None, write=True):
@@ -201,8 +253,9 @@ usage: wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]
 
   exit 0 on success; 1 on usage or a hash that is not 6-32 lowercase hex characters, or when the
   store is unreachable and WAKE_HOSTOPS is empty (that line is printed once per uid per outage,
-  and again after a command reaches the store). If the command it runs fails, its stderr is
-  printed and its status is returned; a refused register never prints an inbox path.
+  and again after a command reaches the store; a path at the marker that is not this account's own
+  file is named once per obstruction, not on every poll). If the command it runs fails, its stderr
+  is printed and its status is returned; a refused register never prints an inbox path.
 """
 
 
