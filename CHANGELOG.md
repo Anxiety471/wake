@@ -101,6 +101,15 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   calls now, which makes the comment true and the failure the assertion's. One redundant assertion
   is gone, and `tearDown` removes the per-run temp directory - 14,079 had accumulated in one
   container ([#142](https://github.com/Anxiety471/wake/issues/142)).
+- **`wake-keys` reads every location from the resolver, and only when it runs.** Asking it for the
+  store alone left `WAKE_CONFIG_DIR`, `WAKE_KEY_DIR` and `WAKE_REGISTRY` environment-only, so a
+  site file that names the registry and the key dir - the shape a deploy writes - made the helper
+  say "no registry" while the CLI beside it read all three. One call now returns all four, in the
+  order `wake_config.load()` uses, and `--help` makes no call at all: it used to start an
+  interpreter to print its usage text. The bare-copy fallback to `/var/lib/wake` stays and is
+  pinned. The unjoinable-marker line also stops asking the reader to do what sticky `/tmp` forbids:
+  it names the owner and says only that account or root can remove it
+  ([#135](https://github.com/Anxiety471/wake/issues/135)).
 
 - **The `#144` review's three Lows are closed, and one of them was a secret printed by a refusal.**
   `parse_env_answer()` echoed up to 120 characters of the line it did not understand, and the last
@@ -155,7 +164,7 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   directory planted at `/tmp/.wake-inbox-io-warned-<uid>` (sticky `/tmp`, any account) silenced the
   once-per-outage line for good, because the marker is created `O_EXCL` and
   `clear_unreachable_marker` cannot unlink a directory: a path that is not this account's regular
-  file now prints the line, names what holds it and says what to remove. And a missing local `scp` is one line instead
+  file now prints the line, names what holds it and says who can remove it. And a missing local `scp` is one line instead
   of a traceback, which is what the entry above already claimed
   ([#135](https://github.com/Anxiety471/wake/issues/135)).
 

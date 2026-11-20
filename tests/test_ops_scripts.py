@@ -545,6 +545,95 @@ class OpsBehaviourTestCase(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("ok    alpha", r.stdout, "the store in the site file was not read")
 
+    def test_wake_keys_takes_every_location_from_the_config_files(self):
+        """Only the store was asked of the resolver; the other three were environment-only.
+
+        A site file that names WAKE_KEY_DIR and WAKE_REGISTRY is the deploy shape on a host, so
+        `wake-keys` said "no registry" there while the CLI it sits beside read all three (#135).
+        """
+        home = tempfile.mkdtemp(prefix="keys-")
+        cfg = os.path.join(home, "cfg")
+        store = os.path.join(home, "host-keys")
+        keys = os.path.join(home, "saved-keys")
+        for d in (cfg, store):
+            os.makedirs(d)
+        with open(os.path.join(store, "bot-alpha-0001.key"), "w", encoding="utf-8") as f:
+            f.write("k" * 40)
+        reg = os.path.join(cfg, "bots.tsv")
+        with open(reg, "w", encoding="utf-8") as f:
+            f.write("alpha\tbot-alpha-0001\tAlpha\topen\tplan\n")
+        site = os.path.join(home, "config.env")
+        with open(site, "w", encoding="utf-8") as f:
+            f.write(f"WAKE_STATE_DIR={store}\nWAKE_KEY_DIR={keys}\nWAKE_REGISTRY={reg}\n")
+        r = run("wake-keys", env={"HOME": home, "WAKE_SYSTEM_CONFIG": site})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok    alpha", r.stdout)
+        self.assertEqual(os.listdir(keys), ["bot-alpha-0001.key"], "the key dir came from nowhere")
+
+    def test_wake_keys_does_not_resolve_for_help(self):
+        """The helper imported wake_config.py to print its usage text (#135 review).
+
+        A run of `--help` has no reason to start an interpreter or read a config file, and on a
+        machine where python3 is somewhere unexpected it must still answer.
+        """
+        home = tempfile.mkdtemp(prefix="help-")
+        found = os.path.join(home, "resolved")
+        for tool in ("cat", "dirname"):
+            real = shutil.which(tool)
+            self.assertIsNotNone(real, f"{tool} is missing from this machine")
+            os.symlink(real, os.path.join(home, tool))
+        with open(os.path.join(home, "python3"), "w", encoding="utf-8") as f:
+            f.write(f"#!/bin/sh\nprintf resolved > {shlex.quote(found)}\nexit 1\n")
+        os.chmod(os.path.join(home, "python3"), 0o755)
+        r = subprocess.run(
+            [os.path.join(OPS, "wake-keys"), "--help"],
+            capture_output=True,
+            text=True,
+            env={"PATH": home, "HOME": home, "WAKE_SYSTEM_CONFIG": ""},
+            timeout=60,
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("usage: wake-keys", r.stdout)
+        self.assertFalse(os.path.exists(found), "--help started the resolver")
+
+    def test_wake_keys_falls_back_to_the_default_store_without_the_resolver(self):
+        """A bare copy of bin/ops has no wake_config.py beside it; the built-in default stays.
+
+        The fallback was unpinned: deleting it left the suite green, and a bare copy would then
+        ask the host for `/<bot-id>.key` (#135).
+        """
+        home = tempfile.mkdtemp(prefix="bare-")
+        bare = os.path.join(home, "ops")
+        os.makedirs(bare)
+        shutil.copy(os.path.join(OPS, "wake-keys"), os.path.join(bare, "wake-keys"))
+        os.chmod(os.path.join(bare, "wake-keys"), 0o755)
+        calls = os.path.join(home, "calls")
+        hostops = os.path.join(home, "hostops")
+        with open(hostops, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shlex.quote(calls) + "\nexit 255\n")
+        os.chmod(hostops, 0o755)
+        reg = os.path.join(home, "bots.tsv")
+        with open(reg, "w", encoding="utf-8") as f:
+            f.write("alpha\tbot-alpha-0001\tAlpha\topen\tplan\n")
+        r = subprocess.run(
+            [os.path.join(bare, "wake-keys")],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "HOME": home,
+                "WAKE_SYSTEM_CONFIG": "",
+                "WAKE_REGISTRY": reg,
+                "WAKE_KEY_DIR": os.path.join(home, "keys"),
+                "WAKE_HOSTOPS": hostops,
+            },
+            timeout=60,
+        )
+        self.assertNotEqual(r.returncode, 0, "a refused host fetch reported success")
+        with open(calls, encoding="utf-8") as f:
+            asked = f.read()
+        self.assertIn("sudo cat /var/lib/wake/bot-alpha-0001.key", asked, "the default store is gone")
+
     def test_the_runner_switches_the_site_file_off(self):
         # A site file carrying WAKE_MCP_TOKEN failed three bridge tests on the reviewer's host; the
         # runner has to switch that layer off itself (#135 F5).

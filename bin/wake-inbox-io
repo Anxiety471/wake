@@ -105,12 +105,12 @@ def ours(st):
 
 
 def held_by(st):
-    """What occupies the marker path, in words that say what to remove."""
+    """What occupies the marker path, in words that say what it is and who can remove it."""
     if st is None:
-        return "vanished while it was checked"
+        return "vanished while it was checked; the next poll names what is there"
     if not stat.S_ISREG(st.st_mode):
-        return "is not a regular file"
-    return f"is a regular file owned by another account (uid {st.st_uid})"
+        return "is not a regular file, and only its owner or root can remove it"
+    return f"is a regular file owned by another account (uid {st.st_uid}), and only its owner or root can remove it"
 
 
 def unreachable(g, write):
@@ -145,7 +145,7 @@ def unreachable(g, write):
         st = lstat_or_none(marker)
         if ours(st):
             sys.exit(1)
-        notice = f"{text}\n{marker} {held_by(st)}; remove it to see this line again\n"
+        notice = f"{text}\n{marker} {held_by(st)}\n"
         # Something else holds the path. Say so once per obstruction, not on every poll: this is the
         # same flood the marker above exists to prevent. The identity in the name is what makes a
         # *new* obstruction report again rather than hide behind the old notice.

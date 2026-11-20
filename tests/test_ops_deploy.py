@@ -945,6 +945,52 @@ class ScpTransportTestCase(unittest.TestCase):
         self.assertFalse(os.path.exists(staged.group(1)), "the staged copy was left in /tmp")
         self.assertIn(f"SSH: rm -f {staged.group(1)}", log, "the cleanup never ran")
 
+    def test_a_failed_scp_whose_cleanup_also_fails_says_both(self):
+        """scp fails and the host refuses the `rm`: both lines, and the warning comes first.
+
+        Only the missing-scp case was driven, so the SystemExit path with a refused cleanup was
+        unpinned and the branch could be deleted with the suite green (#135 review, N2).
+        """
+        bindir = os.path.join(self.dir, "bin-scp-and-rm-fail")
+        os.makedirs(bindir)
+        write(
+            os.path.join(bindir, "ssh"),
+            "#!/bin/sh\n"
+            "for last; do :; done\n"
+            'printf "SSH: %s\\n" "$last" >> "$STUB_LOG"\n'
+            'case "$last" in\n'
+            '  "mktemp "*) set -- $last; shift; p=$(mktemp "$1") || exit 1; chmod 600 "$p"; printf "%s\\n" "$p" ;;\n'
+            '  "rm -f "*) echo "rm: cannot remove: Operation not permitted" >&2; exit 1 ;;\n'
+            "esac\n",
+            executable=True,
+        )
+        write(
+            os.path.join(bindir, "scp"),
+            "#!/bin/sh\n"
+            'for a in "$@"; do from=$to; to=$a; done\n'
+            "p=${to#*:}\n"
+            'printf "half a bundle" > "$p"\n'
+            'printf "SCP %s\\n" "$p" >> "$STUB_LOG"\n'
+            'echo "lost connection" >&2\n'
+            "exit 1\n",
+            executable=True,
+        )
+        env = dict(self.env, PATH=bindir + ":" + os.environ.get("PATH", "/usr/bin:/bin"))
+        r = self.run_install(env)
+        self.assertNotEqual(r.returncode, 0, "a failed scp reported success")
+        self.assertIn("may still be on the host", r.stderr, "a refused cleanup was reported as a clean one")
+        self.assertIn("Operation not permitted", r.stderr)
+        self.assertIn("scp failed", r.stderr, "the transfer error is gone")
+        self.assertLess(
+            r.stderr.index("may still be on the host"),
+            r.stderr.index("scp failed"),
+            "the warning now hides the primary error instead of preceding it",
+        )
+        staged = [line.split()[1] for line in self.logged().splitlines() if line.startswith("SCP ")]
+        self.assertEqual(len(staged), 1, self.logged())
+        self.assertTrue(os.path.exists(staged[0]), "the fake host's refusing rm removed the file anyway")
+        self.assertIn(staged[0], r.stderr, "the warning does not name the file that may remain")
+
     def test_one_transport_decides_where_the_bytes_go(self):
         # put() picked scp from WAKE_HOST_SSH while host() preferred WAKE_HOSTOPS, so with both set
         # the bytes travelled a different route than every command around them (#117).

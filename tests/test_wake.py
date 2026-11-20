@@ -1353,6 +1353,31 @@ class InboxIoSgFallbackTests(unittest.TestCase):
         self.assertIn("chgrp", err.getvalue())
         self.assertNotIn("add this account to group root", err.getvalue(), "joining root is never the fix")
 
+    @unittest.skipIf(IS_ROOT, ROOT_SKIP)
+    def test_a_store_with_no_group_to_join_says_so(self):
+        """A gid with no /etc/group row leaves nothing to join; the hint must not invent a group.
+
+        The `g is None` branch was untested (`#135` nit): deleting it left the suite green, and the
+        line would then name a group that does not exist.
+        """
+
+        def missing(gid):
+            raise KeyError(gid)
+
+        err = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for patch in self.surroundings([], [27, 1003]):
+                stack.enter_context(patch)
+            stack.enter_context(mock.patch.object(self.ns["grp"], "getgrgid", missing))
+            stack.enter_context(mock.patch.object(self.ns["subprocess"], "run", lambda *a, **k: None))
+            stack.enter_context(mock.patch("sys.stderr", err))
+            stack.enter_context(mock.patch.object(self.ns["tempfile"], "gettempdir", lambda: self.tmp))
+            with self.assertRaises(SystemExit) as caught:
+                self.ns["sh"]("cat x")
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn("no group that can be joined", err.getvalue())
+        self.assertNotIn("add this account to group", err.getvalue(), "a group that does not exist was named")
+
 
 class InboxIoUnreachableStoreTests(WakeTestCase):
     """When no route reaches the store, say it once and run nothing.
@@ -1421,6 +1446,16 @@ class InboxIoUnreachableStoreTests(WakeTestCase):
         self.assertEqual(r.returncode, 1, (r.stdout, r.stderr))
         self.assertIn("is not writable", r.stderr, "a planted directory silenced the outage line")
         self.assertIn("not a regular file", r.stderr, "the line does not say what to remove")
+        self.assertIn(
+            "only its owner or root can remove it",
+            r.stderr,
+            "the line does not say who can remove what holds the marker",
+        )
+        self.assertNotIn(
+            "remove it to see this line again",
+            r.stderr,
+            "the line asks the reader to remove a file sticky /tmp protects",
+        )
         # Said once per obstruction, not on every poll: the poll runs every few seconds, which is
         # the flood the marker exists to prevent (#146 nit).
         again = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
@@ -1480,7 +1515,91 @@ class InboxIoUnreachableStoreTests(WakeTestCase):
         first = poll()
         self.assertIn("is not writable", first, "a regular file planted by another account silenced the line")
         self.assertIn("another account (uid", first, "the line does not say what holds the path")
+        self.assertNotIn(
+            "remove it to see this line again",
+            first,
+            "the line asks the reader to remove a file sticky /tmp protects",
+        )
         self.assertEqual(poll(), "", "the obstruction was reported on every poll")
+
+    @unittest.skipIf(IS_ROOT, "root ignores the mode that makes the store unreachable")
+    def test_a_notice_another_account_planted_does_not_buy_silence(self):
+        """Only a notice this account wrote silences the line; `lexists` passed the planted one.
+
+        Planting the marker and its matching `.noticed-<uid>-<ino>` name was the other half of the
+        silence #146 closed: the guard on the notice path was unpinned (#135 review, L1).
+        """
+        inbox = os.path.join(self.state, "inbox")
+        os.makedirs(inbox)
+        os.chmod(inbox, 0o500)
+        self.addCleanup(chmod_if_present, inbox, 0o700)
+        ns = vars(load_inbox_io(self.state))
+        marker = os.path.join(self.tmp, f".wake-inbox-io-warned-{os.getuid()}")
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write("an older outage\n")
+        real = os.lstat(marker)
+        other = os.getuid() + 1
+        noticed = os.path.join(self.tmp, f"{os.path.basename(marker)}.noticed-{other}-{real.st_ino}")
+        with open(noticed, "w", encoding="utf-8") as f:
+            f.write("planted\n")
+        real_notice = os.lstat(noticed)
+        real_lstat = os.lstat
+
+        def lstat(path, *a, **k):
+            st = real_lstat(path, *a, **k)
+            if path == marker:
+                return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink, other, st.st_gid) + tuple(st)[6:])
+            if path == noticed:
+                return os.stat_result(
+                    (
+                        real_notice.st_mode,
+                        real_notice.st_ino,
+                        real_notice.st_dev,
+                        real_notice.st_nlink,
+                        other,
+                        real_notice.st_gid,
+                    )
+                    + tuple(real_notice)[6:]
+                )
+            return st
+
+        with (
+            mock.patch.object(tempfile, "gettempdir", lambda: self.tmp),
+            mock.patch.object(os, "lstat", lstat),
+            contextlib.redirect_stderr(io.StringIO()) as err,
+            self.assertRaises(SystemExit) as caught,
+        ):
+            ns["unreachable"](None, True)
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn("another account (uid", err.getvalue(), "a planted notice silenced the line")
+
+    @unittest.skipIf(IS_ROOT, "root ignores the mode that makes the store unreachable")
+    def test_each_obstruction_is_named_once(self):
+        """Two different obstructions print twice; the same one prints once (#135 review, L2).
+
+        The identity in the notice name is what lets a new obstruction report again. Making it a
+        constant stayed green while the help text promised one line per obstruction.
+        """
+        inbox = os.path.join(self.state, "inbox")
+        os.makedirs(inbox)
+        os.chmod(inbox, 0o500)
+        self.addCleanup(chmod_if_present, inbox, 0o700)
+        marker = os.path.join(self.tmp, f".wake-inbox-io-warned-{os.getuid()}")
+        os.makedirs(marker)
+        env = {"WAKE_HOSTOPS": "", "TMPDIR": self.tmp}
+        first = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
+        self.assertEqual(first.returncode, 1, (first.stdout, first.stderr))
+        self.assertIn("is not writable", first.stderr)
+        # A different obstruction at the same path: move the first aside so its inode lives on and
+        # the replacement cannot reuse it.
+        os.rename(marker, marker + "-first")
+        os.makedirs(marker)
+        second = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
+        self.assertEqual(second.returncode, 1, (second.stdout, second.stderr))
+        self.assertIn("is not writable", second.stderr, "a new obstruction hid behind the old notice")
+        third = self.run_bin("wake-inbox-io", "register", "abc123", '{"pid": 1}', env=env)
+        self.assertEqual(third.returncode, 1)
+        self.assertEqual(third.stderr, "", "the same obstruction was reported twice")
 
     @unittest.skipIf(IS_ROOT, "root ignores the mode that makes the store unreachable")
     def test_a_recovered_route_clears_the_obstruction_notice(self):

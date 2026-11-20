@@ -6,26 +6,20 @@ set -u
 umask 077
 
 HOSTOPS=${WAKE_HOSTOPS:-}
-CFG=${WAKE_CONFIG_DIR:-$HOME/.config/wake}
-KEY_DIR=${WAKE_KEY_DIR:-$CFG}
-# The registry sits in the config dir, where bin/wake looks (bin/wake_config.py),
-# so moving the saved keys with WAKE_KEY_DIR never hides it.
-REG=${WAKE_REGISTRY:-$CFG/bots.tsv}
-# Where the host keeps <bot-id>.key: the environment first, then the user and site config
-# files, then the built-in default - the order wake_config.load() uses. A second parser here would
-# be a second answer, so ask the resolver the CLI already ships with (bin/wake_config.py, installed
-# beside this helper), and keep the default for a bare copy of bin/ops on a machine without it.
-resolve_store() {
+
+# Every location comes from the resolver the CLI ships with (bin/wake_config.py, beside this
+# helper or a directory or two up), so the environment, the user's config file, the site file
+# and the default are read in the one order bin/wake uses. Asking it for the store alone left
+# WAKE_CONFIG_DIR, WAKE_KEY_DIR and WAKE_REGISTRY environment-only (#135 review). A bare copy
+# of bin/ops on a machine without the resolver keeps the environment and the defaults below.
+resolve() {
     local d
     for d in "$(dirname "$0")" "$(dirname "$0")/.." "$(dirname "$0")/../.."; do
         [ -r "$d/wake_config.py" ] || continue
-        (cd "$d" && python3 -c 'import wake_config; print(wake_config.load()["WAKE_STATE_DIR"])' 2>/dev/null) && return 0
+        (cd "$d" && python3 -c 'import wake_config; c = wake_config.load(); print("\t".join([c["WAKE_CONFIG_DIR"], c["WAKE_KEY_DIR"], c["WAKE_STATE_DIR"], c["WAKE_REGISTRY"]]))' 2>/dev/null) && return 0
     done
     return 1
 }
-
-HOST_KEY_DIR=${WAKE_HOST_KEY_DIR:-${WAKE_STATE_DIR:-$(resolve_store)}}
-[ -n "$HOST_KEY_DIR" ] || HOST_KEY_DIR=/var/lib/wake
 
 usage() {
     cat <<'EOF'
@@ -53,6 +47,7 @@ usage: wake-keys [--force]
 EOF
 }
 
+# Nothing is resolved before this point: --help used to import the resolver to print usage.
 case ${1:-} in
     -h | --help)
         usage
@@ -65,6 +60,24 @@ case ${1:-} in
         exit 2
         ;;
 esac
+
+# The resolver runs once, and only for a real run. WAKE_HOST_KEY_DIR is this helper's own
+# name for the host store and wins over the resolver's WAKE_STATE_DIR.
+CFG=""
+KEY_DIR=""
+STORE=""
+REG=""
+resolved=$(resolve) || resolved=""
+if [ -n "$resolved" ]; then
+    IFS=$'\t' read -r CFG KEY_DIR STORE REG <<< "$resolved"
+fi
+HOST_KEY_DIR=${WAKE_HOST_KEY_DIR:-${STORE:-${WAKE_STATE_DIR:-}}}
+[ -n "$CFG" ] || CFG=${WAKE_CONFIG_DIR:-$HOME/.config/wake}
+[ -n "$KEY_DIR" ] || KEY_DIR=${WAKE_KEY_DIR:-$CFG}
+# The registry sits in the config dir, where bin/wake looks, so moving the saved keys with
+# WAKE_KEY_DIR never hides it.
+[ -n "$REG" ] || REG=${WAKE_REGISTRY:-$CFG/bots.tsv}
+[ -n "$HOST_KEY_DIR" ] || HOST_KEY_DIR=/var/lib/wake
 
 [ -r "$REG" ] || {
     echo "no registry at $REG (set WAKE_REGISTRY, or copy bots.example.tsv there and fill it in)" >&2
