@@ -90,6 +90,18 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **CI runs the suite as a background job, and the `wake-wait` interrupt test stops racing its
+  baseline.** Deleting `tests/test_ops_scripts.py`'s `preexec_fn` left the suite green, because CI
+  ran it in the foreground, where the test's result does not depend on the shell's `SIGINT`
+  disposition, while the same test failed for anyone who ran the suite backgrounded. A CI job now
+  runs it in exactly that shape (`tests/run.sh & wait $!`), which fails without the `SIG_DFL` reset.
+  The test also waited for one recorded stub call, but the stub records before `wake-wait` writes
+  its baseline, so an interrupt could land while the first poll was in flight and the mutant then
+  failed by a 20 s `TimeoutExpired` instead of by the assertion, two runs in five; it waits for two
+  calls now, which makes the comment true and the failure the assertion's. One redundant assertion
+  is gone, and `tearDown` removes the per-run temp directory - 14,079 had accumulated in one
+  container ([#142](https://github.com/Anxiety471/wake/issues/142)).
+
 - **The `#144` review's three Lows are closed, and one of them was a secret printed by a refusal.**
   `parse_env_answer()` echoed up to 120 characters of the line it did not understand, and the last
   line of an `api.env` is normally a `KEY=value`: a `DATABASE_URL=` line printed the database

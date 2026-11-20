@@ -31,6 +31,30 @@ jobs:
         env:
           PYTHON: python
 
+  # The suite ran in the foreground only, so a test that depends on the shell's SIGINT
+  # disposition was green here and failed for anyone who ran it as a background job (#142).
+  # POSIX starts a background job of a non-interactive shell with SIGINT ignored, Python keeps
+  # the inherited SIG_IGN, and bash cannot trap a signal that was ignored on entry. This job
+  # runs the suite in exactly that shape, so deleting the test's preexec_fn now fails a check.
+  backgrounded:
+    name: test (backgrounded shell, Python 3.13)
+    runs-on: ubuntu-24.04
+    steps:
+      # Full history and tags, as in the matrix job: the publish checklist resolves the tag.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Run tests as a background job
+        # wait $! and not a bare wait: a bare wait reports zero even when the suite failed.
+        run: |
+          tests/run.sh &
+          wait $!
+        env:
+          PYTHON: python
+
   api:
     name: api (bun)
     runs-on: ubuntu-24.04

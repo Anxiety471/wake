@@ -4,6 +4,8 @@
 # tests see: a site file carrying WAKE_MCP_TOKEN used to fail three bridge tests (#135 F5).
 #   tests/run.sh                    # python3 from PATH
 #   PYTHON=python3.9 tests/run.sh   # another interpreter
+# CI also runs the suite as a background job (.github/workflows/ci.yml), where POSIX gives
+# it SIGINT ignored; a test that depends on the foreground disposition fails there.
 cd "$(dirname "$0")/.." || exit 1
 PYTHON=${PYTHON:-python3}
 if [ "$(id -u)" = 0 ]; then

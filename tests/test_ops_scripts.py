@@ -270,6 +270,24 @@ class OpsFilesTestCase(unittest.TestCase):
             runner = f.read()
         self.assertIn("PYTHONDONTWRITEBYTECODE=1", runner)
 
+    def test_ci_runs_the_suite_as_a_background_job(self):
+        """#142: a foreground-only suite cannot see a test that depends on the shell's SIGINT
+        disposition - deleting the interrupt test's preexec_fn stayed green. The job pinned here is
+        the only runner that reproduces a backgrounded suite, so losing it has to fail a test.
+        """
+        lines = text(os.path.join(ROOT, ".github/workflows/ci.yml")).splitlines()
+        self.assertIn("  backgrounded:", lines, "the backgrounded suite job is gone")
+        start = lines.index("  backgrounded:")
+        block = []
+        for line in lines[start + 1 :]:
+            if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
+                break
+            block.append(line)
+        commands = [line.strip() for line in block]
+        self.assertIn("tests/run.sh &", commands, "the job no longer starts the suite as a background job")
+        self.assertIn("wait $!", commands, "a bare wait reports zero for a failed suite; wait on the pid")
+        self.assertNotIn("wait", commands, "a bare wait reports zero for a failed suite; wait on the pid")
+
     def test_the_hostname_guard_is_not_a_no_op(self):
         for sample in ("bots.example.com", "vps01.example.com", "wake.internal", "h.some-hospital.example.org"):
             with self.subTest(sample=sample):
@@ -574,6 +592,11 @@ class WakeWaitTestCase(unittest.TestCase):
         self.calls = os.path.join(self.home, "calls.log")
         self.stub("exit 0")
 
+    def tearDown(self):
+        # Every run used to leave /tmp/wait-* behind: 14,079 of them in one container after
+        # an afternoon of runs, enough that any tool scanning /tmp walked all of them (#142).
+        shutil.rmtree(self.home, ignore_errors=True)
+
     def stub(self, body):
         """A fake `wake` that records its arguments, then runs `body` (indented one level)."""
         path = os.path.join(self.bin, "wake")
@@ -682,13 +705,19 @@ class WakeWaitTestCase(unittest.TestCase):
             preexec_fn=_sigint_default,
         )
         try:
-            # The condition the sleep below only guessed at: the stub has answered once, so the
-            # wait has its baseline and is between polls. A blind sleep made the test measure the
-            # machine, not the trap.
+            # The condition the sleep below only guessed at - and one call is not it: the stub
+            # records its call before wake-wait writes the baseline, so a single recorded call
+            # only says a poll started. Two say the first poll returned, the baseline exists and
+            # the wait is between polls, the only state where the interrupt tests the trap
+            # instead of racing the baseline (#142). The assertion repeats the condition on
+            # purpose: if it is weakened back to one call, this test fails here in milliseconds
+            # rather than as a 20 s TimeoutExpired two runs in five.
             deadline = time.time() + 10
-            while not self.called() and time.time() < deadline:
+            while len(self.called()) < 2 and time.time() < deadline:
                 time.sleep(0.02)
-            self.assertTrue(self.called(), "the stub was never polled, so nothing was interrupted")
+            self.assertGreaterEqual(
+                len(self.called()), 2, "the interrupt would race the baseline: the stub answered once"
+            )
             proc.send_signal(signal.SIGINT)
             out, err = proc.communicate(timeout=20)
         finally:
@@ -697,7 +726,6 @@ class WakeWaitTestCase(unittest.TestCase):
                 proc.communicate()
         self.assertEqual(proc.returncode, 130, out + err)
         self.assertEqual(out, "", "an interrupt printed an answer")
-        self.assertGreaterEqual(len(self.called()), 1, "the interrupt arrived before the wait ever polled")
 
     # ---- --from --------------------------------------------------------------------
 
