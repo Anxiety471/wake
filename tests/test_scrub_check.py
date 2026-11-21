@@ -5,6 +5,7 @@ Run with the rest: python3 -m unittest discover -s tests
 """
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -12,6 +13,49 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
+CI = os.path.join(ROOT, ".github", "workflows", "ci.yml")
+
+
+def text(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def ci_steps(block):
+    """Parse a job's `steps:` from ci.yml: keys, inline values and block sections per step.
+
+    Only the shapes these pins need: a `key: value` line, or a `key:` line that opens a block of
+    deeper-indented lines. Anything else is left to the YAML parser CI itself uses.
+    """
+    steps = []
+    step = None
+    section = None
+    for line in block:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if line.startswith("      - "):
+            step = {"keys": [], "values": {}, "sections": {}}
+            steps.append(step)
+            section = None
+            stripped = stripped[2:].strip()
+        elif step is None:
+            continue
+        elif line.startswith("        ") and not line.startswith("         "):
+            section = None
+        else:
+            if section is not None:
+                step["sections"][section].append(stripped)
+            continue
+        key, _, rest = stripped.partition(":")
+        key, rest = key.strip(), rest.strip()
+        step["keys"].append(key)
+        if rest:
+            step["values"][key] = rest
+        else:
+            section = key
+            step["sections"][key] = []
+    return steps
 
 
 class ScrubCheckTestCase(unittest.TestCase):
@@ -90,9 +134,127 @@ class ScopeTests(ScrubCheckTestCase):
         self.assertIn("token-like strings (history)", out)
 
     def test_ci_scans_the_checked_out_history_only(self):
-        with open(os.path.join(ROOT, ".github", "workflows", "ci.yml"), encoding="utf-8") as f:
-            runs = [line.strip() for line in f if line.strip().startswith("run: scripts/scrub-check.sh")]
+        runs = [
+            line.strip() for line in text(CI).splitlines() if line.strip().startswith("run: scripts/scrub-check.sh")
+        ]
         self.assertEqual(runs, ["run: scripts/scrub-check.sh --history-head"])
+
+    def test_a_shallow_clone_hides_the_history_from_the_scan(self):
+        """Why the CI checkout keeps `fetch-depth: 0` (#164 nit 2): `--history-head` reads
+        `git log -p HEAD`, and a depth-1 clone holds one commit, so the same hit that fails a full
+        clone scans clean there. Pinned by test_ci_secret_scan_cannot_be_disarmed.
+        """
+        self.write("mail.txt", "write to " + "someone" + "@" + "gmail" + ".com\n")
+        self.commit("mail")
+        self.write("mail.txt", "nothing to see\n")
+        self.commit("cleanup")
+        rc, out = self.scan("--history-head")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("email addresses (history)", out)
+        clone = tempfile.mkdtemp(prefix="scrub-shallow-")
+        self.addCleanup(shutil.rmtree, clone, True)
+        r = subprocess.run(
+            ["git", "clone", "-q", "--depth", "1", "file://" + self.repo, clone],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = subprocess.run(
+            ["sh", os.path.join(clone, "scripts", "scrub-check.sh"), "--history-head"],
+            cwd=clone,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("clean", r.stdout)
+
+    def test_ci_secret_scan_cannot_be_disarmed(self):
+        """#164 nit 3: the run line was pinned, the job was not. An `if:`, `continue-on-error:` or
+        job `defaults` on secret-scan skips the only history scan in CI, or neutralizes it, while
+        every test here stays green - the class #162 pinned for `backgrounded`. A top-level
+        `defaults` (one line outside the job, swapping every run step's shell) is already refused
+        by tests/test_ops_scripts.py::test_ci_runs_the_suite_as_a_background_job.
+        """
+        lines = text(CI).splitlines()
+        self.assertIn("  secret-scan:", lines, "the secret-scan job is gone")
+        start = lines.index("  secret-scan:")
+        block = []
+        for line in lines[start + 1 :]:
+            if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
+                break
+            block.append(line)
+        # Job keys: `defaults` swaps the shell of the job's run step, `if` skips the job and
+        # `continue-on-error` reports a failed scan as neutral - none of them touches a test.
+        keys = [
+            line.strip().split(":", 1)[0]
+            for line in block
+            if line.startswith("    ")
+            and not line.startswith("     ")
+            and ":" in line
+            and not line.strip().startswith("#")
+        ]
+        self.assertEqual(
+            keys,
+            ["runs-on", "steps"],
+            f"job keys {keys}: only runs-on and steps are allowed - defaults, if or "
+            "continue-on-error would let a scan that never runs report green",
+        )
+        # A step is as easy to disarm as the job, and the key also parses off the step's dash line
+        # (`- if: false`) or behind a YAML anchor (`- &a if: false`), so all three are refused.
+        disarming = [
+            line.strip()
+            for line in block
+            if not line.strip().startswith("#")
+            and re.match(
+                r"""^\s*(?:-\s+)?(?:&\S+\s+)?["']?(if|continue-on-error)["']?\s*:""",
+                line,
+                re.IGNORECASE,
+            )
+        ]
+        self.assertEqual(
+            disarming,
+            [],
+            f"a step key that can disarm the scan was added: {disarming} - a skipped or neutral "
+            "step still reports green",
+        )
+        steps = ci_steps(block)
+        self.assertEqual(
+            len(steps),
+            2,
+            f"{len(steps)} steps: only the checkout and the scan - another step can change what the scan reads",
+        )
+        checkout, scan = steps
+        self.assertEqual(
+            checkout["keys"],
+            ["uses", "with"],
+            f"checkout step keys {checkout['keys']}: only uses and with are allowed - an if or "
+            "continue-on-error here disarms the checkout the scan depends on",
+        )
+        self.assertRegex(
+            checkout["values"].get("uses", ""),
+            r"^actions/checkout@v\d+$",
+            f"checkout action is {checkout['values'].get('uses')!r}",
+        )
+        # #164 nit 2: full history is load-bearing for --history-head. At the default depth (1)
+        # the runner holds one commit, the history scan sees nothing and stays green.
+        self.assertEqual(
+            checkout["sections"].get("with"),
+            ["fetch-depth: 0"],
+            f"checkout with is {checkout['sections'].get('with')}: fetch-depth: 0 is the history "
+            "the scan reads - a shallow clone scans one commit and passes",
+        )
+        self.assertEqual(
+            scan["keys"],
+            ["name", "run"],
+            f"scan step keys {scan['keys']}: only name and run are allowed - shell replaces the "
+            "interpreter, if skips the step and continue-on-error reports a failed scan as neutral",
+        )
+        self.assertEqual(
+            scan["values"].get("run"),
+            "scripts/scrub-check.sh --history-head",
+            f"the scan runs {scan['values'].get('run')!r}: --history reads every branch and turns "
+            "main red for text only an unmerged branch carries (#163)",
+        )
 
 
 class NoiseTests(ScrubCheckTestCase):

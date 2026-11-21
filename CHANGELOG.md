@@ -90,6 +90,19 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **CI's secret scan cannot be quietly switched off any more.** #164 pinned the flag `ci.yml`
+  passes and left the job around it open: an `if:`, a `continue-on-error:` or a job `defaults` on
+  `secret-scan` skips the only history scan in CI, or reports a failed one as neutral, while every
+  test stayed green - the class #162 pinned for `backgrounded`. `tests/test_scrub_check.py` now
+  pins the job's keys, its two steps, the scan step's `name`/`run` pair and the run body, and
+  refuses `if` and `continue-on-error` at job and step level, including the dash-line and YAML
+  anchor forms. It pins the checkout's `with: fetch-depth: 0` too, now load-bearing for
+  `--history-head`: a depth-1 clone holds one commit, so the history scan sees nothing and stays
+  green (a test clones the fixture at depth 1 and shows the same hit scan clean). The
+  `.git/scrub-patterns.txt` header said the private list covers history only "with `--history`",
+  which was false for `--history-head`
+  ([#164](https://github.com/Anxiety471/wake/issues/164), [#169](https://github.com/Anxiety471/wake/issues/169)).
+
 - **A branch nobody merged can no longer turn main's secret scan red.** CI checks out with full
   history, which also fetches every remote branch, and `scripts/scrub-check.sh --history` reads
   every ref, so text that only an open pull request carried failed the run on main with no commit
