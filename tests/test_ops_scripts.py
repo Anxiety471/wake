@@ -401,7 +401,7 @@ class OpsFilesTestCase(unittest.TestCase):
         all 100 tests green, and a workflow that no push or pull request starts runs nothing at all:
         GitHub shows an absent check rather than a green one, so the secret scan is off and nothing
         in the suite notices. An inline `on: [push, pull_request]` leaves no block to read and fails
-        on the empty list, as the env pin below does for an inline map.
+        on the empty list, as the env pin above does for an inline map.
         """
         lines = text(os.path.join(ROOT, ".github/workflows/ci.yml")).splitlines()
         inline = [line.strip() for line in lines if line.startswith("on:") and line.strip() != "on:"]
