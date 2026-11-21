@@ -90,6 +90,19 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **A failed read of `api.env` names its exit status, never the file's text.** The command that
+  names the file's state printed the file, and it went through `_run`'s generic failure message,
+  which repeats the last 800 characters of output: a transport that died after `cat` had emitted
+  bytes - a dropped `ssh` connection, a failing `printf` in the `then` branch - put the tail of
+  `api.env`, `DATABASE_URL`'s password and `REGISTRATION_SECRET` included, into the deploy log.
+  That is the one promise the file header makes ("never prints a secret"). The read now runs
+  through `_capture()`, which hands back the exit status, stdout and stderr with no echo, and a
+  nonzero status refuses before the answer is parsed (`the command that names ... exited N;
+  refusing to rewrite the file`). It is refused rather than read with `check=False`: a transport
+  cut off after the marker still ends in `__wake_env:read__`, so reusing that stdout would write
+  half a file back - the state `#146`'s F3 refusal exists to prevent. Every other step keeps the
+  echo, because a failed `systemctl` has to say why it failed
+  ([#151](https://github.com/Anxiety471/wake/issues/151)).
 - **CI runs the suite as a background job, and the `wake-wait` interrupt test stops racing its
   baseline.** Deleting `tests/test_ops_scripts.py`'s `preexec_fn` left the suite green, because CI
   ran it in the foreground, where the test's result does not depend on the shell's `SIGINT`

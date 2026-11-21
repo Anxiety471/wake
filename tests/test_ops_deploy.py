@@ -490,7 +490,7 @@ class HostDeployTestCase(unittest.TestCase):
     def test_an_answer_that_names_no_state_is_refused(self):
         # A glued marker used to read as "the file is empty", which is how every key disappeared.
         module = load_host_deploy()
-        module.host_out = lambda *a, **k: "WAKE_RATE_LIMIT=5__wake_env:read__"
+        module._capture = lambda *a, **k: (0, "WAKE_RATE_LIMIT=5__wake_env:read__", "")
         with self.assertRaises(SystemExit) as caught:
             module.env_file_text()
         self.assertIn("refusing to rewrite", str(caught.exception))
@@ -507,7 +507,7 @@ class HostDeployTestCase(unittest.TestCase):
             f"DATABASE_URL=postgres://wake:{self.password}@127.0.0.1:5432/wake",
             f"REGISTRATION_SECRET={self.secret}",
         ):
-            module.host_out = lambda *a, _line=line, **k: _line + "__wake_env:read__"
+            module._capture = lambda *a, _line=line, **k: (0, _line + "__wake_env:read__", "")
             with self.assertRaises(SystemExit) as caught:
                 module.env_file_text()
             message = str(caught.exception)
@@ -524,7 +524,7 @@ class HostDeployTestCase(unittest.TestCase):
         """A transport that exits 0 and prints nothing handed back "": that read as an absent
         file, and the rewrite dropped every key the file carried (#146 F3)."""
         module = load_host_deploy()
-        module.host_out = lambda *a, **k: ""
+        module._capture = lambda *a, **k: (0, "", "")
         with self.assertRaises(SystemExit) as caught:
             module.env_file_text()
         self.assertIn("named none of", str(caught.exception))
@@ -542,6 +542,45 @@ class HostDeployTestCase(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("named none of", r.stderr)
         self.assertNotIn("tee /etc/wake/api.env.new", r.stderr, "the rewrite ran on an answer that named nothing")
+
+    def test_a_failed_read_never_repeats_the_files_text(self):
+        """The read that names api.env's state went through _run's failure message, which repeats
+        the last 800 characters of output - and that output is the file, so a transport that died
+        after `cat` had emitted bytes put the database password and the registration secret in the
+        deploy log. The refusal names the exit status and nothing else (#151)."""
+        cut_off = write(
+            os.path.join(self.dir, "hostops-cut-off"),
+            "#!/bin/sh\n"
+            f"printf 'WAKE_RATE_LIMIT=5\\nDATABASE_URL=postgres://wake:{self.password}@127.0.0.1:5432/wake\\n'\n"
+            f"printf 'REGISTRATION_SECRET={self.secret}\\n'\n"
+            "exit 1\n",
+            executable=True,
+        )
+        r = run("wake-host-deploy", "env", env=dict(self.env, WAKE_HOSTOPS=cut_off))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("exited 1", r.stderr, "the refusal does not say the read failed")
+        both = r.stdout + r.stderr
+        self.assertNotIn(self.password, both, "a failed read printed the database password")
+        self.assertNotIn(self.secret, both, "a failed read printed the registration secret")
+        self.assertNotIn("FAILED:", both, "the generic failure message repeated the file")
+        self.assertNotIn("tee /etc/wake/api.env.new", r.stderr, "the rewrite ran on a failed read")
+
+    def test_a_failed_read_is_not_read_as_its_partial_answer(self):
+        """A nonzero exit has to stop the step before the answer is parsed: a transport cut off
+        after the marker still ends in `__wake_env:read__`, so parsing its output would write half
+        a file back. Passing check=False and reusing the stdout is exactly that bug (#151)."""
+        truncated = write(
+            os.path.join(self.dir, "hostops-half-answer"),
+            "#!/bin/sh\n"
+            "{ printf 'CMD: %s\\n' \"$1\"; cat; printf '\\n--\\n'; } >> \"$STUB_LOG\"\n"
+            'case "$1" in\n'
+            "  *__wake_env:read__*) printf 'WAKE_RATE_LIMIT=5\\n__wake_env:read__\\n'; exit 1 ;;\n"
+            "esac\n",
+            executable=True,
+        )
+        r = run("wake-host-deploy", "env", env=dict(self.env, WAKE_HOSTOPS=truncated))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertNotIn("tee /etc/wake/api.env.new", self.logged(), "a partial answer was written back as the file")
 
     def test_env_merge_keeps_what_the_operator_added(self):
         merge = load_host_deploy().merge_env
