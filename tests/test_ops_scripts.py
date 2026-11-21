@@ -396,6 +396,37 @@ class OpsFilesTestCase(unittest.TestCase):
             "runs under, so any other value here can pass the step without running it",
         )
 
+    def test_ci_runs_on_push_and_pull_request(self):
+        """#172: `on` was pinned to exist, not to what it holds. `on: workflow_dispatch:` alone kept
+        all 100 tests green, and a workflow that no push or pull request starts runs nothing at all:
+        GitHub shows an absent check rather than a green one, so the secret scan is off and nothing
+        in the suite notices. An inline `on: [push, pull_request]` leaves no block to read and fails
+        on the empty list, as the env pin above does for an inline map.
+        """
+        lines = text(os.path.join(ROOT, ".github/workflows/ci.yml")).splitlines()
+        inline = [line.strip() for line in lines if line.startswith("on:") and line.strip() != "on:"]
+        self.assertEqual(
+            inline,
+            [],
+            f"the triggers are written inline ({inline}): the block form is pinned, so a change to "
+            "them has to be a change to this pin",
+        )
+        self.assertIn("on:", lines, "the workflow has no top-level `on:` key")
+        triggers = []
+        for line in lines[lines.index("on:") + 1 :]:
+            if line and not line.startswith((" ", "\t")):
+                break
+            if line.strip() and not line.strip().startswith("#"):
+                triggers.append(line.strip())
+        self.assertEqual(
+            triggers,
+            ["push:", "pull_request:"],
+            f"the workflow triggers are {triggers}: every push and every pull request has to start "
+            "CI, and anything narrower - workflow_dispatch alone, a `branches:` filter, a "
+            "`pull_request` with `types:` - leaves commits that no check ever sees. A trigger added "
+            "on purpose goes in this list in the same commit",
+        )
+
     def test_the_hostname_guard_is_not_a_no_op(self):
         for sample in ("bots.example.com", "vps01.example.com", "wake.internal", "h.some-hospital.example.org"):
             with self.subTest(sample=sample):

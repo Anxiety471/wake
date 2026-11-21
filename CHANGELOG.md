@@ -90,6 +90,18 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **The secret scan's runner and the workflow's triggers are pinned, not just named.** #169 pinned
+  the `secret-scan` job's keys and left two values open, both measured by mutation at `97b9436`:
+  `runs-on: self-hosted` kept the whole suite green with the scan running on a machine whose `git`,
+  `grep` or global `git config` is not the image's, and replacing the workflow's
+  `on: push / pull_request` with `on: workflow_dispatch:` kept it green with no run at all - not a
+  green check but an absent one, so the only history scan in CI was off. `runs-on` is
+  `ubuntu-24.04` now, the same image the test jobs pin for a stated reason, and
+  `tests/test_scrub_check.py` asserts the value; `tests/test_ops_scripts.py` pins the two triggers
+  by name and refuses an inline `on:`, a `branches:` filter or a `types:` list. A rename of the scan
+  step is pinned too, so a reviewer sees it in the diff
+  ([#172](https://github.com/Anxiety471/wake/issues/172)).
+
 - **CI's secret scan cannot be quietly switched off any more.** #164 pinned the flag `ci.yml`
   passes and left the job around it open: an `if:`, a `continue-on-error:` or a job `defaults` on
   `secret-scan` skips the only history scan in CI, or reports a failed one as neutral, while every
@@ -98,9 +110,9 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   refuses `if` and `continue-on-error` at job and step level, including the dash-line and YAML
   anchor forms. It pins the checkout's `with: fetch-depth: 0` too, now load-bearing for
   `--history-head`: a depth-1 clone holds one commit, so the history scan sees nothing and stays
-  green (a test clones the fixture at depth 1 and shows the same hit scan clean). The
-  `.git/scrub-patterns.txt` header said the private list covers history only "with `--history`",
-  which was false for `--history-head`
+  green (a test clones the fixture at depth 1 and shows the same hit scan clean).
+  `scripts/scrub-check.sh`'s own header comment said the private list covers history only "with
+  `--history`", which was false for `--history-head`
   ([#164](https://github.com/Anxiety471/wake/issues/164), [#169](https://github.com/Anxiety471/wake/issues/169)).
 
 - **A branch nobody merged can no longer turn main's secret scan red.** CI checks out with full
