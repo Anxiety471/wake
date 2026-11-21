@@ -110,9 +110,9 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   refuses `if` and `continue-on-error` at job and step level, including the dash-line and YAML
   anchor forms. It pins the checkout's `with: fetch-depth: 0` too, now load-bearing for
   `--history-head`: a depth-1 clone holds one commit, so the history scan sees nothing and stays
-  green (a test clones the fixture at depth 1 and shows the same hit scan clean). The
-  `.git/scrub-patterns.txt` header said the private list covers history only "with `--history`",
-  which was false for `--history-head`
+  green (a test clones the fixture at depth 1 and shows the same hit scan clean).
+  `scripts/scrub-check.sh`'s own header comment said the private list covers history only "with
+  `--history`", which was false for `--history-head`
   ([#164](https://github.com/Anxiety471/wake/issues/164), [#169](https://github.com/Anxiety471/wake/issues/169)).
 
 - **A branch nobody merged can no longer turn main's secret scan red.** CI checks out with full
