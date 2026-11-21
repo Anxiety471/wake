@@ -470,6 +470,27 @@ class OpsFilesTestCase(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertNotIn("bin/ops/" + name, found, f"{name} is Python, so shellcheck would fail on it")
 
+    def test_ci_lint_job_runs_on_a_pinned_image(self):
+        """#174: `runs-on: self-hosted` on lint kept every test green while the verdict came from
+        that machine's shellcheck and python. The key list pin does not read the value, so it is
+        pinned here, as the secret-scan job's is in test_scrub_check."""
+        lines = text(os.path.join(ROOT, ".github/workflows/ci.yml")).splitlines()
+        self.assertIn("  lint:", lines, "the lint job is gone")
+        start = lines.index("  lint:")
+        block = []
+        for line in lines[start + 1 :]:
+            if line.startswith("  ") and not line.startswith("   ") and line.strip():
+                break
+            block.append(line)
+        runner = [line.strip() for line in block if line.startswith("    runs-on:")]
+        self.assertEqual(
+            runner,
+            ["runs-on: ubuntu-24.04"],
+            f"the lint runner is {runner}: the verdict comes from the runner's shellcheck and "
+            "python, so the image is pinned - a floating tag or a self-hosted machine changes "
+            "what lint reads while the suite stays green",
+        )
+
 
 class OpsBehaviourTestCase(unittest.TestCase):
     def test_wake_pg_prints_usage_for_an_unknown_command(self):
