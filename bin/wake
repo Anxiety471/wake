@@ -247,9 +247,13 @@ def thread_read(tid):
                 return None
     except OSError:
         return None
-    out = r.stdout.strip()
+    return _recs(r.stdout)
+
+
+def _recs(text):
+    """The records in one thread file: a torn or hand-edited line is skipped, never fatal."""
     recs = []
-    for ln in out.splitlines():
+    for ln in text.splitlines():
         try:
             recs.append(json.loads(ln))
         except Exception:
@@ -257,8 +261,63 @@ def thread_read(tid):
     return recs
 
 
-def threads_mine(sender):
-    """Threads opened by `sender`, newest first; None when the store cannot be listed."""
+def threads_all():
+    """Every thread in the store as (tid, records), in one host call for the lot.
+
+    `--inbox` used to call thread_read() once per file, and a guest pays 420-519 ms for every
+    bridge call, so a 128-thread store cost 51 s and every thread anyone ever opened made it
+    slower (#165). One command now prints a marker line and cats each file: a record is one
+    JSON object per line, so a line that starts with the marker is never a record, and each
+    cat reads whatever is there, so an append during the read tears nothing.
+
+    A file this user cannot read prints a failure marker instead of vanishing: the read then
+    returns None and the caller falls back to one thread per call, which reports the store as
+    unreadable the way it always did. A short inbox must never hide a reply someone waits on.
+
+    None when the store cannot be read at all: the caller reports that instead of an empty
+    inbox, and reads one thread per call for a host whose gate predates this shape.
+    """
+    mark = "@@wake-file "  # a record is one JSON object per line, so this cannot begin one
+    failed = "@@wake-fail "  # ditto: the loop prints it only when it could not read a file
+    cmd = (
+        "for f in " + q(THREADS) + '/*.jsonl; do [ -f "$f" ] || continue; '
+        "printf '\\n" + mark + '%s\\n\' "${f##*/}"; '
+        'cat "$f" || printf \'\\n' + failed + '%s\\n\' "${f##*/}"; done 2>/dev/null'
+    )
+    try:
+        r = _host_run(cmd)
+    except OSError:
+        return None
+    if bridge_failed(r) or r.returncode != 0:
+        return None
+    threads = []
+    recs = None
+    for line in (r.stdout or "").splitlines():
+        if line.startswith(failed):
+            return None  # one file could not be read: fail loud, never answer with a short inbox
+        if line.startswith(mark):
+            name = line[len(mark) :].strip()
+            tid = name[: -len(".jsonl")] if name.endswith(".jsonl") else ""
+            recs = [] if tid and "/" not in tid and ".." not in tid else None
+            if recs is not None:
+                threads.append((tid, recs))
+            continue
+        if recs is None:
+            continue
+        try:
+            recs.append(json.loads(line))
+        except Exception:
+            pass
+    return threads
+
+
+def threads_all_one_by_one():
+    """The pre-#165 read: one listing, then one host call per thread.
+
+    The store-wide read is a command shape the host gate has to know. Until it does, a gated
+    host refuses the one call, and this path answers in 420-519 ms per thread, as it always
+    did: slow, never wrong.
+    """
     try:
         r = _host_run(f"ls {q(THREADS)} 2>/dev/null")
     except OSError:
@@ -272,9 +331,19 @@ def threads_mine(sender):
         recs = thread_read(fn[:-6])
         if recs is None:
             return None
-        if recs and recs[0].get("from") == sender:
-            out.append((fn[:-6], recs))
-    return sorted(out, key=lambda x: x[1][0].get("ts", ""), reverse=True)
+        out.append((fn[:-6], recs))
+    return out
+
+
+def threads_mine(sender):
+    """Threads opened by `sender`, newest first; None when the store cannot be read."""
+    threads = threads_all()
+    if threads is None:
+        threads = threads_all_one_by_one()
+    if threads is None:
+        return None
+    mine = [(tid, recs) for tid, recs in threads if recs and recs[0].get("from") == sender]
+    return sorted(mine, key=lambda x: x[1][0].get("ts", ""), reverse=True)
 
 
 # ---------- session inboxes: a live agent session reads these as its next message ----------

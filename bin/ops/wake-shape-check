@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # desc: check every command a wake copy builds against a gate's matcher. Usage: wake-shape-check FILE [GATE]
-"""Lift the five command builders out of a wake copy, run them against stubs, and
-print every command with the gate's verdict.
+"""Lift the command builders out of a wake copy, run them against stubs, and print
+every command with the gate's verdict.
 
 A gate that refuses a shape turns the call into a silent no-op: wake reads nothing
 back and the message is gone. So a new build of `wake` is checked against the gate
@@ -27,6 +27,10 @@ import time
 import types
 
 BUILDERS = ("thread_append", "thread_read", "threads_mine", "inbox_live", "inbox_push")
+# The helpers those builders are assembled from. `--inbox` reads the whole store in one call
+# and falls back to one call per thread, and both shapes have to reach the gate: only the
+# store read is new, but a gate that refuses either turns the inbox into a silent no-op (#165).
+HELPERS = ("_recs", "threads_all", "threads_all_one_by_one")
 
 USAGE = """usage: wake-shape-check FILE [GATE]
 
@@ -54,7 +58,7 @@ def load_gate(path):
 def lift(path):
     with open(path, encoding="utf-8") as f:
         tree = ast.parse(f.read(), path)
-    wanted = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in BUILDERS]
+    wanted = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in BUILDERS + HELPERS]
     return ast.Module(body=wanted, type_ignores=[])
 
 
@@ -169,12 +173,15 @@ def main(argv):
         "thread_append": ("11111111-2222-3333", {"from": "probe", "event": "test", "detail": "x"}),
         "thread_read": ("11111111-2222-3333",),
         "threads_mine": ("probe",),
+        "threads_all_one_by_one": (),
         "inbox_live": (),
         "inbox_push": (os.path.join(state, "inbox", "abc123"), {"from": "probe"}),
     }
     broken = []
-    for name in BUILDERS:
-        if name in missing:
+    for name in BUILDERS + ("threads_all_one_by_one",):
+        if name in missing or name not in scope:
+            continue
+        if name not in calls:
             continue
         try:
             scope[name](*calls[name])

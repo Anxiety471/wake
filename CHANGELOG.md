@@ -99,6 +99,22 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   stays as the every-branch scan to run before publishing
   ([#163](https://github.com/Anxiety471/wake/issues/163)).
 
+- **`wake --inbox` reads the whole store in one host call, not one per thread.** A guest pays
+  420-519 ms for every bridge call and `threads_mine()` made one `cat` per thread, so a
+  128-thread store took 51 s and every thread anyone ever opened made the next run slower: under
+  a 30 s timeout the command was a hang with nothing on stdout. One command now prints a marker
+  line and cats each file; a record is one JSON object per line, so a line that starts with the
+  marker is never a record, and each `cat` sees whatever is there, so an append during the read
+  tears nothing. `thread_read()` still serves `--thread` and `--reply`, an empty store is still
+  `no threads opened by <source>` in one call, an unreadable store still exits 1 naming it, and
+  a host whose gate predates the new shape refuses the one call and gets the old per-thread
+  read, so one client works against either gate. A single *unreadable file* is named by a
+  second marker (`@@wake-fail`) instead of disappearing: the loop prints it after a `cat` it
+  could not do, the CLI turns it into the same exit 1, and the per-thread fallback reports it,
+  because a short inbox must never hide the reply someone is waiting on. The 1.1 s number is
+  the ungated path: a gated host keeps the old speed until its gate is taught the store-wide
+  read, and the gate is a host change ([#165](https://github.com/Anxiety471/wake/issues/165)).
+
 - **The secret scan masks a GitHub noreply address per match, never the whole line.** The allowlist
   entry added in [#156](https://github.com/Anxiety471/wake/pull/156) skipped every line holding the
   address, so a key on that line went unseen, and a live-looking address on a longer domain that
