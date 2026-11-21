@@ -30,7 +30,9 @@ BUILDERS = ("thread_append", "thread_read", "threads_mine", "inbox_live", "inbox
 # The helpers those builders are assembled from. `--inbox` reads the whole store in one call
 # and falls back to one call per thread, and both shapes have to reach the gate: only the
 # store read is new, but a gate that refuses either turns the inbox into a silent no-op (#165).
-HELPERS = ("_recs", "threads_all", "threads_all_one_by_one")
+# `store_dir_entries`/`store_dir_unreadable` are the confirmation that an empty answer is a
+# quiet store and not an unreadable one (#168): its `ls` is the gate's own "thread list" route.
+HELPERS = ("_recs", "threads_all", "threads_all_one_by_one", "store_dir_entries", "store_dir_unreadable")
 
 USAGE = """usage: wake-shape-check FILE [GATE]
 

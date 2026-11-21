@@ -208,7 +208,11 @@ names, unchanged. A host whose gate has not been taught the store-wide read refu
 call, and `--inbox` then falls back to one call per thread — slow, never wrong. The 1.1 s
 figure is the ungated path: on a gated host the speedup arrives when the gate learns the
 store-wide read, which is a host change. A thread file this user cannot read is reported
-(`cannot read the thread store`, exit 1), never left out of a short inbox.
+(`cannot read the thread store`, exit 1), never left out of a short inbox. A store directory that
+cannot be read at all — missing, not a directory, or not readable by this user — is reported the
+same way, never answered as an empty inbox: an empty answer is confirmed with one listing call
+(`ls <store> 2>/dev/null`, the shape a host gate already allows), and that call is made only when
+the answer is empty.
 
 ### `--setup`: create a webhook key
 
