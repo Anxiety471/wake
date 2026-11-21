@@ -328,6 +328,43 @@ class OpsFilesTestCase(unittest.TestCase):
             f"a step key that can disarm this check was added: {disarming} - the suite would fail "
             "or be skipped and the job would still report green",
         )
+        # The run body is the third way in and it is not a key: `exit 0` as the first line under
+        # `run: |` left every guard above green and the job green with the suite never started
+        # (measured by mutation at 88aa476, #141). Pin the body to the two commands, and the run
+        # step's own keys to run and env, so `shell:` - which replaces the interpreter - and any
+        # other step key are refused by name too.
+        step = "      - name: Run tests as a background job"
+        self.assertIn(step, block, "the run step is gone or renamed")
+        body = []
+        step_keys = []
+        in_run = False
+        for line in block[block.index(step) + 1 :]:
+            if line.startswith("      - "):
+                break
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if line.startswith("        ") and not line.startswith("         "):
+                in_run = False
+                if ":" in line:
+                    key = stripped.split(":", 1)[0]
+                    step_keys.append(key)
+                    in_run = key == "run"
+                continue
+            if in_run:
+                body.append(stripped)
+        self.assertEqual(
+            body,
+            ["tests/run.sh &", "wait $!"],
+            f"the run body is {body}: the suite is the only command the step may run, backgrounded "
+            "and waited on - an `exit 0` above it leaves the job green without the suite",
+        )
+        self.assertEqual(
+            step_keys,
+            ["run", "env"],
+            f"run step keys {step_keys}: only run and env are allowed - shell, if or "
+            "continue-on-error disarms the step",
+        )
 
     def test_the_hostname_guard_is_not_a_no_op(self):
         for sample in ("bots.example.com", "vps01.example.com", "wake.internal", "h.some-hospital.example.org"):

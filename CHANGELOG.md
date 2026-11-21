@@ -126,9 +126,12 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   which also refuses `if:`, and refuses `if` or `continue-on-error` at a step's own indent, on
   its dash line (`- if: false` above `name:`) or behind a YAML anchor (`- &a if: false`), any of
   which skips or neutralises the run step without touching the job's keys. Those four shapes are
-  refused. Not claimed: a different key that disarms the step outright - a step-level
-  `shell: '/bin/true {0}'` still leaves this pin green (measured) - or a YAML merge key, which
-  would need a structural rewrite. `wake-keys` split the
+  refused. The run step's own keys are pinned to `run` and `env`, so a step-level
+  `shell: '/bin/true {0}'` - which replaces the interpreter and never runs the suite - now fails
+  by name instead of passing, and its body is pinned to `tests/run.sh &` and `wait $!`, so an
+  `exit 0` above the suite (which left every key guard green, measured at 88aa476) fails too.
+  A YAML merge key at the job or the run step fails the same way, as `<<` (measured): the key
+  lists are allowlists. `wake-keys` split the
   resolver's answer on a tab, which is IFS
   *whitespace*: an emptied `WAKE_KEY_DIR=` in a site file collapsed and shifted every later value
   one place left, so the helper took the host store as the key dir and the registry as the store,
