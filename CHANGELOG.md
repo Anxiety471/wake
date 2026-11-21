@@ -90,6 +90,15 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **A branch nobody merged can no longer turn main's secret scan red.** CI checks out with full
+  history, which also fetches every remote branch, and `scripts/scrub-check.sh --history` reads
+  every ref, so text that only an open pull request carried failed the run on main with no commit
+  on main to fix (main was red at the merge of #159 for prose that lived only on #161's branch).
+  The new `--history-head` reads only the commits the checked-out commit reaches, and CI uses it:
+  a pull request's own run still scans its whole branch, and main's run scans main. `--history`
+  stays as the every-branch scan to run before publishing
+  ([#163](https://github.com/Anxiety471/wake/issues/163)).
+
 - **The secret scan masks a GitHub noreply address per match, never the whole line.** The allowlist
   entry added in [#156](https://github.com/Anxiety471/wake/pull/156) skipped every line holding the
   address, so a key on that line went unseen, and a live-looking address on a longer domain that

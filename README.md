@@ -302,7 +302,7 @@ tests/run.sh                      # python3 from PATH
 PYTHON=python3.12 tests/run.sh    # a specific interpreter; the bin/ scripts run under it too
 uv run --with ruff ruff check . && uv run --with ruff ruff format --check .
 shellcheck install.sh tests/run.sh scripts/scrub-check.sh $(grep -lE '^#!/(usr/)?bin/(env )?(ba)?sh' bin/ops/wake-* bin/wake*)
-scripts/scrub-check.sh --history  # fails on IPs other than 127.0.0.1, emails and token-like strings
+scripts/scrub-check.sh --history  # fails on IPs other than 127.0.0.1, emails and token-like strings (every branch; CI uses --history-head)
 
 bun install                       # API and MCP workspace
 bun run typecheck
