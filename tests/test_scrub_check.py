@@ -67,6 +67,17 @@ class NoiseTests(ScrubCheckTestCase):
         )
         self.assert_clean()
 
+    def test_a_github_noreply_coauthor_trailer_is_ignored(self):
+        self.write("tick", "x\n")
+        self.commit("squash merge\n\nCo-authored-by: Hitori Bocchi <anxiety471@users.noreply.github.com>")
+        self.assert_clean()
+
+    def test_a_live_address_after_a_github_noreply_name_still_fails(self):
+        # the noreply domain is public only as a whole address: a longer live domain after it is not
+        self.write("mail.txt", "write to " + "someone" + "@users.noreply.github.com." + "attacker-cloud.cloud\n")
+        self.commit("mail")
+        self.assert_hit("email addresses (tracked files)")
+
     def test_a_documentation_url_is_ignored(self):
         self.write("NOTES.md", "- [Changelog](https://github.com/actions/checkout/blob/main/CHANGELOG.md)\n")
         self.commit("notes")
@@ -127,6 +138,12 @@ class SecretTests(ScrubCheckTestCase):
         self.write("mail.txt", "simulation@example.invalid and " + "someone" + "@" + "gmail" + ".com\n")
         self.commit("mail")
         self.assert_hit("email addresses (tracked files)")
+
+    def test_a_secret_sharing_a_line_with_a_noreply_address_still_fails(self):
+        # the address is masked per match, not skipped as a whole line, so the key beside it is seen
+        self.write("tick", "x\n")
+        self.commit("oops\n\nCo-authored-by: x <a@users.noreply.github.com> sk-" + "c" * 30)
+        self.assert_hit("token-like strings (history)")
 
     def test_url_is_stripped_but_a_secret_next_to_it_still_fails(self):
         self.write(
