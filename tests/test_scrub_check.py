@@ -199,6 +199,17 @@ class ScopeTests(ScrubCheckTestCase):
             f"job keys {keys}: only runs-on and steps are allowed - defaults, if or "
             "continue-on-error would let a scan that never runs report green",
         )
+        # #172: the key list above freezes the name, not the value. `runs-on: self-hosted` kept
+        # every assertion here green with the scan running on whatever that machine has - a
+        # different git or grep, a global git config - so the image is pinned by value too.
+        runner = [line.strip() for line in block if line.startswith("    runs-on:")]
+        self.assertEqual(
+            runner,
+            ["runs-on: ubuntu-24.04"],
+            f"the secret-scan runner is {runner}: the scan's verdict comes from the runner's git "
+            "and grep, so the image is pinned - a floating tag or a self-hosted machine changes "
+            "what the scan reads while this test stays green",
+        )
         # A step is as easy to disarm as the job, and the key also parses off the step's dash line
         # (`- if: false`) or behind a YAML anchor (`- &a if: false`), so all three are refused.
         disarming = [
@@ -248,6 +259,12 @@ class ScopeTests(ScrubCheckTestCase):
             ["name", "run"],
             f"scan step keys {scan['keys']}: only name and run are allowed - shell replaces the "
             "interpreter, if skips the step and continue-on-error reports a failed scan as neutral",
+        )
+        self.assertEqual(
+            scan["values"].get("name"),
+            "Scan tracked files and history",
+            f"the scan step is named {scan['values'].get('name')!r}: the job name and this step's "
+            "name are what a reviewer and the run log read, so a rename is a deliberate edit",
         )
         self.assertEqual(
             scan["values"].get("run"),

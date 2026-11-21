@@ -140,7 +140,10 @@ jobs:
           done
 
   secret-scan:
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest (#172): the scan's verdict comes from the runner's git and grep,
+    # so a floating image - or a self-hosted one - can change what it reads while every check in
+    # the suite stays green. Bumping this is deliberate, with the test's expected value.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
