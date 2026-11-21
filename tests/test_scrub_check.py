@@ -39,9 +39,9 @@ class ScrubCheckTestCase(unittest.TestCase):
         self.git("add", "-A")
         self.git("commit", "-q", "-m", msg)
 
-    def scan(self):
+    def scan(self, flag="--history"):
         r = subprocess.run(
-            ["sh", os.path.join(self.repo, "scripts", "scrub-check.sh"), "--history"],
+            ["sh", os.path.join(self.repo, "scripts", "scrub-check.sh"), flag],
             cwd=self.repo,
             capture_output=True,
             text=True,
@@ -57,6 +57,42 @@ class ScrubCheckTestCase(unittest.TestCase):
         rc, out = self.scan()
         self.assertEqual(rc, 1, out)
         self.assertIn(label, out)
+
+
+class ScopeTests(ScrubCheckTestCase):
+    """#163: CI scans the checked-out commit's history; a full clone also holds every other branch."""
+
+    def plant_on_another_branch(self):
+        main = self.git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        self.git("checkout", "-q", "-b", "unmerged")
+        self.write("mail.txt", "write to " + "someone" + "@" + "gmail" + ".com\\n")
+        self.commit("mail")
+        self.git("checkout", "-q", main)
+        self.git("rm", "-q", "-f", "--ignore-unmatch", "mail.txt")
+
+    def test_history_reads_an_unmerged_branch(self):
+        self.plant_on_another_branch()
+        rc, out = self.scan("--history")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("email addresses (history)", out)
+
+    def test_history_head_ignores_an_unmerged_branch(self):
+        self.plant_on_another_branch()
+        rc, out = self.scan("--history-head")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("clean", out)
+
+    def test_history_head_still_reads_the_checked_out_history(self):
+        self.write("tick", "x\\n")
+        self.commit("oops\\n\\n" + "Bearer " + "abcdefghijklmnopqrstuvwxyz012345")
+        rc, out = self.scan("--history-head")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("token-like strings (history)", out)
+
+    def test_ci_scans_the_checked_out_history_only(self):
+        with open(os.path.join(ROOT, ".github", "workflows", "ci.yml"), encoding="utf-8") as f:
+            runs = [line.strip() for line in f if line.strip().startswith("run: scripts/scrub-check.sh")]
+        self.assertEqual(runs, ["run: scripts/scrub-check.sh --history-head"])
 
 
 class NoiseTests(ScrubCheckTestCase):

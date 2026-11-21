@@ -146,4 +146,4 @@ jobs:
         with:
           fetch-depth: 0
       - name: Scan tracked files and history
-        run: scripts/scrub-check.sh --history
+        run: scripts/scrub-check.sh --history-head

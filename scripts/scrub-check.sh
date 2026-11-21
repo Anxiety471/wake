@@ -5,6 +5,10 @@
 # lockfiles, so a documentation link or a sha512 integrity hash does not fail the build.
 #   scripts/scrub-check.sh             # tracked files
 #   scripts/scrub-check.sh --history   # also every commit message and patch on every branch
+#   scripts/scrub-check.sh --history-head   # also the commits the checked-out commit can reach (CI)
+# CI uses --history-head: a clone with full history holds every remote branch, so --history there would
+# fail main for text that only an unmerged branch carries (#163). Each pull request's own run covers its
+# branch, because the checked-out commit contains it. Run --history before publishing.
 # Each fixed string listed in scripts/scrub-allow.txt is blanked out of a hit line (known fakes only),
 # and the rest of that line is still scanned: a real secret sharing a line with a fake is still caught.
 # A dotted-quad entry is blanked only as a whole address: a routable address that
@@ -18,10 +22,12 @@ set -eu
 cd "$(git rev-parse --show-toplevel)"
 
 history=0
+revs=--all
 case "${1:-}" in
     --history) history=1 ;;
+    --history-head) history=1; revs=HEAD ;;
     "") ;;
-    *) echo "usage: $0 [--history]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--history|--history-head]" >&2; exit 2 ;;
 esac
 
 IP='\b([0-9]{1,3}\.){3}[0-9]{1,3}\b'
@@ -105,12 +111,12 @@ mask_allow() {   # allowlisted fixed strings are known fakes: blank each one, ke
 
 
 history_text() {   # every commit message and patch, without hashes or author lines
-    git log -p --all --format='%s%n%b' | strip_hashes
+    git log -p "$revs" --format='%s%n%b' | strip_hashes
 }
 
 
 history_text_nomerges() {   # same, but not merge commits: their subject quotes two 40-hex commit ids
-    git log -p --all --no-merges --format='%s%n%b' | strip_hashes
+    git log -p "$revs" --no-merges --format='%s%n%b' | strip_hashes
 }
 
 report() {   # report <label>: stdin = hit lines that survived masking; runs inside pipelines
