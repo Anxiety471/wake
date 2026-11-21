@@ -153,5 +153,88 @@ class SecretTests(ScrubCheckTestCase):
         self.assert_hit("token-like strings (tracked files)")
 
 
+class AllowlistTests(ScrubCheckTestCase):
+    """The allowlist blanks its own fixed strings, not the whole line (#160)."""
+
+    LIVE_MAIL = "someone" + "@" + "acme-mail" + ".net"
+    LIVE_IP = "10.20." + "30.40"
+
+    def test_a_live_address_beside_a_noreply_trailer_fails(self):
+        self.write("mail.txt", "Co-authored-by: A <a@users.noreply.github.com> " + self.LIVE_MAIL + "\n")
+        self.commit("mail")
+        self.assert_hit("email addresses (tracked files)")
+
+    def test_a_live_ip_beside_the_owner_name_fails(self):
+        self.write("hosts.txt", "@Anxiety471 " + self.LIVE_IP + "\n")
+        self.commit("hosts")
+        self.assert_hit("IP addresses other than 127.0.0.1 (tracked files)")
+
+    def test_a_key_beside_the_owner_name_fails(self):
+        self.write("key.txt", "@Anxiety471 " + "AKIA" + "IOSFODNN7EXAMPLE" + "\n")
+        self.commit("key")
+        self.assert_hit("token-like strings (tracked files)")
+
+    def test_a_live_secret_in_a_commit_body_beside_a_trailer_fails(self):
+        self.write("tick", "x\n")
+        self.commit(
+            "plant\n\nSigned-off-by: dependabot[bot] <support@github.com> " + self.LIVE_MAIL + " " + self.LIVE_IP
+        )
+        self.assert_hit("email addresses (history)")
+
+    def test_a_private_pattern_hit_beside_a_fake_still_fails(self):
+        # .git/scrub-patterns.txt never lands in the repo, so this stage has no other test
+        with open(os.path.join(self.repo, ".git", "scrub-patterns.txt"), "w") as f:
+            f.write("SECRET-[0-9]{4}\n")
+        self.write("cfg.txt", "@Anxiety471 SECRET-1234\n")
+        self.commit("cfg")
+        self.assert_hit("private patterns from .git/scrub-patterns.txt (tracked files)")
+
+    ROUTABLE = "10." + "0.0.0"  # a routable quad, assembled so this file does not carry one
+    ROUTES = ROUTABLE + "/8 via " + ROUTABLE + ", " + "20." + "0.0.0 and " + "100." + "0.0.0"
+
+    def test_a_routable_address_around_the_wildcard_fake_still_fails(self):
+        # 0.0.0.0 is blanked as a whole address only: a routable address that contains it is still seen
+        self.write("routes.txt", self.ROUTES + "\n")
+        self.commit("routes")
+        rc, out = self.scan()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("IP addresses other than 127.0.0.1 (tracked files)", out)
+        # every quad survives masking: nothing here was blanked along with the wildcard
+        self.assertIn(self.ROUTES, out)
+
+    def test_a_line_of_known_fakes_is_still_ignored(self):
+        # masking must not turn the fakes themselves into hits
+        self.write(
+            "fake.txt",
+            "Bearer minted-bot-engineer-0002\n"
+            "expect(parseHost('0.0.0.0')).toBe('0.0.0.0');\n"
+            "desk-secret-desk-secret-desk-secret\n"
+            "Copyright (c) 2026 Joshua M. Valderrama\n"
+            "Co-authored-by: A <anxiety471@users.noreply.github.com>\n",
+        )
+        self.commit("fake")
+        self.assert_clean()
+
+    def test_a_line_of_known_fakes_in_a_commit_body_is_still_ignored(self):
+        # the same masking runs on history: a commit body holding only fakes is clean there too
+        self.write("tick", "x\n")
+        self.commit(
+            "fake body\n\n"
+            "Signed-off-by: dependabot[bot] <support@github.com>\n"
+            "Bearer minted-bot-engineer-0002\n"
+            "expect(parseHost('0.0.0.0')).toBe('0.0.0.0');\n"
+            "Copyright (c) 2026 Joshua M. Valderrama\n"
+        )
+        self.assert_clean()
+
+    def test_a_private_pattern_matching_a_known_fake_is_still_ignored(self):
+        # the private stage masks the fakes too: a pattern that only hits a known fake reports nothing
+        with open(os.path.join(self.repo, ".git", "scrub-patterns.txt"), "w") as f:
+            f.write("desk-secret\n")
+        self.write("cfg.txt", "desk-secret-desk-secret-desk-secret\n")
+        self.commit("cfg")
+        self.assert_clean()
+
+
 if __name__ == "__main__":
     unittest.main()
