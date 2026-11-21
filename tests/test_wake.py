@@ -1465,15 +1465,16 @@ class InboxIoUnreachableStoreTests(WakeTestCase):
         self.assertEqual(len(notices), 1, "the obstruction was not recorded, so every poll would print")
 
     def test_the_vanished_marker_message_says_what_the_next_poll_does(self):
-        """`held_by(None)` promised the next poll would "name what is there".
+        """`held_by(None)` has to name the line the next poll actually prints.
 
-        With the path free the next poll creates the marker and prints the outage line; it names
-        no occupant, because there is none. The sentence is what an operator reads at 2 a.m.
-        (#152 nit).
+        With the path free the next poll creates the marker and prints the outage line; it never
+        repeats this notice, which reports once per obstruction. The sentence is what an operator
+        reads at 2 a.m. (#152 nit).
         """
         line = load_inbox_io(self.state).held_by(None)
         self.assertIn("next poll", line)
-        self.assertIn("again", line, "the message does not say the line comes back")
+        self.assertIn("outage line", line, "the message does not name the line the next poll prints")
+        self.assertNotIn("again", line, "this notice is not printed twice: the next poll reports the outage")
 
     @unittest.skipIf(IS_ROOT, "root ignores the mode that makes the store unreachable")
     def test_a_regular_file_another_account_owns_does_not_silence_the_line(self):

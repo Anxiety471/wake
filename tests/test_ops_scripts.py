@@ -301,8 +301,24 @@ class OpsFilesTestCase(unittest.TestCase):
         self.assertEqual(
             keys,
             ["name", "runs-on", "steps"],
-            "a job key that can disarm this check was added (continue-on-error, if, ...): the suite "
-            "would fail and the job would still report green",
+            f"job keys {keys}: only name, runs-on and steps are allowed - continue-on-error or if "
+            "would let a failed suite report green",
+        )
+        # A step is as easy to disarm as the job, and neither key touches the job's list: a
+        # step-level continue-on-error makes GitHub report the failed step as neutral, and a false
+        # `if` skips the step, so the suite never runs while this test stays green (measured by
+        # mutation at c106c8c, #152 review).
+        disarming = [
+            line.strip()
+            for line in block
+            if not line.strip().startswith("#")
+            and re.match(r"""^\s+["']?(if|continue-on-error)["']?\s*:""", line, re.IGNORECASE)
+        ]
+        self.assertEqual(
+            disarming,
+            [],
+            f"a step key that can disarm this check was added: {disarming} - the suite would fail "
+            "or be skipped and the job would still report green",
         )
 
     def test_the_hostname_guard_is_not_a_no_op(self):
