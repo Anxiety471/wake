@@ -103,6 +103,30 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   half a file back - the state `#146`'s F3 refusal exists to prevent. Every other step keeps the
   echo, because a failed `systemctl` has to say why it failed
   ([#151](https://github.com/Anxiety471/wake/issues/151)).
+- **The CI job that runs the suite backgrounded refuses the one-line disarm keys, and
+  `wake-keys` reads every field the resolver answers.** Four leftovers from the #149/#150 reviews.
+  Adding
+  `continue-on-error: true` to the `backgrounded` job made GitHub report a failed suite as neutral
+  and left `tests.test_ops_scripts` green - the blindness `#142` was filed about, one YAML line
+  away - so the test now pins the job's top-level keys to exactly `name`, `runs-on` and `steps`,
+  which also refuses `if:`, and refuses `if` or `continue-on-error` at a step's own indent, on
+  its dash line (`- if: false` above `name:`) or behind a YAML anchor (`- &a if: false`), any of
+  which skips or neutralises the run step without touching the job's keys. Those four shapes are
+  refused. Not claimed: a different key that disarms the step outright - a step-level
+  `shell: '/bin/true {0}'` still leaves this pin green (measured) - or a YAML merge key, which
+  would need a structural rewrite. `wake-keys` split the
+  resolver's answer on a tab, which is IFS
+  *whitespace*: an emptied `WAKE_KEY_DIR=` in a site file collapsed and shifted every later value
+  one place left, so the helper took the host store as the key dir and the registry as the store,
+  then said "no registry" while the file named a readable one. It reads one value per line now,
+  and an empty `WAKE_REGISTRY` is refused instead of being silently replaced by `$CFG/bots.tsv` -
+  a different file than the one `bin/wake` would read. `WAKE_HOSTOPS` also comes from the resolver
+  now: it was environment-only while `wake_config.load()` reads it from the site and user files, so
+  a machine whose bridge is named in its config printed `none (no key in the host store)` for every
+  bot and never called the host. The unjoinable-marker sentence for a path that vanished mid-check
+  promised the next poll would name what is there; with the path free it creates the marker and
+  prints the outage line instead, and the sentence says so now
+  ([#152](https://github.com/Anxiety471/wake/issues/152)).
 - **CI runs the suite as a background job, and the `wake-wait` interrupt test stops racing its
   baseline.** Deleting `tests/test_ops_scripts.py`'s `preexec_fn` left the suite green, because CI
   ran it in the foreground, where the test's result does not depend on the shell's `SIGINT`

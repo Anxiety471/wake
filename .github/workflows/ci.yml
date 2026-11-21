@@ -37,6 +37,11 @@ jobs:
   # the inherited SIG_IGN, and bash cannot trap a signal that was ignored on entry. This job
   # runs the suite in exactly that shape, so deleting the test's preexec_fn now fails a check.
   backgrounded:
+    # No key but these three, and no `if` or `continue-on-error` on a step either - at the step's
+    # indent, on its dash line (`- if: false`) or behind a YAML anchor (`- &a if: false`): any one
+    # of them turns this check back into the blindness #142 was filed about - a failed suite
+    # reported as neutral, or the run step skipped outright. tests/test_ops_scripts.py pins all
+    # three shapes (#152).
     name: test (backgrounded shell, Python 3.13)
     runs-on: ubuntu-24.04
     steps:

@@ -287,6 +287,47 @@ class OpsFilesTestCase(unittest.TestCase):
         self.assertIn("tests/run.sh &", commands, "the job no longer starts the suite as a background job")
         self.assertIn("wait $!", commands, "a bare wait reports zero for a failed suite; wait on the pid")
         self.assertNotIn("wait", commands, "a bare wait reports zero for a failed suite; wait on the pid")
+        # The job has to be able to fail. continue-on-error makes GitHub report a failed suite as
+        # neutral and `if` skips the job outright, so a one-line edit could re-create the
+        # blindness #142 was filed about while this test stayed green (#152).
+        keys = [
+            line.strip().split(":", 1)[0]
+            for line in block
+            if line.startswith("    ")
+            and not line.startswith("     ")
+            and ":" in line
+            and not line.strip().startswith("#")
+        ]
+        self.assertEqual(
+            keys,
+            ["name", "runs-on", "steps"],
+            f"job keys {keys}: only name, runs-on and steps are allowed - continue-on-error or if "
+            "would let a failed suite report green",
+        )
+        # A step is as easy to disarm as the job, and neither key touches the job's list: a
+        # step-level continue-on-error makes GitHub report the failed step as neutral, and a false
+        # `if` skips the step, so the suite never runs while this test stays green (measured by
+        # mutation at c106c8c, #152 review). The key also parses off the step's dash line
+        # (`- if: false` above name:, measured by mutation at 814de56) and behind a YAML anchor
+        # (`- &a if: false`, measured at 7c4cecd), so the optional dash and the anchor in front
+        # of the key are part of the shape: the step indent, the dash line and the anchored key
+        # are all refused.
+        disarming = [
+            line.strip()
+            for line in block
+            if not line.strip().startswith("#")
+            and re.match(
+                r"""^\s*(?:-\s+)?(?:&\S+\s+)?["']?(if|continue-on-error)["']?\s*:""",
+                line,
+                re.IGNORECASE,
+            )
+        ]
+        self.assertEqual(
+            disarming,
+            [],
+            f"a step key that can disarm this check was added: {disarming} - the suite would fail "
+            "or be skipped and the job would still report green",
+        )
 
     def test_the_hostname_guard_is_not_a_no_op(self):
         for sample in ("bots.example.com", "vps01.example.com", "wake.internal", "h.some-hospital.example.org"):
@@ -569,6 +610,79 @@ class OpsBehaviourTestCase(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("ok    alpha", r.stdout)
         self.assertEqual(os.listdir(keys), ["bot-alpha-0001.key"], "the key dir came from nowhere")
+
+    def test_wake_keys_reads_an_emptied_field_in_place(self):
+        """A tab is IFS whitespace, so `IFS=$'\t' read` collapsed an empty field.
+
+        A site file naming `WAKE_KEY_DIR=` made the host store the key dir and the registry the
+        store, and the helper then said "no registry" while the file named a readable one (#152).
+        """
+        home = tempfile.mkdtemp(prefix="shift-")
+        cfg = os.path.join(home, "cfg")
+        store = os.path.join(home, "host-keys")
+        for d in (cfg, store):
+            os.makedirs(d)
+        with open(os.path.join(store, "bot-alpha-0001.key"), "w", encoding="utf-8") as f:
+            f.write("k" * 40)
+        reg = os.path.join(home, "registry.tsv")
+        with open(reg, "w", encoding="utf-8") as f:
+            f.write("alpha\tbot-alpha-0001\tAlpha\topen\tplan\n")
+        site = os.path.join(home, "config.env")
+        with open(site, "w", encoding="utf-8") as f:
+            # The empty field is first, so every later value shifts one place left without the fix.
+            f.write(f"WAKE_STATE_DIR={store}\nWAKE_KEY_DIR=\nWAKE_REGISTRY={reg}\n")
+        r = run("wake-keys", env={"HOME": home, "WAKE_CONFIG_DIR": cfg, "WAKE_SYSTEM_CONFIG": site})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok    alpha", r.stdout, "an emptied field moved the registry out from under the helper")
+        self.assertEqual(os.listdir(cfg), ["bot-alpha-0001.key"], "the key was saved somewhere else")
+
+    def test_wake_keys_uses_wake_hostops_from_the_config_files(self):
+        """WAKE_HOSTOPS was environment-only while wake_config.load() reads it from the files.
+
+        With it only in the site file the bridge was never called and every bot printed
+        "none (no key in the host store)" - a false "no key", the one answer the help text says
+        cannot happen (#152).
+        """
+        home = tempfile.mkdtemp(prefix="hostops-")
+        cfg = os.path.join(home, "cfg")
+        os.makedirs(cfg)
+        reg = os.path.join(cfg, "bots.tsv")
+        with open(reg, "w", encoding="utf-8") as f:
+            f.write("alpha\tbot-alpha-0001\tAlpha\topen\tplan\n")
+        bridge = os.path.join(home, "bridge")
+        with open(bridge, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$BRIDGE_LOG\"\nprintf 'test-key\\n'\n")
+        os.chmod(bridge, 0o755)
+        log = os.path.join(home, "bridge.log")
+        site = os.path.join(home, "config.env")
+        with open(site, "w", encoding="utf-8") as f:
+            f.write(f"WAKE_KEY_DIR={os.path.join(home, 'keys')}\nWAKE_HOSTOPS={bridge}\n")
+        # WAKE_CONFIG_DIR is read from the environment by config_dir(); the bridge comes from the file.
+        r = run("wake-keys", env={"HOME": home, "WAKE_CONFIG_DIR": cfg, "WAKE_SYSTEM_CONFIG": site, "BRIDGE_LOG": log})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok    alpha", r.stdout, "the bridge named in the config file was never called")
+        self.assertNotIn("none ", r.stdout, "a key on the host was reported as absent")
+        with open(log, encoding="utf-8") as f:
+            self.assertIn("sudo cat /var/lib/wake/bot-alpha-0001.key", f.read())
+
+    def test_wake_keys_refuses_a_registry_the_config_emptied(self):
+        """An empty WAKE_REGISTRY was silently replaced by $CFG/bots.tsv.
+
+        That is the helper disagreeing with bin/wake about which file is the registry, and the
+        message named a path the config had not asked for (#152 nit).
+        """
+        home = tempfile.mkdtemp(prefix="emptyreg-")
+        cfg = os.path.join(home, "cfg")
+        os.makedirs(cfg)
+        with open(os.path.join(cfg, "bots.tsv"), "w", encoding="utf-8") as f:
+            f.write("alpha\tbot-alpha-0001\tAlpha\topen\tplan\n")
+        site = os.path.join(home, "config.env")
+        with open(site, "w", encoding="utf-8") as f:
+            f.write("WAKE_REGISTRY=\n")
+        r = run("wake-keys", env={"HOME": home, "WAKE_CONFIG_DIR": cfg, "WAKE_SYSTEM_CONFIG": site})
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("WAKE_REGISTRY names an empty value", r.stderr, "an emptied registry was replaced silently")
+        self.assertNotIn("alpha", r.stdout + r.stderr, "a registry the config did not name was read")
 
     def test_wake_keys_does_not_resolve_for_help(self):
         """The helper imported wake_config.py to print its usage text (#135 review).
