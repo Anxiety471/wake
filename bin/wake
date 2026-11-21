@@ -270,13 +270,19 @@ def threads_all():
     JSON object per line, so a line that starts with the marker is never a record, and each
     cat reads whatever is there, so an append during the read tears nothing.
 
+    A file this user cannot read prints a failure marker instead of vanishing: the read then
+    returns None and the caller falls back to one thread per call, which reports the store as
+    unreadable the way it always did. A short inbox must never hide a reply someone waits on.
+
     None when the store cannot be read at all: the caller reports that instead of an empty
     inbox, and reads one thread per call for a host whose gate predates this shape.
     """
     mark = "@@wake-file "  # a record is one JSON object per line, so this cannot begin one
+    failed = "@@wake-fail "  # ditto: the loop prints it only when it could not read a file
     cmd = (
         "for f in " + q(THREADS) + '/*.jsonl; do [ -f "$f" ] || continue; '
-        "printf '\\n" + mark + '%s\\n\' "${f##*/}"; cat "$f"; done 2>/dev/null'
+        "printf '\\n" + mark + '%s\\n\' "${f##*/}"; '
+        'cat "$f" || printf \'\\n' + failed + '%s\\n\' "${f##*/}"; done 2>/dev/null'
     )
     try:
         r = _host_run(cmd)
@@ -287,6 +293,8 @@ def threads_all():
     threads = []
     recs = None
     for line in (r.stdout or "").splitlines():
+        if line.startswith(failed):
+            return None  # one file could not be read: fail loud, never answer with a short inbox
         if line.startswith(mark):
             name = line[len(mark) :].strip()
             tid = name[: -len(".jsonl")] if name.endswith(".jsonl") else ""

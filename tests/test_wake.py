@@ -705,6 +705,32 @@ class InboxStoreReadTests(WakeTestCase):
         self.assertEqual(len(r.stdout.splitlines()), 1, r.stdout)
         self.assertIn("0101-beef  to engineer  no reply yet", r.stdout)
 
+    def test_an_unreadable_thread_file_fails_loud_instead_of_a_short_inbox(self):
+        """A file this user cannot read must never read as an empty thread: main exited 1 with
+        "cannot read the thread store", and a reply in the hidden file was reported. The one
+        call now prints a failure marker for the file it could not read, and the CLI falls back
+        to the per-thread read, which is what reports it. Both positions matter: the loop's own
+        exit status is the last `cat`'s, so at the end of the glob the old code was loud by
+        accident and in the middle it was silent - filename order must not decide."""
+        if IS_ROOT:
+            self.skipTest("root reads a 000 file, so the case cannot be built")
+        self.seed("bot:coordinator", 3)
+        bridge, log = self.bridge("hostops-unreadable")
+        env = {"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge}
+        for case, name in (("middle", "0101-0001.jsonl"), ("last", "0101-0002.jsonl")):
+            hidden = os.path.join(self.state, "threads", name)
+            os.chmod(hidden, 0)  # tearDown chmods every file back before rmtree
+            try:
+                open(log, "w").close()
+                r = self.wake("--inbox", env=env)
+            finally:
+                os.chmod(hidden, 0o644)
+            with self.subTest(case=case):
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertEqual(r.stdout.strip(), "", "a short inbox hid the thread it could not read")
+                self.assertIn("cannot read the thread store", r.stderr)
+                self.assertIn("@@wake-fail", self.commands(log)[0])
+
 
 class ReplyGuardTests(WakeTestCase):
     def ask(self, source, bot="engineer", text="why does CI fail", env=None):

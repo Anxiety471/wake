@@ -205,7 +205,10 @@ wake --thread 1114-a3f2 # the full exchange
 call, and one call per thread made a 128-thread store take 51 s and grow with every thread ever
 opened ([#165](https://github.com/Anxiety471/wake/issues/165)). `--thread` reads the one file it
 names, unchanged. A host whose gate has not been taught the store-wide read refuses that one
-call, and `--inbox` then falls back to one call per thread — slow, never wrong.
+call, and `--inbox` then falls back to one call per thread — slow, never wrong. The 1.1 s
+figure is the ungated path: on a gated host the speedup arrives when the gate learns the
+store-wide read, which is a host change. A thread file this user cannot read is reported
+(`cannot read the thread store`, exit 1), never left out of a short inbox.
 
 ### `--setup`: create a webhook key
 

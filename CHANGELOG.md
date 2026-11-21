@@ -108,8 +108,12 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   tears nothing. `thread_read()` still serves `--thread` and `--reply`, an empty store is still
   `no threads opened by <source>` in one call, an unreadable store still exits 1 naming it, and
   a host whose gate predates the new shape refuses the one call and gets the old per-thread
-  read, so one client works against either gate
-  ([#165](https://github.com/Anxiety471/wake/issues/165)).
+  read, so one client works against either gate. A single *unreadable file* is named by a
+  second marker (`@@wake-fail`) instead of disappearing: the loop prints it after a `cat` it
+  could not do, the CLI turns it into the same exit 1, and the per-thread fallback reports it,
+  because a short inbox must never hide the reply someone is waiting on. The 1.1 s number is
+  the ungated path: a gated host keeps the old speed until its gate is taught the store-wide
+  read, and the gate is a host change ([#165](https://github.com/Anxiety471/wake/issues/165)).
 
 - **The secret scan masks a GitHub noreply address per match, never the whole line.** The allowlist
   entry added in [#156](https://github.com/Anxiety471/wake/pull/156) skipped every line holding the
