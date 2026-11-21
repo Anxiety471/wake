@@ -27,6 +27,9 @@ CI tests Python 3.9 to 3.13 on Ubuntu and pins ruff in `.github/workflows/ci.yml
 - Every value that goes into a shell command (on the host or through `WAKE_HOSTOPS`) must be validated or passed through `shlex.quote`.
 - Tests are offline. Use the fake webhook server and temporary directories in `tests/test_wake.py`; never touch the real `~/.config/wake`, `/tmp` rate log or a real host.
 - Add or update a test for every behaviour change.
+- A change to a command wake sends is a gate change: update `PINNED` in
+  `tests/test_gate_pins.py` in the same commit, and stage the gate route before the client
+  ships (gate first, client second, [#89](https://github.com/Anxiety471/wake/issues/89)).
 - Never commit real keys, hostnames, IP addresses, email addresses or bot ids. Use the names in `bots.example.tsv`. If a fake value trips `scripts/scrub-check.sh`, add the exact string to `scripts/scrub-allow.txt`.
   A test address on an RFC 2606/6761 reserved name (`example.com`, `example.net`, `example.org` and
   their subdomains, `*.invalid`, `*.test`, `*.example`, `*.localhost`) needs no entry: the email

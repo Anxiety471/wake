@@ -11,6 +11,10 @@ there is restaged under a running check).
 Without a staged gate the allow-list check is skipped (CI has no gate), but the
 shape invariants below still run: the append never changes a mode and every read
 silences stderr, which is what the gate's read routes match on.
+
+The half CI can check is `tests/test_gate_pins.py`: every command wake builds is
+pinned there, so a shape that changes fails the suite even with no gate staged, and
+the diff that updates the pin is the review signal for a new gate route (#167).
 """
 
 import json
