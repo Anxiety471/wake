@@ -154,7 +154,7 @@ class SecretTests(ScrubCheckTestCase):
 
 
 class AllowlistTests(ScrubCheckTestCase):
-    """The allowlist blanks its own fixed strings, not the whole line (#158)."""
+    """The allowlist blanks its own fixed strings, not the whole line (#160)."""
 
     LIVE_MAIL = "someone" + "@" + "acme-mail" + ".net"
     LIVE_IP = "10.20." + "30.40"
@@ -188,6 +188,19 @@ class AllowlistTests(ScrubCheckTestCase):
         self.write("cfg.txt", "@Anxiety471 SECRET-1234\n")
         self.commit("cfg")
         self.assert_hit("private patterns from .git/scrub-patterns.txt (tracked files)")
+
+    ROUTABLE = "10." + "0.0.0"  # a routable quad, assembled so this file does not carry one
+    ROUTES = ROUTABLE + "/8 via " + ROUTABLE + ", " + "20." + "0.0.0 and " + "100." + "0.0.0"
+
+    def test_a_routable_address_around_the_wildcard_fake_still_fails(self):
+        # 0.0.0.0 is blanked as a whole address only: a routable address that contains it is still seen
+        self.write("routes.txt", self.ROUTES + "\n")
+        self.commit("routes")
+        rc, out = self.scan()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("IP addresses other than 127.0.0.1 (tracked files)", out)
+        # every quad survives masking: nothing here was blanked along with the wildcard
+        self.assertIn(self.ROUTES, out)
 
     def test_a_line_of_known_fakes_is_still_ignored(self):
         # masking must not turn the fakes themselves into hits

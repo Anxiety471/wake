@@ -96,13 +96,14 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   merely starts with the noreply domain was skipped with it. The address is now masked in the email
   stage like a reserved test name, anchored at the end of the domain, and the allowlist entry is gone.
 - **Every other allowlisted fake blanks only its own string, so a secret beside it is still
-  caught.** `report()` dropped the whole hit line with `grep -vF -f` (`scripts/scrub-check.sh:68`),
+  caught.** `report()` dropped the whole hit line with `grep -vF -f`,
   so one known fake - `@Anxiety471`, the fake desk key, the fake bearer - hid every other secret
   sharing that line: an `AKIA` key or a routable address planted beside the owner's handle came out
   `scrub-check: clean`, in tracked files and in history. Each fixed string is now blanked out of the
   line (`mask_allow()`) and every stage rescans what is left, private patterns included. The
-  `0.0.0.0` of the bind-all assertion joins the allowlist because that line carries two of them
-  ([#160](https://github.com/Anxiety471/wake/issues/160)).
+  `0.0.0.0` of the bind-all assertion joins the allowlist because that line carries two of them,
+  and it is blanked only as a whole address: a routable address that merely contains it is still
+  reported ([#160](https://github.com/Anxiety471/wake/issues/160)).
 - **A failed read of `api.env` names its exit status, never the file's text.** The command that
   names the file's state printed the file, and it went through `_run`'s generic failure message,
   which repeats the last 800 characters of output: a transport that died after `cat` had emitted

@@ -7,6 +7,8 @@
 #   scripts/scrub-check.sh --history   # also every commit message and patch on every branch
 # Each fixed string listed in scripts/scrub-allow.txt is blanked out of a hit line (known fakes only),
 # and the rest of that line is still scanned: a real secret sharing a line with a fake is still caught.
+# A dotted-quad entry is blanked only as a whole address: a routable address that
+# merely contains it is still reported.
 # An address on an RFC 2606/6761 reserved test name (example.com, *.invalid, *.test, *.example,
 # *.localhost) cannot resolve or receive mail, so it is a fake and is not reported either.
 # A GitHub noreply address is public by design and is masked the same way, wherever it appears.
@@ -66,12 +68,18 @@ mask_noreply() {   # a GitHub noreply address is public: mask it, and scan what 
 
 mask_allow() {   # allowlisted fixed strings are known fakes: blank each one, keep the rest of the line
     awk -v allow="$allow_file" -v mask=' [allowlisted] ' '
+        function quad(e) { return e ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ }
+        function bounded(kept, line, at, len, left) {   # a dotted quad counts whole, never inside a longer address
+            left = at > 1 ? substr(line, at - 1, 1) : substr(kept, length(kept), 1)
+            return left !~ /[0-9.]/ && substr(line, at + len, 1) !~ /[0-9.]/
+        }
         BEGIN {
             while ((getline entry < allow) > 0) {
                 sub(/\r$/, "", entry)
                 if (entry == "") continue
                 n++
                 fake[n] = entry
+                tight[n] = quad(entry)
             }
             close(allow)
         }
@@ -80,6 +88,11 @@ mask_allow() {   # allowlisted fixed strings are known fakes: blank each one, ke
             for (i = 1; i <= n; i++) {
                 kept = ""
                 while ((at = index(line, fake[i])) > 0) {
+                    if (tight[i] && !bounded(kept, line, at, length(fake[i]))) {
+                        kept = kept substr(line, 1, at + length(fake[i]) - 1)
+                        line = substr(line, at + length(fake[i]))
+                        continue
+                    }
                     kept = kept substr(line, 1, at - 1) mask
                     line = substr(line, at + length(fake[i]))
                 }
