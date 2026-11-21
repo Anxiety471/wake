@@ -118,6 +118,9 @@ jobs:
           bun scripts/e2e-threads.ts
 
   lint:
+    # Pinned, not ubuntu-latest (#174): lint's verdict comes from the runner's own shellcheck
+    # and python, so a floating image - or a self-hosted one - changes what it reads while
+    # every check in the suite stays green. Bumping this is deliberate, with the test's value.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

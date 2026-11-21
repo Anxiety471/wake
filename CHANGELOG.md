@@ -103,6 +103,16 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **The `lint` job's runner is pinned by value, not just present in a key list.** #172 pinned the
+  `secret-scan` image and left `lint` on `ubuntu-latest`: `tests/test_ops_scripts.py` pins that
+  job's keys, which names `runs-on` without reading what it holds, and `lint`'s verdict comes from
+  the runner's own `shellcheck` and `python`, so the machine is part of the check. Measured on a
+  fresh copy of `test_scrub_check` + `test_ops_scripts` at `24ca37d`: `runs-on: self-hosted` on
+  `lint` kept all 101 tests green. `runs-on` is `ubuntu-24.04` now, the image every other job pins,
+  and `test_ci_lint_job_runs_on_a_pinned_image` reads the value and refuses anything else, so a
+  floating tag or a self-hosted machine fails CI instead of quietly changing what lint reads
+  ([#174](https://github.com/Anxiety471/wake/issues/174)).
+
 - **The secret scan's runner and the workflow's triggers are pinned, not just named.** #169 pinned
   the `secret-scan` job's keys and left two values open, both measured by mutation at `97b9436`:
   `runs-on: self-hosted` kept the whole suite green with the scan running on a machine whose `git`,
