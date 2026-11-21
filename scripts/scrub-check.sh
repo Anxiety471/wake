@@ -5,10 +5,11 @@
 # lockfiles, so a documentation link or a sha512 integrity hash does not fail the build.
 #   scripts/scrub-check.sh             # tracked files
 #   scripts/scrub-check.sh --history   # also every commit message and patch on every branch
-# A hit line that contains any fixed string listed in scripts/scrub-allow.txt is skipped (known fakes only).
+# Each fixed string listed in scripts/scrub-allow.txt is blanked out of a hit line (known fakes only),
+# and the rest of that line is still scanned: a real secret sharing a line with a fake is still caught.
 # An address on an RFC 2606/6761 reserved test name (example.com, *.invalid, *.test, *.example,
 # *.localhost) cannot resolve or receive mail, so it is a fake and is not reported either.
-# A GitHub noreply address in a co-author trailer is public by design and is masked the same way.
+# A GitHub noreply address is public by design and is masked the same way, wherever it appears.
 # If .git/scrub-patterns.txt exists (a private list of extended regexes, one per line, never committed),
 # tracked files and, with --history, every commit are also checked against it, case-insensitively.
 set -eu
@@ -63,6 +64,32 @@ mask_noreply() {   # a GitHub noreply address is public: mask it, and scan what 
     sed -E "s/$NOREPLY/ [noreply] /g" || true
 }
 
+mask_allow() {   # allowlisted fixed strings are known fakes: blank each one, keep the rest of the line
+    awk -v allow="$allow_file" -v mask=' [allowlisted] ' '
+        BEGIN {
+            while ((getline entry < allow) > 0) {
+                sub(/\r$/, "", entry)
+                if (entry == "") continue
+                n++
+                fake[n] = entry
+            }
+            close(allow)
+        }
+        {
+            line = $0
+            for (i = 1; i <= n; i++) {
+                kept = ""
+                while ((at = index(line, fake[i])) > 0) {
+                    kept = kept substr(line, 1, at - 1) mask
+                    line = substr(line, at + length(fake[i]))
+                }
+                line = kept line
+            }
+            print line
+        }
+    '
+}
+
 
 history_text() {   # every commit message and patch, without hashes or author lines
     git log -p --all --format='%s%n%b' | strip_hashes
@@ -73,28 +100,28 @@ history_text_nomerges() {   # same, but not merge commits: their subject quotes 
     git log -p --all --no-merges --format='%s%n%b' | strip_hashes
 }
 
-report() {   # report <label>: stdin = hit lines; runs inside pipelines, so results go to a file
-    hits=$(grep -vF -f "$allow_file" || true)
+report() {   # report <label>: stdin = hit lines that survived masking; runs inside pipelines
+    hits=$(cat || true)
     if [ -n "$hits" ]; then
         printf '%s\n%s\n\n' "== $1" "$hits" >> "$hits_file"
     fi
 }
 
-files -E "$IP" | sed 's/127\.0\.0\.1//g' | grep -E "$IP" | report "IP addresses other than 127.0.0.1 (tracked files)"
-files -E "$EMAIL" | mask_test_addresses | mask_noreply | grep -E "$EMAIL" | report "email addresses (tracked files)"
-files -E "$STRONG" | report "token-like strings (tracked files)"
-files_noblob -E "$BLOB" | sed -E 's#https?://[^ )>"]+#URL#g' | grep -E "$BLOB" | report "long blobs outside URLs (tracked files)"
+files -E "$IP" | mask_allow | sed 's/127\.0\.0\.1//g' | grep -E "$IP" | report "IP addresses other than 127.0.0.1 (tracked files)"
+files -E "$EMAIL" | mask_allow | mask_test_addresses | mask_noreply | grep -E "$EMAIL" | report "email addresses (tracked files)"
+files -E "$STRONG" | mask_allow | grep -E "$STRONG" | report "token-like strings (tracked files)"
+files_noblob -E "$BLOB" | mask_allow | sed -E 's#https?://[^ )>\"]+#URL#g' | grep -E "$BLOB" | report "long blobs outside URLs (tracked files)"
 if [ "$history" = 1 ]; then
-    history_text | grep -nE "$IP" | sed 's/127\.0\.0\.1//g' | grep -E "$IP" | report "IP addresses other than 127.0.0.1 (history)"
-    history_text | grep -nE "$EMAIL" | mask_test_addresses | mask_noreply | grep -E "$EMAIL" | report "email addresses (history)"
-    history_text | grep -nE "$STRONG" | report "token-like strings (history)"
-    history_text_nomerges | grep -vE 'https?://[^ )>"]+' | grep -nE "$BLOB" | report "long blobs outside URLs (history)"
+    history_text | grep -nE "$IP" | mask_allow | sed 's/127\.0\.0\.1//g' | grep -E "$IP" | report "IP addresses other than 127.0.0.1 (history)"
+    history_text | grep -nE "$EMAIL" | mask_allow | mask_test_addresses | mask_noreply | grep -E "$EMAIL" | report "email addresses (history)"
+    history_text | grep -nE "$STRONG" | mask_allow | grep -E "$STRONG" | report "token-like strings (history)"
+    history_text_nomerges | grep -vE 'https?://[^ )>\"]+' | mask_allow | grep -nE "$BLOB" | report "long blobs outside URLs (history)"
 fi
 
 if [ -f "$PRIVATE" ]; then
-    files -iE -f "$PRIVATE" | report "private patterns from $PRIVATE (tracked files)"
+    files -iE -f "$PRIVATE" | mask_allow | grep -iE -f "$PRIVATE" | report "private patterns from $PRIVATE (tracked files)"
     if [ "$history" = 1 ]; then
-        history_text | grep -niE -f "$PRIVATE" | report "private patterns from $PRIVATE (history)"
+        history_text | grep -niE -f "$PRIVATE" | mask_allow | grep -iE -f "$PRIVATE" | report "private patterns from $PRIVATE (history)"
     fi
 fi
 if [ -s "$hits_file" ]; then
