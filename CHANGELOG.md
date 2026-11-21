@@ -7,6 +7,19 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **Every command wake sends is pinned, so a shape that drifts fails CI instead of a host.**
+  `rakazo-wake-gate` performs only the shapes it knows and refuses everything else, and a refusal
+  is silent inside wake: the call fails and `--inbox` answers from the per-thread fallback.
+  `tests/test_gate_shapes.py` checks the allow-list, but only against a gate staged on the machine,
+  and CI has none - so #166 shipped a new store-wide read whose gate route had to be written by
+  hand into the candidate, and nothing in the repository would have gone red without it.
+  `tests/test_gate_pins.py` pins all eleven shapes `bin/wake` and `bin/wake-inbox-io` build, with
+  the state paths, thread ids and pids normalized to `{T}` `{I}` `{A}` `{K}` `{P}`, and drives each
+  one from a real run: the ask/reply/inbox flow through a host stub, the register/beat/read of
+  `wake-inbox-io`, the store read refused by a gate that predates it, the host inbox read, and an
+  unreadable thread file. A change to any of them fails until `PINNED` is edited in the same
+  commit, which is the review signal that the installed gate needs the new route - gate first,
+  client second ([#167](https://github.com/Anxiety471/wake/issues/167)).
 - **A thread carries a reply token, so the bot a doorbell woke can answer it.** The woken bot held
   no agent token, so an API-born thread advertised a route it could not use, and only the shared
   `mcp` identity existed - which the route refuses with `409`, because it is the asker of every
