@@ -152,6 +152,15 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   step is pinned too, so a reviewer sees it in the diff
   ([#172](https://github.com/Anxiety471/wake/issues/172)).
 
+- **A store directory that lists but cannot be entered is reported, not answered as an empty
+  inbox.** The #168 confirmation used the listing's exit status, and listing needs only `r` on the
+  directory: a `threads/` holding thread files at mode 444 or 644 printed every name to `ls` while
+  the store read's glob expanded to nothing, so the answer stayed `no threads opened by <source>`,
+  exit 0. The listing is now also compared with what came back: a `.jsonl` name the read did not
+  return is a store that could not be entered, reported as `cannot read the thread store`, exit 1.
+  Same single call, same `ls <store> 2>/dev/null` shape, so no gate change; an empty listing stays
+  a quiet inbox ([#177](https://github.com/Anxiety471/wake/issues/177)).
+
 - **A store directory that cannot be read is reported, not answered as an empty inbox.** `--inbox`
   answered `no threads opened by <source>` with exit 0 when `threads/` was missing, unreadable, or
   a regular file, so a mistyped `WAKE_HOSTOPS`, a wrong state dir, or a permissions problem read as
