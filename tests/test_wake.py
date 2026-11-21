@@ -601,6 +601,111 @@ class ThreadTests(WakeTestCase):
         self.assertIn("cannot read the thread store", r.stderr)
 
 
+class InboxStoreReadTests(WakeTestCase):
+    """`wake --inbox` reads the whole store in one host call (#165).
+
+    A guest pays 420-519 ms for every bridge call, so the old listing plus one `cat` per thread
+    took 51 s on a 128-thread store and grew with every thread anyone ever opened. The shape is
+    new, so a host whose gate has not been taught it refuses the call: the CLI must still
+    answer, exactly as it did, one call per thread.
+    """
+
+    def bridge(self, name, refuse_store_read=False):
+        """A host stub that runs every command and logs it; `refuse_store_read` refuses the
+        single store-wide call the way a gate that predates #165 does."""
+        log = os.path.join(self.tmp, name + ".log")
+        path = os.path.join(self.fakebin, name)
+        guard = (
+            'case "$1" in\n  "for f in "*) echo "wake-gate: refused (not a wake-store op)" >&2; exit 1 ;;\nesac\n'
+            if refuse_store_read
+            else ""
+        )
+        write_exe(
+            path,
+            f"""
+            #!/bin/sh
+            printf '%s\\n' "$1" >> {log}
+            {guard}
+            exec bash -c "$1"
+            """,
+        )
+        return path, log
+
+    def seed(self, source, count, to="engineer"):
+        """`count` threads in the store, opened by `source`, oldest first."""
+        store = os.path.join(self.state, "threads")
+        os.makedirs(store, exist_ok=True)
+        for i in range(count):
+            rec = {
+                "kind": "ask",
+                "from": source,
+                "to": to,
+                "text": f"question {i}",
+                "ts": f"2026-11-21T10:{i // 60:02d}:{i % 60:02d}+0800",
+            }
+            with open(os.path.join(store, f"0101-{i:04x}.jsonl"), "w") as f:
+                f.write(json.dumps(rec) + "\n")
+
+    def commands(self, log):
+        with open(log) as f:
+            return f.read().splitlines()
+
+    def test_the_whole_store_is_one_host_call_and_reads_the_same_as_before(self):
+        """One call, and the same bytes the per-thread read prints: the fast path is not a
+        different answer, only a cheaper one."""
+        self.seed("bot:coordinator", 5)
+        fast, fast_log = self.bridge("hostops-store")
+        old, old_log = self.bridge("hostops-old-gate", refuse_store_read=True)
+        r_fast = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": fast})
+        self.assertEqual(r_fast.returncode, 0, r_fast.stderr)
+        r_old = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": old})
+        self.assertEqual(r_old.returncode, 0, r_old.stderr)
+        self.assertEqual(r_fast.stdout, r_old.stdout)
+        self.assertEqual(len(self.commands(fast_log)), 1, self.commands(fast_log))
+        self.assertIn("@@wake-file", self.commands(fast_log)[0])
+        # the fallback is the old shape: the refused store read, one listing, one cat per thread
+        self.assertEqual(len(self.commands(old_log)), 7, self.commands(old_log))
+
+    def test_128_threads_still_cost_one_host_call(self):
+        """The regression in #165: the cost followed the thread count."""
+        self.seed("bot:coordinator", 128)
+        bridge, log = self.bridge("hostops-128")
+        started = time.time()
+        r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
+        elapsed = time.time() - started
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(r.stdout.splitlines()), 128, r.stdout[-300:])
+        self.assertEqual(len(self.commands(log)), 1, "one host call, not one per thread")
+        self.assertLess(elapsed, 10, f"--inbox took {elapsed:.1f}s for 128 threads")
+
+    def test_an_empty_store_is_no_threads_in_one_call(self):
+        bridge, log = self.bridge("hostops-empty")
+        r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        self.assertEqual(len(self.commands(log)), 1, self.commands(log))
+
+    def test_a_record_that_names_the_marker_is_not_a_thread(self):
+        """The marker splits files, so a record's own text must never split one: a record is a
+        single JSON object on a line, and a torn line stays skipped the way it always was."""
+        store = os.path.join(self.state, "threads")
+        os.makedirs(store)
+        rec = {
+            "kind": "ask",
+            "from": "bot:coordinator",
+            "to": "engineer",
+            "text": "@@wake-file 0101-dead.jsonl",
+            "ts": "2026-11-21T10:00:00+0800",
+        }
+        with open(os.path.join(store, "0101-beef.jsonl"), "w") as f:
+            f.write(json.dumps(rec) + "\n" + '{"kind": "reply", "from":\n')
+        bridge, _log = self.bridge("hostops-marker")
+        r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(r.stdout.splitlines()), 1, r.stdout)
+        self.assertIn("0101-beef  to engineer  no reply yet", r.stdout)
+
+
 class ReplyGuardTests(WakeTestCase):
     def ask(self, source, bot="engineer", text="why does CI fail", env=None):
         r = self.wake("--ask", bot, text, env=dict({"WAKE_SOURCE": source}, **(env or {})))
