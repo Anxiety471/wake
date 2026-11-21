@@ -109,11 +109,11 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   `continue-on-error: true` to the `backgrounded` job made GitHub report a failed suite as neutral
   and left `tests.test_ops_scripts` green - the blindness `#142` was filed about, one YAML line
   away - so the test now pins the job's top-level keys to exactly `name`, `runs-on` and `steps`,
-  which also refuses `if:`, and refuses `if` or `continue-on-error` at a step's own indent and on
-  its dash line (`- if: false` above `name:`), either of which skips or neutralises the run step
-  without touching the job's keys. The job keys, the step indent and the dash line are the three
-  shapes a one-line edit can take; a YAML merge key would need a structural rewrite and is not
-  claimed. `wake-keys` split the
+  which also refuses `if:`, and refuses `if` or `continue-on-error` at a step's own indent, on
+  its dash line (`- if: false` above `name:`) or behind a YAML anchor (`- &a if: false`), any of
+  which skips or neutralises the run step without touching the job's keys. The job keys, the
+  step indent, the dash line and the anchored key are the four shapes a one-line edit can take;
+  a YAML merge key would need a structural rewrite and is not claimed. `wake-keys` split the
   resolver's answer on a tab, which is IFS
   *whitespace*: an emptied `WAKE_KEY_DIR=` in a site file collapsed and shifted every later value
   one place left, so the helper took the host store as the key dir and the registry as the store,

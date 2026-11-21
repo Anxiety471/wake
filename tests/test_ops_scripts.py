@@ -308,13 +308,19 @@ class OpsFilesTestCase(unittest.TestCase):
         # step-level continue-on-error makes GitHub report the failed step as neutral, and a false
         # `if` skips the step, so the suite never runs while this test stays green (measured by
         # mutation at c106c8c, #152 review). The key also parses off the step's dash line
-        # (`- if: false` above name:, measured by mutation at 814de56), so the optional dash is
-        # part of the shape: six one-line edits are refused here, not five.
+        # (`- if: false` above name:, measured by mutation at 814de56) and behind a YAML anchor
+        # (`- &a if: false`, measured at 7c4cecd), so the optional dash and the anchor in front
+        # of the key are part of the shape: the step indent, the dash line and the anchored key
+        # are all refused.
         disarming = [
             line.strip()
             for line in block
             if not line.strip().startswith("#")
-            and re.match(r"""^\s*(?:-\s+)?["']?(if|continue-on-error)["']?\s*:""", line, re.IGNORECASE)
+            and re.match(
+                r"""^\s*(?:-\s+)?(?:&\S+\s+)?["']?(if|continue-on-error)["']?\s*:""",
+                line,
+                re.IGNORECASE,
+            )
         ]
         self.assertEqual(
             disarming,
