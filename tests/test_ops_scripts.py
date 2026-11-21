@@ -307,12 +307,14 @@ class OpsFilesTestCase(unittest.TestCase):
         # A step is as easy to disarm as the job, and neither key touches the job's list: a
         # step-level continue-on-error makes GitHub report the failed step as neutral, and a false
         # `if` skips the step, so the suite never runs while this test stays green (measured by
-        # mutation at c106c8c, #152 review).
+        # mutation at c106c8c, #152 review). The key also parses off the step's dash line
+        # (`- if: false` above name:, measured by mutation at 814de56), so the optional dash is
+        # part of the shape: six one-line edits are refused here, not five.
         disarming = [
             line.strip()
             for line in block
             if not line.strip().startswith("#")
-            and re.match(r"""^\s+["']?(if|continue-on-error)["']?\s*:""", line, re.IGNORECASE)
+            and re.match(r"""^\s*(?:-\s+)?["']?(if|continue-on-error)["']?\s*:""", line, re.IGNORECASE)
         ]
         self.assertEqual(
             disarming,
