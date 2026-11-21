@@ -16,7 +16,7 @@ resolve() {
     local d
     for d in "$(dirname "$0")" "$(dirname "$0")/.." "$(dirname "$0")/../.."; do
         [ -r "$d/wake_config.py" ] || continue
-        (cd "$d" && python3 -c 'import wake_config; c = wake_config.load(); print("\t".join([c["WAKE_CONFIG_DIR"], c["WAKE_KEY_DIR"], c["WAKE_STATE_DIR"], c["WAKE_REGISTRY"]]))' 2>/dev/null) && return 0
+        (cd "$d" && python3 -c 'import wake_config; c = wake_config.load(); print("\n".join([c["WAKE_CONFIG_DIR"], c["WAKE_KEY_DIR"], c["WAKE_STATE_DIR"], c["WAKE_REGISTRY"], c["WAKE_HOSTOPS"]]))' 2>/dev/null) && return 0
     done
     return 1
 }
@@ -67,15 +67,34 @@ CFG=""
 KEY_DIR=""
 STORE=""
 REG=""
+RESOLVED_HOSTOPS=""
 resolved=$(resolve) || resolved=""
+resolver=0
 if [ -n "$resolved" ]; then
-    IFS=$'\t' read -r CFG KEY_DIR STORE REG <<< "$resolved"
+    # One value per line. A tab is IFS *whitespace*, so `IFS=$'\t' read` collapsed an empty
+    # field and shifted every later value one place left: a site file naming `WAKE_KEY_DIR=`
+    # made the host store the key dir and the registry the store, then said "no registry"
+    # while the file named a readable one (#152).
+    { read -r CFG; read -r KEY_DIR; read -r STORE; read -r REG; read -r RESOLVED_HOSTOPS; } <<< "$resolved"
+    resolver=1
 fi
+# WAKE_HOSTOPS is not a path this helper derives: wake_config.load() reads it from the site and
+# user files and bin/wake-inbox-io talks to the host through that value. Without this the helper
+# took it from the environment only, so a machine whose bridge is named in its config file never
+# called the host and printed "none (no key in the host store)" for every bot (#152).
+[ -n "$HOSTOPS" ] || HOSTOPS=${RESOLVED_HOSTOPS:-}
 HOST_KEY_DIR=${WAKE_HOST_KEY_DIR:-${STORE:-${WAKE_STATE_DIR:-}}}
 [ -n "$CFG" ] || CFG=${WAKE_CONFIG_DIR:-$HOME/.config/wake}
 [ -n "$KEY_DIR" ] || KEY_DIR=${WAKE_KEY_DIR:-$CFG}
 # The registry sits in the config dir, where bin/wake looks, so moving the saved keys with
 # WAKE_KEY_DIR never hides it.
+if [ -z "$REG" ] && [ "$resolver" -eq 1 ]; then
+    # load() answers the default when WAKE_REGISTRY is unset, so an empty value came from a
+    # config that names one. Reading a different file than the config asked for is the helper
+    # disagreeing with bin/wake: say it instead (#152 nit).
+    echo "wake-keys: WAKE_REGISTRY names an empty value, which is no registry at all; unset it to use $CFG/bots.tsv" >&2
+    exit 1
+fi
 [ -n "$REG" ] || REG=${WAKE_REGISTRY:-$CFG/bots.tsv}
 [ -n "$HOST_KEY_DIR" ] || HOST_KEY_DIR=/var/lib/wake
 
