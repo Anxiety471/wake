@@ -17,7 +17,8 @@
 # *.localhost) cannot resolve or receive mail, so it is a fake and is not reported either.
 # A GitHub noreply address is public by design and is masked the same way, wherever it appears.
 # If .git/scrub-patterns.txt exists (a private list of extended regexes, one per line, never committed),
-# tracked files and, with --history, every commit are also checked against it, case-insensitively.
+# tracked files and, under --history or --history-head, every commit that scan reads are also checked
+# against it, case-insensitively.
 set -eu
 cd "$(git rev-parse --show-toplevel)"
 
