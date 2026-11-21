@@ -161,17 +161,31 @@ def transport(command):
     return None
 
 
-def _run(command, data, check, streams):
+def _capture(command, data=None):
+    """Run one host command and hand back (returncode, stdout, stderr), with no failure message.
+
+    env_file_text() is the one caller that must not go through _run's "FAILED: ..." echo: the
+    command it runs prints the file itself, and that echo repeats the last 800 characters of the
+    output - so a transport that died after `cat` had emitted bytes put the tail of api.env,
+    DATABASE_URL's password and the registration secret included, into the deploy log (#151).
+    The exit status is what an operator acts on. Every other step keeps the echo, because a
+    failed systemctl has to say why it failed.
+    """
     argv = transport(command)
     if argv is None:
         sys.exit("wake-host-deploy: set WAKE_HOSTOPS (a runner for one shell command) or WAKE_HOST_SSH (a destination)")
     if DRY:
         print(f"  $ {command}")
-        return ""
+        return 0, "", ""
     r = subprocess.run(argv, input=data if data is not None else "", capture_output=True, text=True)
-    if check and r.returncode != 0:
-        sys.exit(f"FAILED: {command[:70]}\n{(r.stdout + r.stderr).strip()[-800:]}")
-    return (r.stdout + r.stderr).strip() if streams == "both" else r.stdout.strip()
+    return r.returncode, r.stdout, r.stderr
+
+
+def _run(command, data, check, streams):
+    rc, out, err = _capture(command, data)
+    if check and rc != 0:
+        sys.exit(f"FAILED: {command[:70]}\n{(out + err).strip()[-800:]}")
+    return (out + err).strip() if streams == "both" else out.strip()
 
 
 def host(command, data=None, check=True):
@@ -775,16 +789,25 @@ def env_file_text():
     `cat FILE 2>/dev/null || true` answered the same for a missing file and for a read this
     account was not allowed to make, so a refused read merged into an empty string and the
     rewrite silently dropped every key the file carried (#131). One command names the case.
+    It runs through _capture(), not host_out(): a nonzero exit is a transport that failed, its
+    output is the file rather than a message, and an answer cut off after the marker would
+    otherwise be read as the whole file and written back (#151).
     """
     path = shlex.quote(ENV_FILE)
     # The newline before the marker is load-bearing: without it the marker lands on the end of the
     # file's last line whenever that line has no newline of its own.
-    answer = host_out(
+    rc, out, _err = _capture(
         f"if {priv('cat')} {path}; then printf '\\n%s\\n' {ENV_READ}; "
         f"elif {priv('test')} -e {path}; then echo {ENV_UNREADABLE}; "
         f"else echo {ENV_ABSENT}; fi"
     )
-    return parse_env_answer(answer)
+    if rc != 0:
+        sys.exit(
+            f"wake-host-deploy: the command that names {ENV_FILE}'s state exited {rc}; refusing to "
+            "rewrite the file. Its output is not repeated here: it is the file, and its last lines "
+            "carry a password and a secret"
+        )
+    return parse_env_answer(out.strip())
 
 
 def step_env():
