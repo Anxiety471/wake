@@ -277,6 +277,22 @@ class OpsFilesTestCase(unittest.TestCase):
         """
         lines = text(os.path.join(ROOT, ".github/workflows/ci.yml")).splitlines()
         self.assertIn("  backgrounded:", lines, "the backgrounded suite job is gone")
+        # A workflow-level block sits one line outside this job and can still disarm it:
+        # `defaults: {run: {shell: '/bin/true {0}'}}` applies to every run step in the file, so the
+        # backgrounded step would exec /bin/true and the suite never start, with every guard below
+        # green (measured at 88aa476, #141). Pin the file's top-level keys, so a new block here has
+        # to be added in the same change as this pin.
+        top = [
+            line.split(":", 1)[0]
+            for line in lines
+            if line and not line.startswith((" ", "\t", "#", "-")) and ":" in line
+        ]
+        self.assertEqual(
+            top,
+            ["name", "on", "permissions", "jobs"],
+            f"workflow keys {top}: only name, on, permissions and jobs are allowed - a top-level "
+            "defaults block swaps the shell for the backgrounded job's run step",
+        )
         start = lines.index("  backgrounded:")
         block = []
         for line in lines[start + 1 :]:
