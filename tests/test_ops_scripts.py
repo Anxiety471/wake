@@ -277,6 +277,22 @@ class OpsFilesTestCase(unittest.TestCase):
         """
         lines = text(os.path.join(ROOT, ".github/workflows/ci.yml")).splitlines()
         self.assertIn("  backgrounded:", lines, "the backgrounded suite job is gone")
+        # A workflow-level block sits one line outside this job and can still disarm it:
+        # `defaults: {run: {shell: '/bin/true {0}'}}` applies to every run step in the file, so the
+        # backgrounded step would exec /bin/true and the suite never start, with every guard below
+        # green (measured at 88aa476, #141). Pin the file's top-level keys, so a new block here has
+        # to be added in the same change as this pin.
+        top = [
+            line.split(":", 1)[0]
+            for line in lines
+            if line and not line.startswith((" ", "\t", "#", "-")) and ":" in line
+        ]
+        self.assertEqual(
+            top,
+            ["name", "on", "permissions", "jobs"],
+            f"workflow keys {top}: only name, on, permissions and jobs are allowed - a top-level "
+            "defaults block swaps the shell for the backgrounded job's run step",
+        )
         start = lines.index("  backgrounded:")
         block = []
         for line in lines[start + 1 :]:
@@ -327,6 +343,57 @@ class OpsFilesTestCase(unittest.TestCase):
             [],
             f"a step key that can disarm this check was added: {disarming} - the suite would fail "
             "or be skipped and the job would still report green",
+        )
+        # The run body is another way in and it is not a key: `exit 0` as the first line under
+        # `run: |` left every guard above green and the job green with the suite never started
+        # (measured by mutation at 88aa476, #141). Pin the body to the two commands, and the run
+        # step's own keys to run and env, so `shell:` - which replaces the interpreter - and any
+        # other step key are refused by name too.
+        step = "      - name: Run tests as a background job"
+        self.assertIn(step, block, "the run step is gone or renamed")
+        step_keys = []
+        sections = {}
+        section = None
+        for line in block[block.index(step) + 1 :]:
+            if line.startswith("      - "):
+                break
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if line.startswith("        ") and not line.startswith("         "):
+                section = None
+                if ":" in line:
+                    key, rest = stripped.split(":", 1)
+                    rest = rest.strip()
+                    step_keys.append(key)
+                    if not rest or rest.startswith(("|", ">")):
+                        section = key
+                        sections[key] = []
+                continue
+            if section is not None:
+                sections[section].append(stripped)
+        self.assertEqual(
+            sections.get("run"),
+            ["tests/run.sh &", "wait $!"],
+            f"the run body is {sections.get('run')}: the suite is the only command the step may "
+            "run, backgrounded and waited on - an `exit 0` above it leaves the job green without "
+            "the suite",
+        )
+        self.assertEqual(
+            step_keys,
+            ["run", "env"],
+            f"run step keys {step_keys}: only run and env are allowed - shell, if or "
+            "continue-on-error disarms the step",
+        )
+        # env is not a free pass either: PYTHON picks the interpreter tests/run.sh execs, so
+        # `PYTHON: /bin/true` runs nothing and exits 0 - the suite never starts and the job is
+        # green (measured at 88aa476, #141). A map written inline (`env: {PYTHON: python}`)
+        # leaves no block to read, so it fails on the empty list.
+        self.assertEqual(
+            sections.get("env"),
+            ["PYTHON: python"],
+            f"the run step env is {sections.get('env')}: PYTHON picks the interpreter the suite "
+            "runs under, so any other value here can pass the step without running it",
         )
 
     def test_the_hostname_guard_is_not_a_no_op(self):
