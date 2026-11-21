@@ -7,6 +7,10 @@ Bearer minted-bot-engineer-0002
 # dependabot's own commit trailer: its commits land in history and the address is a public bot noreply
 Signed-off-by: dependabot[bot] <support@github.com>
 
+# GitHub noreply addresses in Co-authored-by trailers of squash merges (public, not a secret):
+# the owner's 9f2fe104 and dependabot's 6b2a9ae7 both land on main this way
+@users.noreply.github.com
+
 # the owner's public identity (LICENSE, CODEOWNERS, commit author); other uses of these names still fail
 Joshua M. Valderrama
 @Anxiety471
