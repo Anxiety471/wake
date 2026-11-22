@@ -17,6 +17,10 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   instead of skipping the control again. The step runs `tests/run_module_strict.py`, which fails
   on any skip at all - `@unittest.skipIf`, a version guard, `self.skipTest` inside an arm - because
   `python3 -m unittest` exits 0 on `OK (skipped=1)` and that is the same silent green one level up.
+  The runner's own verdict is pinned as well: `StrictRunnerTest` runs a fixture whose test fails and
+  one with no module name, so `return 0` in place of `0 if result.wasSuccessful() else 1` - which
+  survived all 38 tests before those two - fails a test instead of reporting a broken control as a
+  pass.
   `tests/test_ops_scripts.py` pins that step, its order after the install, its exact `run` body and
   the `api` job's own keys, so removing it fails CI rather than quietly restoring the skip, and a
   job `defaults: run: shell:` or a `container:` - which swaps or moves the shell of every step in

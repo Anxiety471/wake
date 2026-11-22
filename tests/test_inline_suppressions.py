@@ -1200,6 +1200,36 @@ class StrictRunnerTest(unittest.TestCase):
         self.assertEqual(finished.returncode, 1, finished.stdout[-400:])
         self.assertIn("loaded no test", finished.stderr)
 
+    def test_a_failing_test_is_a_failure(self):
+        """A control that FAILS must fail the step too, not only one that skips.
+
+        Every fixture above is a module that passes, skips or loads nothing, so the runner's own
+        `return 0 if result.wasSuccessful() else 1` was reached by no test: measured at `ebbb590`,
+        `return 0` in its place, and `0 if True else 1`, both survived all 38 tests, and the step
+        then reports a broken control as a pass - the silent green this runner exists to refuse,
+        one level below the skip it already refuses.
+        """
+        finished = self.run_fixture(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_broke(self):\n"
+            "        self.assertTrue(False, 'the control no longer bites')\n"
+        )
+        self.assertEqual(finished.returncode, 1, finished.stdout[-400:])
+        self.assertIn("FAILED (failures=1)", finished.stderr)
+        self.assertIn("the control no longer bites", finished.stderr)
+
+    def test_usage_is_two(self):
+        """No module name is a usage error, so a mistyped name cannot read as success either."""
+        finished = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "tests/run_module_strict.py")],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(finished.returncode, 2, finished.stdout[-400:])
+        self.assertIn("usage: run_module_strict.py", finished.stderr)
+
 
 class LinterBitesTest(unittest.TestCase):
     """#196: the real eslint and prettier, both directions, and the pin's verdict on the same file.
