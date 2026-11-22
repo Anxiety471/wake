@@ -788,6 +788,14 @@ class CiWiringTestCase(unittest.TestCase):
         # never ran, which is exactly the green #218 was about.
         self.assertIn('if ! git fetch --no-tags --depth=1 origin "$base"; then', step)
         self.assertIn("refusing to pass without comparing it", step)
+        # Only a push to main is judged by this arm. A branch push carries the branch's own
+        # commits, so judging it fails a branch for rewording a line it added itself: measured on
+        # #217's ebbb590 (3 branch-own lines, rc 1) and #212's 7b664a4 (13), both rc 0 under the
+        # pull request arm. The ref is pinned, and the skip names it.
+        self.assertIn("REF: ${{ github.ref }}", step)
+        self.assertIn('case "$REF" in', step)
+        self.assertIn("refs/heads/main) ;;", step)
+        self.assertIn("a branch push is judged by its pull request", step)
 
     def test_shellcheck_covers_the_new_script(self):
         self.assertRegex(
@@ -838,13 +846,13 @@ class PushArmRunsTestCase(unittest.TestCase):
         self.git("commit", "-q", "-m", message)
         return self.git("rev-parse", "HEAD").stdout.strip()
 
-    def run_step(self, base_sha="", before_sha=""):
+    def run_step(self, base_sha="", before_sha="", ref="refs/heads/main"):
         script = pathlib.Path(self.root) / "step.sh"
         script.write_text(step_run_block("CHANGELOG.md deletions"), encoding="utf-8")
         return subprocess.run(
             ["sh", str(script)],
             cwd=self.repo,
-            env=clean_env(BASE_SHA=base_sha, BEFORE_SHA=before_sha),
+            env=clean_env(BASE_SHA=base_sha, BEFORE_SHA=before_sha, REF=ref),
             text=True,
             capture_output=True,
         )
@@ -875,6 +883,32 @@ class PushArmRunsTestCase(unittest.TestCase):
         result = self.run_step(before_sha="1" * 40)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("refusing to pass without comparing it", result.stderr)
+
+    def test_a_feature_branch_push_is_left_to_its_pull_request(self):
+        """The arm reads main only: rewording a line the branch itself added is free (#218)."""
+        self.write("CHANGELOG.md", BASE.replace(RELEASED + "\n", ""))
+        self.commit("a branch commit that reworks its own note")
+        branch = "refs/heads/fix/218-changelog-guard-push"
+        result = self.run_step(before_sha=self.base, ref=branch)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"{branch} is not main", result.stdout)
+        self.assertIn("judged by its pull request", result.stdout)
+        # It passed by skipping, not by comparing: no line was read, so it must not claim clean.
+        self.assertNotIn("changelog-guard: clean", result.stdout)
+
+    def test_a_pull_request_still_compares_from_its_own_ref(self):
+        """The ref check sits after the base it merges into, so a pull request is not disarmed."""
+        self.write("CHANGELOG.md", BASE.replace(RELEASED + "\n", ""))
+        self.commit("a change a pull request would carry")
+        result = self.run_step(base_sha=self.base, ref="refs/pull/227/merge")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(RELEASED, result.stdout)
+        self.assertIn("changelog-guard: FAILED", result.stderr)
+
+    def test_a_push_that_reports_no_previous_tip_says_so_in_its_own_words(self):
+        result = self.run_step(before_sha="")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("the push reports no previous tip; nothing to compare", result.stdout)
 
 
 if __name__ == "__main__":

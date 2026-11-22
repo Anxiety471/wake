@@ -356,7 +356,8 @@ PYTHON=python3.12 tests/run.sh    # a specific interpreter; the bin/ scripts run
 uv run --with ruff ruff check . && uv run --with ruff ruff format --check .
 shellcheck install.sh tests/run.sh scripts/scrub-check.sh scripts/changelog-guard.sh $(grep -lE '^#!/(usr/)?bin/(env )?(ba)?sh' bin/ops/wake-* bin/wake*)
 scripts/scrub-check.sh --history  # fails on IPs other than 127.0.0.1, emails and token-like strings (every branch; CI uses --history-head)
-scripts/changelog-guard.sh origin/main  # fails on a CHANGELOG.md line that origin/main has and this tree lost (CI runs it per pull request)
+scripts/changelog-guard.sh origin/main  # fails on a CHANGELOG.md line that origin/main has and this tree lost
+  # (CI runs it per pull request against its base, and per push to main against the tip before it)
 
 bun install                       # API and MCP workspace
 bun run typecheck

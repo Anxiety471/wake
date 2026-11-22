@@ -159,9 +159,15 @@ jobs:
       # with this checkout and fails on any line the base still carries unless that exact line is
       # listed in scripts/changelog-allow.txt with a reason above it.
       # A pull request is compared with its own base revision, which is what it merges into. A push
-      # is compared with the tip the ref had before the push, so the merge commit that puts a
-      # deletion on main is judged there: until #218 this step said "not a pull request" and passed
-      # on every merge, so nothing read the merge that carried the deletion.
+      # to main is compared with the tip that ref had before the push, so the merge commit that puts
+      # a deletion on main is judged there: until #218 this step said "not a pull request" and
+      # passed on every merge, so nothing read the merge that carried the deletion.
+      # The push arm reads main only. A branch push carries the branch's own commits, so judging it
+      # here fails a branch for rewording a line the branch itself added, which the rules allow and
+      # which a pull request may do: measured on a real commit, #217's ebbb590 drops 3 lines its
+      # parent 924ea5d carries and main does not, rc 1 under this arm, and the same push is the
+      # named skip once the arm reads main only. A branch is judged by its pull request, against
+      # the base it merges into, which is the only revision that says anything about main.
       # A pull request whose checks ran before this step existed is still not judged by its own run,
       # because GitHub does not re-run checks when the base branch moves. That is why the push arm
       # is the one that decides whether main keeps its notes.
@@ -169,13 +175,28 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BEFORE_SHA: ${{ github.event.before }}
+          REF: ${{ github.ref }}
         run: |
           base="$BASE_SHA"
           if [ -z "$base" ]; then
+            # Only a push to main is judged here. A branch push is left to its pull request, which
+            # compares the base it merges into; naming the ref keeps the skip visible in the log.
+            case "$REF" in
+              refs/heads/main) ;;
+              *)
+                echo "changelog-guard: $REF is not main; a branch push is judged by its pull request"
+                exit 0
+                ;;
+            esac
             base="$BEFORE_SHA"
             # A ref that did not exist before reports an all-zero tip. A commit sha cannot be all
-            # zeros, so "every digit is 0" - or no tip at all - is what says nothing sits behind it.
+            # zeros, so "every digit is 0" is what says nothing sits behind it; a push that reports
+            # no tip at all says the same thing in a different way, and says it with its own wording.
             case "$base" in
+              "")
+                echo "changelog-guard: the push reports no previous tip; nothing to compare"
+                exit 0
+                ;;
               *[!0]*) ;;
               *)
                 echo "changelog-guard: a new ref has no previous tip; nothing to compare"
