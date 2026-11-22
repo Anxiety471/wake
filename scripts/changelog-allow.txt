@@ -14,3 +14,20 @@
 # matches no removed line is printed back. The guard is not
 # scoped to Unreleased - an entry for a released line is accepted, and printed back with the released
 # heading it came from, so a reviewer sees that a released note is going rather than a reflow.
+
+# #211 / PR #212: the "wherever it sits" bullet is rewritten in place, so its old wording leaves
+# the file while every measured fact survives (three hidden shapes, #205, the refused forms, the
+# value arm, #196). Same Unreleased bullet #196 added; the rewrite is the reviewed change.
+  expressions, and refuses the block `/* eslint-disable */` on every line that reader reads. It has
+  one measured limit, recorded rather than glossed: it decides whether `/` starts a regular
+  expression from the previous character alone, and JavaScript does not decide it there, so three
+  shapes still hide a directive - a property named after a keyword then a division (`record.in / 2`),
+  a regex holding a quote after `)`, and a regex holding `/*` after `}`, each measured at rc 0 with a
+  real `no-unused-vars` behind it
+  ([#205](https://github.com/Anxiety471/wake/issues/205)) - a `-line` /
+  `-next-line` form that names no rule, an inline `/* eslint <rule>: <value> */` that is anything
+  but that rule raised to `error`, and `prettier-ignore`, which exempts the next node from the
+  `prettier --check` half of the same job. The value arm reads the whole value, not its severity:
+  a rule below `error` exits 0 on a warning, so `"warn"` disarms the step as surely as `"off"`,
+  and a list that carries options keeps `error` while reconfiguring the rule - measured,
+  `# noqa: E402` ([#196](https://github.com/Anxiety471/wake/issues/196)).
