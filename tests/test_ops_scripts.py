@@ -562,6 +562,7 @@ class OpsFilesTestCase(unittest.TestCase):
                 "ruff format --check",
                 "shellcheck",
                 "compileall",
+                "CHANGELOG.md deletions",
             ],
             f"the lint steps are {named}: a step added, dropped or renamed changes what lint reads",
         )
@@ -579,6 +580,9 @@ class OpsFilesTestCase(unittest.TestCase):
             "ruff format --check": ["name", "run"],
             "shellcheck": ["name", "run"],
             "compileall": ["name", "run"],
+            # #199: the step's `env` is the revision it compares against, and
+            # tests/test_changelog_guard.py pins that value.
+            "CHANGELOG.md deletions": ["name", "env", "run"],
         }
         for step, label in zip(steps, named):
             with self.subTest(step=label):
@@ -636,12 +640,21 @@ class OpsFilesTestCase(unittest.TestCase):
                 "ruff check .",
                 "ruff format --check .",
                 "shellcheck install.sh tests/run.sh scripts/scrub-check.sh "
+                "scripts/changelog-guard.sh "
                 "$(grep -lE '^#!/(usr/)?bin/(env )?(ba)?sh' bin/ops/wake-* bin/wake*)",
                 [
                     "python -m compileall -q bin tests",
                     "for f in bin/wake bin/wake-hook bin/wake-inbox-io bin/wake-mcp bin/wake-run; do",
                     'python -m py_compile "$f"',
                     "done",
+                ],
+                [
+                    'if [ -z "$BASE_SHA" ]; then',
+                    'echo "changelog-guard: not a pull request; nothing to compare"',
+                    "exit 0",
+                    "fi",
+                    'git fetch --no-tags --depth=1 origin "$BASE_SHA"',
+                    'scripts/changelog-guard.sh "$BASE_SHA"',
                 ],
             ],
             f"lint runs {runs}: a command that checks nothing reports green, and so does a ruff "

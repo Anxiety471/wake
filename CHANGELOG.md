@@ -25,6 +25,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   installing v9 instead of v11 would put #186 back on the host. Gate first, then the client that
   relies on it ([#195](https://github.com/Anxiety471/wake/issues/195)).
 
+- **`CHANGELOG.md` is guarded, so a conflict resolution cannot drop a released note.** Nothing
+  read the file: a branch cut before a note merged carried a copy of it without that note, and
+  resolving the conflict by taking the branch deleted the note while the suite stayed green
+  (`tests.test_publish_checklist` 14 OK with two released bullets gone). `scripts/changelog-guard.sh`
+  compares the base revision's `CHANGELOG.md` with this checkout line by line - a line the base
+  holds more often than the head does is missing, so reordering and blank-line churn pass - and
+  the `lint` job runs it against a pull request's base, fetched by sha, so it needs no deeper
+  checkout. A deletion passes only when that exact line is listed in `scripts/changelog-allow.txt`
+  with a reason comment above it, and the output names the lines the allowlist bought; a reflow of
+  an unreleased bullet is therefore a deliberate, reviewed edit, and a released note cannot vanish
+  unnoticed ([#199](https://github.com/Anxiety471/wake/issues/199)).
 - **Every command wake sends is pinned, so a shape that drifts fails CI instead of a host.**
   `rakazo-wake-gate` performs only the shapes it knows and refuses everything else, and a refusal
   is silent inside wake: the call fails and `--inbox` answers from the per-thread fallback.

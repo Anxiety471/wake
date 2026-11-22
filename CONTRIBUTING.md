@@ -15,7 +15,7 @@ tests/run.sh                               # offline test suite; run as a non-ro
 PYTHON=python3.9 tests/run.sh              # oldest supported Python, if you have it
 uv run --with ruff ruff check .            # lint (or: ruff check .)
 uv run --with ruff ruff format --check .   # formatting; `ruff format .` fixes it
-shellcheck install.sh tests/run.sh scripts/scrub-check.sh
+shellcheck install.sh tests/run.sh scripts/scrub-check.sh scripts/changelog-guard.sh
 scripts/scrub-check.sh --history           # no IPs, emails or tokens in files or commits
 ```
 
@@ -35,6 +35,10 @@ CI tests Python 3.9 to 3.13 on Ubuntu and pins ruff in `.github/workflows/ci.yml
   their subdomains, `*.invalid`, `*.test`, `*.example`, `*.localhost`) needs no entry: the email
   stage ignores it, because no mailbox can exist there, and any other address still fails.
 - Update `README.md`, `docs/` and `CHANGELOG.md` (under an "Unreleased" heading) for user-visible changes.
+- A pull request may add `CHANGELOG.md` lines freely, and reorder them. If it deletes a line its
+  base branch still has, list that exact line in `scripts/changelog-allow.txt` with a short reason
+  above it, or the `lint` job fails; reflowing an unreleased bullet is that case. Remove the entry
+  once the change has merged: an entry is a standing permission, not a note about one pull request.
 - One logical change per commit, with a message that says what and why.
 - Keep it civil: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) applies to issues, pull requests
   and reviews.

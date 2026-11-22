@@ -134,13 +134,28 @@ jobs:
       - name: ruff format --check
         run: ruff format --check .
       - name: shellcheck
-        run: shellcheck install.sh tests/run.sh scripts/scrub-check.sh $(grep -lE '^#!/(usr/)?bin/(env )?(ba)?sh' bin/ops/wake-* bin/wake*)
+        run: shellcheck install.sh tests/run.sh scripts/scrub-check.sh scripts/changelog-guard.sh $(grep -lE '^#!/(usr/)?bin/(env )?(ba)?sh' bin/ops/wake-* bin/wake*)
       - name: compileall
         run: |
           python -m compileall -q bin tests
           for f in bin/wake bin/wake-hook bin/wake-inbox-io bin/wake-mcp bin/wake-run; do
             python -m py_compile "$f"
           done
+      # #199: nothing read CHANGELOG.md, so a conflict resolution that takes the branch's copy
+      # deleted a released bullet and every check stayed green. The guard compares the pull
+      # request's base revision with this checkout and fails on any line the base still carries
+      # unless that exact line is listed in scripts/changelog-allow.txt with a reason above it.
+      # A push has no pull request base, so the step says that instead of comparing nothing.
+      - name: CHANGELOG.md deletions
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -z "$BASE_SHA" ]; then
+            echo "changelog-guard: not a pull request; nothing to compare"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          scripts/changelog-guard.sh "$BASE_SHA"
 
   secret-scan:
     # Pinned, not ubuntu-latest (#172): the scan's verdict comes from the runner's git and grep,
