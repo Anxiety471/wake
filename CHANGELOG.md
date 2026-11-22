@@ -7,6 +7,24 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **A store dir the gate cannot list is refused by name, never answered as an empty store.**
+  Every answer `rakazo-wake-gate` gives is built from a listing, and `list_dir()` / `list_active()`
+  turn a lost directory into `[]`: a store that cannot be read then answers "no threads" with rc 0,
+  which is the answer a quiet store gives
+  ([#168](https://github.com/Anxiety471/wake/issues/168)). The v8 gate holds that line only by
+  accident - each handler that lists the store lets the opendir's `EACCES` escape as an `OSError`,
+  which `run()` prints as `io error: Permission denied` with no path, and the routes that do not
+  touch the broken dir answer normally - so the guarantee sits in three handlers instead of in the
+  check, and one `except OSError: return []` around the same call would drop it. `GateStoreListingTests`
+  in `tests/test_gate_shapes.py` now holds the contract against a staged gate: a store dir made
+  searchable but not listable must refuse every route with `store path cannot be listed: <dir>` and
+  an empty body, while a readable store and an empty one keep their answers. The check ships as
+  gate **v11** - v10 plus this listing in `_check_store()`, which proves listability once before
+  any handler runs. The test fails against v8 and against v10, which is the point: v10 is newer
+  than v9 and does not carry the check, and v9 predates the `ls -F` route #186 needs, so
+  installing v9 instead of v11 would put #186 back on the host. Gate first, then the client that
+  relies on it ([#195](https://github.com/Anxiety471/wake/issues/195)).
+
 - **Every command wake sends is pinned, so a shape that drifts fails CI instead of a host.**
   `rakazo-wake-gate` performs only the shapes it knows and refuses everything else, and a refusal
   is silent inside wake: the call fails and `--inbox` answers from the per-thread fallback.
