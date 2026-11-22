@@ -103,10 +103,26 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **The `lint` job cannot be disarmed through a key any more.** #174 pinned `runs-on`'s value and
+  left the job around it open: at `06c2c75` the full suite stayed green with `runs-on:
+  ubuntu-24.04` untouched under a job `container:`, `if: false`, `continue-on-error: true`, a job
+  `defaults` that swaps the run shell, a step `if: false` and a step `continue-on-error: true` - a
+  skipped job reports green, a neutral one does too, and a `container` runs every step in another
+  image. `lint` is one of the eight required checks on main, so
+  `tests/test_ops_scripts.py::test_ci_lint_job_keys_cannot_disarm_it` pins its job keys (`runs-on`,
+  `steps`), refuses a step-level `if` or `continue-on-error`, pins every step's name and `run`
+  payload by value, and allowlists each step's own keys - the pin `backgrounded` and `secret-scan`
+  already carry ([#178](https://github.com/Anxiety471/wake/issues/178)). The step keys are their
+  own hole: `working-directory: /tmp` on `ruff check` runs it in an empty directory, which exits 0
+  with a warning, and a step `shell:` or an added `env:` decides what the command reads without
+  touching a pinned value, so the allowlist is what makes the sentence above true
+  ([#181](https://github.com/Anxiety471/wake/issues/181)).
+
 - **The `lint` job's runner is pinned by value, not just present in a key list.** #172 pinned the
-  `secret-scan` image and left `lint` on `ubuntu-latest`: `tests/test_ops_scripts.py` pins that
-  job's keys, which names `runs-on` without reading what it holds, and `lint`'s verdict comes from
-  the runner's own `shellcheck` and `python`, so the machine is part of the check. Measured on a
+  `secret-scan` image and left `lint` on `ubuntu-latest`: at `24ca37d` nothing read that job's
+  `runs-on` - `grep -rn lint tests/` was 0 hits, and the key list in `tests/test_ops_scripts.py` is
+  `backgrounded`'s - and `lint`'s verdict comes from the runner's own `shellcheck` and `python`, so
+  the machine is part of the check. Measured on a
   fresh copy of `test_scrub_check` + `test_ops_scripts` at `24ca37d`: `runs-on: self-hosted` on
   `lint` kept all 101 tests green. `runs-on` is `ubuntu-24.04` now, the image every other job pins,
   and `test_ci_lint_job_runs_on_a_pinned_image` reads the value and refuses anything else, so a

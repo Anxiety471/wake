@@ -21,6 +21,8 @@ import textwrap
 import time
 import unittest
 
+from test_scrub_check import ci_steps  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OPS = os.path.join(ROOT, "bin", "ops")
 NAMES = sorted(n for n in os.listdir(OPS) if not n.endswith(".md") and os.path.isfile(os.path.join(OPS, n)))
@@ -472,8 +474,9 @@ class OpsFilesTestCase(unittest.TestCase):
 
     def test_ci_lint_job_runs_on_a_pinned_image(self):
         """#174: `runs-on: self-hosted` on lint kept every test green while the verdict came from
-        that machine's shellcheck and python. The key list pin does not read the value, so it is
-        pinned here, as the secret-scan job's is in test_scrub_check."""
+        that machine's shellcheck and python. A key list freezes the name, not the value, so the
+        value is pinned here as the secret-scan job's is in test_scrub_check; the list itself is
+        test_ci_lint_job_keys_cannot_disarm_it."""
         lines = text(os.path.join(ROOT, ".github/workflows/ci.yml")).splitlines()
         self.assertIn("  lint:", lines, "the lint job is gone")
         start = lines.index("  lint:")
@@ -489,6 +492,140 @@ class OpsFilesTestCase(unittest.TestCase):
             f"the lint runner is {runner}: the verdict comes from the runner's shellcheck and "
             "python, so the image is pinned - a floating tag or a self-hosted machine changes "
             "what lint reads while the suite stays green",
+        )
+
+    def test_ci_lint_job_keys_cannot_disarm_it(self):
+        """#178: the value pin above reads `runs-on` and nothing else, so `lint` can be disarmed
+        with that line untouched - measured at 06c2c75, full suite green under each of a job
+        `container:`, `if: false`, `continue-on-error: true`, a job `defaults` that swaps the run
+        shell, a step `if: false` and a step `continue-on-error: true`. `lint` is one of the eight
+        required checks on main, so a skipped or neutral lint is a gate that can never fail. This
+        is the pin `backgrounded` and `secret-scan` already carry."""
+        lines = text(os.path.join(ROOT, ".github/workflows/ci.yml")).splitlines()
+        self.assertIn("  lint:", lines, "the lint job is gone")
+        start = lines.index("  lint:")
+        block = []
+        for line in lines[start + 1 :]:
+            if line.startswith("  ") and not line.startswith("   ") and line.strip():
+                break
+            block.append(line)
+        # Job keys: `if` skips the job, `continue-on-error` reports a failed lint as neutral,
+        # `defaults` swaps the shell of its run steps and `container` runs every step in another
+        # image while `runs-on` keeps its pinned value. None of them touches a test.
+        keys = [
+            line.strip().split(":", 1)[0]
+            for line in block
+            if line.startswith("    ")
+            and not line.startswith("     ")
+            and ":" in line
+            and not line.strip().startswith("#")
+        ]
+        self.assertEqual(
+            keys,
+            ["runs-on", "steps"],
+            f"job keys {keys}: only runs-on and steps are allowed - if, continue-on-error, "
+            "defaults or container would let a lint that never ran report green",
+        )
+        # A step is as easy to disarm as the job, and the key also parses off the step's dash line
+        # (`- if: false`) or behind a YAML anchor (`- &a if: false`), so all three are refused.
+        disarming = [
+            line.strip()
+            for line in block
+            if not line.strip().startswith("#")
+            and re.match(
+                r"""^\s*(?:-\s+)?(?:&\S+\s+)?["']?(if|continue-on-error)["']?\s*:""",
+                line,
+                re.IGNORECASE,
+            )
+        ]
+        self.assertEqual(
+            disarming,
+            [],
+            f"a step key that can disarm lint was added: {disarming} - a skipped or neutral step still reports green",
+        )
+        # The key list and the refusal above pin the shape of the job and of every step, not what
+        # a step runs: `run: "true"` swapped into `ruff check` keeps all of it green and lint then
+        # checks nothing (measured at 06c2c75). The names and the run lines are pinned by value, as
+        # the secret-scan step's are, so a change to what lint reads is a deliberate edit here.
+        steps = ci_steps(block)
+        named = [step["values"].get("name") or step["values"].get("uses") for step in steps]
+        self.assertEqual(
+            named,
+            [
+                "actions/checkout@v7",
+                "actions/setup-python@v6",
+                "Install ruff",
+                "ruff check",
+                "ruff format --check",
+                "shellcheck",
+                "compileall",
+            ],
+            f"the lint steps are {named}: a step added, dropped or renamed changes what lint reads",
+        )
+        # A step carries keys of its own and the job-level list above cannot see them:
+        # `working-directory: /tmp` on `ruff check` runs `ruff check .` in an empty directory, which
+        # exits 0 with a warning, and `shell: /bin/true {0}` on the same step runs nothing at all -
+        # either one keeps every assertion above green (measured at 06c2c75, Grok's review of #180,
+        # TASK-228). Each step's keys are allowlisted here, as `secret-scan` allowlists checkout's
+        # `uses`/`with` and the scan's `name`/`run`.
+        allowed = {
+            "actions/checkout@v7": ["uses"],
+            "actions/setup-python@v6": ["uses", "with"],
+            "Install ruff": ["name", "run"],
+            "ruff check": ["name", "run"],
+            "ruff format --check": ["name", "run"],
+            "shellcheck": ["name", "run"],
+            "compileall": ["name", "run"],
+        }
+        for step, label in zip(steps, named):
+            with self.subTest(step=label):
+                self.assertIn(label, allowed, f"an unexpected lint step {label!r} was added")
+                self.assertEqual(
+                    step["keys"],
+                    allowed[label],
+                    f"{label} carries {step['keys']}: only {allowed[label]} are allowed - a step "
+                    "shell, a working-directory or an `env` decides what the command reads without "
+                    "changing a single pinned value",
+                )
+        # What each step runs is pinned by value too, read off the raw lines: `run: "true"` swapped
+        # into `ruff check` keeps every pin above green while lint checks nothing (measured at
+        # 06c2c75), and so does a ruff version that is not the one the suite was proved on. A
+        # `run: |` opens a block the step parser above does not keep, so its lines are read here.
+        runs = []
+        i = 0
+        while i < len(block):
+            line = block[i]
+            i += 1
+            if not line.startswith("        run: "):
+                continue
+            payload = line[len("        run: ") :]
+            if payload != "|":
+                runs.append(payload)
+                continue
+            lines_of_block = []
+            while i < len(block) and (not block[i].strip() or block[i].startswith("         ")):
+                lines_of_block.append(block[i].strip())
+                i += 1
+            while lines_of_block and not lines_of_block[-1]:
+                lines_of_block.pop()
+            runs.append(lines_of_block)
+        self.assertEqual(
+            runs,
+            [
+                "python -m pip install ruff==0.17.5",
+                "ruff check .",
+                "ruff format --check .",
+                "shellcheck install.sh tests/run.sh scripts/scrub-check.sh "
+                "$(grep -lE '^#!/(usr/)?bin/(env )?(ba)?sh' bin/ops/wake-* bin/wake*)",
+                [
+                    "python -m compileall -q bin tests",
+                    "for f in bin/wake bin/wake-hook bin/wake-inbox-io bin/wake-mcp bin/wake-run; do",
+                    'python -m py_compile "$f"',
+                    "done",
+                ],
+            ],
+            f"lint runs {runs}: a command that checks nothing reports green, and so does a ruff "
+            "version that is not the one the suite was proved on",
         )
 
 
