@@ -163,18 +163,12 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   `@typescript-eslint/no-unused-vars` takes `eslint apps` to rc 1, and one `/* eslint-disable */`
   line on top takes it to rc 0 with `suppressedMessages: 1`, while this module read no `.ts` file at
   all. It reads them now, one character at a time past strings, template literals and regular
-  expressions, and refuses the block `/* eslint-disable */` on every line that reader reads. It has
-  one measured limit, recorded rather than glossed: it decides whether `/` starts a regular
-  expression from the previous character alone, and JavaScript does not decide it there, so three
-  shapes still hide a directive - a property named after a keyword then a division (`record.in / 2`),
-  a regex holding a quote after `)`, and a regex holding `/*` after `}`, each measured at rc 0 with a
-  real `no-unused-vars` behind it
-  ([#205](https://github.com/Anxiety471/wake/issues/205)) - a `-line` /
-  `-next-line` form that names no rule, an inline `/* eslint <rule>: <value> */` that is anything
-  but that rule raised to `error`, and `prettier-ignore`, which exempts the next node from the
-  `prettier --check` half of the same job. The value arm reads the whole value, not its severity:
-  a rule below `error` exits 0 on a warning, so `"warn"` disarms the step as surely as `"off"`,
-  and a list that carries options keeps `error` while reconfiguring the rule - measured,
+  expressions, and refuses, on every line that reader reads, the block `/* eslint-disable */`, a
+  `-line` / `-next-line` form that names no rule, an inline `/* eslint <rule>: <value> */` that is
+  anything but that rule raised to `error`, and `prettier-ignore`, which exempts the next node from
+  the `prettier --check` half of the same job. The value arm reads the whole value, not its
+  severity: a rule below `error` exits 0 on a warning, so `"warn"` disarms the step as surely as
+  `"off"`, and a list that carries options keeps `error` while reconfiguring the rule - measured,
   `["error", {"varsIgnorePattern": ".*"}]`, `["error", {"args": "none"}]`,
   `["error", {"caughtErrors": "none"}]` and `["error", "smart"]` each left a real error at rc 0 -
   so moving the options into `eslint.config.js` is not the way out either: that file is read for
@@ -183,7 +177,13 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   `<rule>: error`. The scanner also reads `++` and `--` as the values they yield, because
   `return counter++ / 2; /* eslint-disable */` was read as one regex and the directive vanished.
   A rule-scoped `// eslint-disable-next-line <rule>` stays legal, the same shape as
-  `# noqa: E402` ([#196](https://github.com/Anxiety471/wake/issues/196)).
+  `# noqa: E402` ([#196](https://github.com/Anxiety471/wake/issues/196)). It has one measured
+  limit, recorded rather than glossed: it decides whether `/` starts a regular expression from the
+  previous character alone, and JavaScript does not decide it there, so three shapes still hide a
+  directive - a property named after a keyword then a division (`record.in / 2`), a regex holding a
+  quote after `)`, and a regex holding `/*` after `}`, each measured at rc 0 with a real
+  `no-unused-vars` behind it
+  ([#205](https://github.com/Anxiety471/wake/issues/205)).
 
 - **A `*.jsonl` directory or a dangling `*.jsonl` symlink no longer turns a quiet inbox into a
   store error.** The empty answer's confirmation asked only whether a listed name ends in
