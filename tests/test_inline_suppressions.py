@@ -1158,9 +1158,13 @@ class LinterRequirementWiringTest(unittest.TestCase):
         self.assertNotIn("skipped", finished.stderr.strip().splitlines()[-1])
 
     def test_without_the_variable_the_control_skips_and_the_step_can_see_it(self):
+        # Every test in the class skips in setUp when node is missing, so the count is the class's
+        # own test count. It was hard-coded as 2, and #204 added a third LinterBitesTest, which
+        # failed this test on main with no change to the guard.
         finished = self.run_control({})
         self.assertEqual(finished.returncode, 0, finished.stderr[-600:])
-        self.assertEqual(finished.stderr.strip().splitlines()[-1], "OK (skipped=2)")
+        expected = unittest.defaultTestLoader.loadTestsFromTestCase(LinterBitesTest).countTestCases()
+        self.assertEqual(finished.stderr.strip().splitlines()[-1], f"OK (skipped={expected})")
 
 
 class StrictRunnerTest(unittest.TestCase):
