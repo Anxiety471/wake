@@ -24,8 +24,12 @@ import os
 import re
 import unittest
 
-from test_gate_shapes import exercise, exercise_inbox_io  # noqa: E402
-from test_wake import IS_ROOT, ROOT_SKIP, WakeTestCase, slurp, write_exe  # noqa: E402
+try:  # `tests/run.sh` runs `discover -s tests`, which puts tests/ on sys.path
+    from test_gate_shapes import exercise, exercise_inbox_io  # noqa: E402
+    from test_wake import IS_ROOT, ROOT_SKIP, WakeTestCase, slurp, write_exe  # noqa: E402
+except ImportError:  # `python3 -m unittest tests.test_gate_pins` from the repo root
+    from tests.test_gate_shapes import exercise, exercise_inbox_io  # noqa: E402
+    from tests.test_wake import IS_ROOT, ROOT_SKIP, WakeTestCase, slurp, write_exe  # noqa: E402
 
 #: Every distinct command `bin/wake` and `bin/wake-inbox-io` send, normalized: `{T}` the thread
 #: store, `{I}` the inbox, `{A}` its active-marker directory, `{K}` one thread id or inbox id, and

@@ -21,7 +21,10 @@ import textwrap
 import time
 import unittest
 
-from test_scrub_check import ci_steps  # noqa: E402
+try:  # `tests/run.sh` runs `discover -s tests`, which puts tests/ itself on sys.path
+    from test_scrub_check import ci_steps  # noqa: E402
+except ImportError:  # `python3 -m unittest tests.test_ops_scripts` from the repo root
+    from tests.test_scrub_check import ci_steps  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OPS = os.path.join(ROOT, "bin", "ops")
@@ -565,9 +568,9 @@ class OpsFilesTestCase(unittest.TestCase):
         # A step carries keys of its own and the job-level list above cannot see them:
         # `working-directory: /tmp` on `ruff check` runs `ruff check .` in an empty directory, which
         # exits 0 with a warning, and `shell: /bin/true {0}` on the same step runs nothing at all -
-        # either one keeps every assertion above green (measured at 06c2c75, Grok's review of #180,
-        # TASK-228). Each step's keys are allowlisted here, as `secret-scan` allowlists checkout's
-        # `uses`/`with` and the scan's `name`/`run`.
+        # either one keeps every assertion above green (measured at 06c2c75 while #181 was reviewed).
+        # Each step's keys are allowlisted here, as `secret-scan` allowlists checkout's `uses`/`with`
+        # and the scan's `name`/`run` (#181).
         allowed = {
             "actions/checkout@v7": ["uses"],
             "actions/setup-python@v6": ["uses", "with"],
@@ -587,6 +590,23 @@ class OpsFilesTestCase(unittest.TestCase):
                     "shell, a working-directory or an `env` decides what the command reads without "
                     "changing a single pinned value",
                 )
+        # The one `with:` block in this job decides which interpreter runs ruff and shellcheck,
+        # and nothing above reads it: `python-version: "3.13"` -> `"3.9"` keeps both lint pins green
+        # (measured at b7c73da). The image is pinned by value on `runs-on`; the interpreter is the
+        # same kind of decision, so it is pinned by value too, as `secret-scan` pins checkout's
+        # `fetch-depth: 0`.
+        setup = steps[1]
+        self.assertRegex(
+            setup["values"].get("uses", ""),
+            r"^actions/setup-python@v\d+$",
+            f"setup-python action is {setup['values'].get('uses')!r}",
+        )
+        self.assertEqual(
+            setup["sections"].get("with"),
+            ['python-version: "3.13"'],
+            f"setup-python with is {setup['sections'].get('with')}: the interpreter is what runs "
+            "ruff and shellcheck, so a different minor fails here instead of changing what lint reads",
+        )
         # What each step runs is pinned by value too, read off the raw lines: `run: "true"` swapped
         # into `ruff check` keeps every pin above green while lint checks nothing (measured at
         # 06c2c75), and so does a ruff version that is not the one the suite was proved on. A

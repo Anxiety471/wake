@@ -103,6 +103,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **The `lint` pin reads the interpreter too, and every test file runs on the module path.**
+  Three holes left by #178's pin: `python-version` inside `lint`'s `actions/setup-python` step
+  was not read, so `"3.13"` → `"3.9"` kept both lint pins green while a different interpreter
+  ran ruff and shellcheck; the step-key comment cited a Kanban board id in a public file; and
+  `python3 -m unittest tests.test_ops_scripts` died on `ModuleNotFoundError: No module named
+  'test_scrub_check'` after the step parser was imported from a sibling test module. The `with:`
+  section is asserted by value (as `secret-scan` asserts checkout's `fetch-depth: 0`), the
+  comment cites the issue instead of a board id, and the three test modules that import a
+  sibling fall back to the dotted path, so both invocations run the suite
+  ([#182](https://github.com/Anxiety471/wake/issues/182)).
+
 - **The `lint` job cannot be disarmed through a key any more.** #174 pinned `runs-on`'s value and
   left the job around it open: at `06c2c75` the full suite stayed green with `runs-on:
   ubuntu-24.04` untouched under a job `container:`, `if: false`, `continue-on-error: true`, a job
