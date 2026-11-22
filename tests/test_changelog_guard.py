@@ -794,8 +794,15 @@ class CiWiringTestCase(unittest.TestCase):
         # pull request arm. The ref is pinned, and the skip names it.
         self.assertIn("REF: ${{ github.ref }}", step)
         self.assertIn('case "$REF" in', step)
-        self.assertIn("refs/heads/main) ;;", step)
-        self.assertIn("a branch push is judged by its pull request", step)
+        # #229: the ref was a literal (`refs/heads/main`), so renaming the default branch took the
+        # skip on every push, read like an intended branch skip, and kept this test green because
+        # it asserted the spelling. The event names the default branch; the arm reads it, names it
+        # in the skip, and refuses to guess when the event carries none.
+        self.assertIn("DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}", step)
+        self.assertIn('"refs/heads/$DEFAULT_BRANCH") ;;', step)
+        self.assertNotIn("refs/heads/main) ;;", step, "the default branch is matched as a literal again")
+        self.assertIn("the default branch; a branch push is judged by its pull request", step)
+        self.assertIn("refusing to guess which ref is judged", step)
 
     def test_shellcheck_covers_the_new_script(self):
         self.assertRegex(
@@ -846,13 +853,13 @@ class PushArmRunsTestCase(unittest.TestCase):
         self.git("commit", "-q", "-m", message)
         return self.git("rev-parse", "HEAD").stdout.strip()
 
-    def run_step(self, base_sha="", before_sha="", ref="refs/heads/main"):
+    def run_step(self, base_sha="", before_sha="", ref="refs/heads/main", default_branch="main"):
         script = pathlib.Path(self.root) / "step.sh"
         script.write_text(step_run_block("CHANGELOG.md deletions"), encoding="utf-8")
         return subprocess.run(
             ["sh", str(script)],
             cwd=self.repo,
-            env=clean_env(BASE_SHA=base_sha, BEFORE_SHA=before_sha, REF=ref),
+            env=clean_env(BASE_SHA=base_sha, BEFORE_SHA=before_sha, REF=ref, DEFAULT_BRANCH=default_branch),
             text=True,
             capture_output=True,
         )
@@ -885,16 +892,39 @@ class PushArmRunsTestCase(unittest.TestCase):
         self.assertIn("refusing to pass without comparing it", result.stderr)
 
     def test_a_feature_branch_push_is_left_to_its_pull_request(self):
-        """The arm reads main only: rewording a line the branch itself added is free (#218)."""
+        """The arm reads the default branch only: rewording a line the branch itself added is free (#218)."""
         self.write("CHANGELOG.md", BASE.replace(RELEASED + "\n", ""))
         self.commit("a branch commit that reworks its own note")
         branch = "refs/heads/fix/218-changelog-guard-push"
         result = self.run_step(before_sha=self.base, ref=branch)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn(f"{branch} is not main", result.stdout)
+        self.assertIn(f"{branch} is not refs/heads/main, the default branch", result.stdout)
         self.assertIn("judged by its pull request", result.stdout)
         # It passed by skipping, not by comparing: no line was read, so it must not claim clean.
         self.assertNotIn("changelog-guard: clean", result.stdout)
+
+    def test_the_arm_reads_the_default_branch_the_event_names(self):
+        """#229: the ref was a literal, so a rename took the skip on every push to the new default."""
+        self.write("CHANGELOG.md", BASE.replace(RELEASED + "\n", ""))
+        self.commit("a merge push to a renamed default branch that drops a released note")
+        result = self.run_step(before_sha=self.base, ref="refs/heads/trunk", default_branch="trunk")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(RELEASED, result.stdout)
+        self.assertIn("changelog-guard: FAILED", result.stderr)
+
+    def test_after_a_rename_the_old_name_is_the_ref_that_is_skipped(self):
+        self.write("CHANGELOG.md", BASE.replace(RELEASED + "\n", ""))
+        self.commit("a push to the old name")
+        result = self.run_step(before_sha=self.base, ref="refs/heads/main", default_branch="trunk")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("refs/heads/main is not refs/heads/trunk, the default branch", result.stdout)
+        self.assertNotIn("changelog-guard: clean", result.stdout)
+
+    def test_an_event_with_no_default_branch_fails_instead_of_passing(self):
+        """Falling back to `main` would be the same silent skip, one rename later."""
+        result = self.run_step(before_sha=self.base, default_branch="")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("the event names no default branch; refusing to guess which ref is judged", result.stderr)
 
     def test_a_pull_request_still_compares_from_its_own_ref(self):
         """The ref check sits after the base it merges into, so a pull request is not disarmed."""

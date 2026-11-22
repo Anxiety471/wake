@@ -162,12 +162,13 @@ jobs:
       # to main is compared with the tip that ref had before the push, so the merge commit that puts
       # a deletion on main is judged there: until #218 this step said "not a pull request" and
       # passed on every merge, so nothing read the merge that carried the deletion.
-      # The push arm reads main only. A branch push carries the branch's own commits, so judging it
-      # here fails a branch for rewording a line the branch itself added, which the rules allow and
-      # which a pull request may do: measured on a real commit, #217's ebbb590 drops 3 lines its
-      # parent 924ea5d carries and main does not, rc 1 under this arm, and the same push is the
-      # named skip once the arm reads main only. A branch is judged by its pull request, against
-      # the base it merges into, which is the only revision that says anything about main.
+      # The push arm reads the default branch only. A branch push carries the branch's own commits,
+      # so judging it here fails a branch for rewording a line the branch itself added, which the
+      # rules allow and which a pull request may do: measured on a real commit, #217's ebbb590
+      # drops 3 lines its parent 924ea5d carries and main does not, rc 1 under this arm, and the
+      # same push is the named skip once the arm reads the default branch only. A branch is judged
+      # by its pull request, against the base it merges into, which is the only revision that says
+      # anything about the default branch.
       # A pull request whose checks ran before this step existed is still not judged by its own run,
       # because GitHub does not re-run checks when the base branch moves. That is why the push arm
       # is the one that decides whether main keeps its notes.
@@ -176,15 +177,26 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BEFORE_SHA: ${{ github.event.before }}
           REF: ${{ github.ref }}
+          # #229: this arm compared `refs/heads/main` as a literal, so renaming the default branch
+          # would take the skip below on every push and read like an intended branch skip. The
+          # event names the default branch; read it instead of writing it down.
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           base="$BASE_SHA"
           if [ -z "$base" ]; then
-            # Only a push to main is judged here. A branch push is left to its pull request, which
-            # compares the base it merges into; naming the ref keeps the skip visible in the log.
+            # Only a push to the default branch is judged here. A branch push is left to its pull
+            # request, which compares the base it merges into; naming both the ref and the default
+            # branch keeps the skip visible in the log, and makes a rename read as itself. No
+            # default branch in the event means no way to know which ref is judged: refuse rather
+            # than fall back to `main`, which is the skip this arm exists to stop.
+            if [ -z "$DEFAULT_BRANCH" ]; then
+              echo "changelog-guard: the event names no default branch; refusing to guess which ref is judged" >&2
+              exit 1
+            fi
             case "$REF" in
-              refs/heads/main) ;;
+              "refs/heads/$DEFAULT_BRANCH") ;;
               *)
-                echo "changelog-guard: $REF is not main; a branch push is judged by its pull request"
+                echo "changelog-guard: $REF is not refs/heads/$DEFAULT_BRANCH, the default branch; a branch push is judged by its pull request"
                 exit 0
                 ;;
             esac

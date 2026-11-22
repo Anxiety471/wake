@@ -342,6 +342,15 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   test holds the wiring rather than the prose. The pull request arm still compares its own base, so
   a green on an old base stays a statement about that base only.
 
+- **The `CHANGELOG.md` guard's push arm reads the default branch, so a rename cannot disarm it.**
+  The arm compared `$REF` with the literal `refs/heads/main`, so renaming the default branch sent
+  every push to that branch down the skip, with a line that read exactly like the intended
+  feature-branch skip while the test holding the arm stayed green on the spelling. The event names
+  the default branch, so the step reads `github.event.repository.default_branch`, matches
+  `refs/heads/$DEFAULT_BRANCH`, and names it in the skip; an event that names no default branch is
+  rc 1 with its own message instead of falling back to `main`, which would be the same silent skip
+  one rename later ([#229](https://github.com/Anxiety471/wake/issues/229)).
+
 - **A suppression inside a linted file is pinned, so one comment cannot silence a whole check.** #185 closed the
   config files a linter loads on its own; a suppression comment is the same trust boundary one level
   in, and nothing read it. At `e4ca592` a standalone `# ruff: noqa` anywhere in a test file left
