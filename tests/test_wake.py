@@ -904,6 +904,45 @@ class InboxStoreReadTests(WakeTestCase):
         self.assertEqual(cmds[2], f"ls {os.path.join(self.state, 'threads')} 2>/dev/null", cmds[2])
 
     @unittest.skipIf(IS_ROOT, "root enters a 444 dir, so the case cannot be built")
+    def test_a_gate_refusing_the_marked_listing_still_reports_an_unenterable_store(self):
+        """The plain branch is the one every gated host takes, so it holds #177 on its own.
+
+        Measured on the installed gate: `ls -F <store> 2>/dev/null` answers
+        `wake-gate: refused (not a wake-store op)` rc 1 while plain `ls <store>` answers rc 0, so
+        `store_dir_unreadable_plain()` is the answer the fleet gets. A 644 store holding a thread
+        file lists that name and the read cannot enter, which is #177 exactly; if this branch
+        answers quiet instead, a broken store reads as an empty inbox on every gated host.
+        """
+        log = os.path.join(self.tmp, "hostops-gate-refuses-marked.log")
+        path = os.path.join(self.fakebin, "hostops-gate-refuses-marked")
+        write_exe(
+            path,
+            f"""
+            #!/bin/sh
+            printf '%s\\n' "$1" >> {log}
+            case "$1" in
+                "ls -F "*) echo "wake-gate: refused (not a wake-store op)" >&2; exit 1 ;;
+            esac
+            exec bash -c "$1"
+            """,
+        )
+        store = os.path.join(self.state, "threads")
+        os.makedirs(store, exist_ok=True)
+        with open(os.path.join(store, "0101-a.jsonl"), "w") as f:
+            f.write('{"kind": "ask"}\n')
+        os.chmod(store, 0o644)
+        try:
+            r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": path})
+        finally:
+            os.chmod(store, 0o755)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertEqual(r.stdout.strip(), "", "an unenterable store answered as an empty inbox")
+        self.assertIn("cannot read the thread store", r.stderr)
+        cmds = self.commands(log)
+        self.assertTrue(cmds[1].startswith("ls -F "), cmds[1])
+        self.assertEqual(cmds[2], f"ls {store} 2>/dev/null", cmds[2])
+
+    @unittest.skipIf(IS_ROOT, "root enters a 444 dir, so the case cannot be built")
     def test_an_unenterable_store_is_still_loud_with_the_marked_listing(self):
         """The marked listing must not lose #177: `ls -F` cannot stat what a 444 or 644 directory
         holds, so it answers rc 1, and the store is reported the way it was."""
