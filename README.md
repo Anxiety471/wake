@@ -215,7 +215,12 @@ listing call (`ls <store> 2>/dev/null`, the shape a host gate already allows), a
 made only when the answer is empty. The listing is what separates the two ways a store can look
 quiet: it must fail (missing, a regular file, no read permission), or name a thread file the read
 did not return — a directory at mode 444 or 644 lists every name but cannot be entered, so the
-store read's glob expands to nothing.
+store read's glob expands to nothing. The confirmation asks `ls -F`, so an entry's mark says what
+it is: a `*.jsonl` entry that is a directory, a dangling symlink, a fifo or a socket holds no
+records, so the store read leaves it out on purpose and the store is quiet, not unreadable
+([#186](https://github.com/Anxiety471/wake/issues/186)). That marked listing is a shape a gate
+must be taught, and a gate that has not been refuses it: `--inbox` then asks the plain
+`ls <store>` question instead, which is the answer #177 shipped. Gate first, client second.
 
 ### `--setup`: create a webhook key
 
