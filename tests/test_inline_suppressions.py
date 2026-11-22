@@ -71,8 +71,13 @@ is not a directive and a `//` in a URL is not a comment, and it reports the text
 the block `/* eslint-disable */`, which exempts everything below it - measured mid-file as well as
 at line 1 - a `-line` / `-next-line` form that names no rule (and `//eslint-disable-next-line` with
 no space after the `//` is honoured, so the marker cannot need one), an inline
-`/* eslint <rule>: <severity> */` whose severity is not `error` (eslint exits 0 on a warning, so `0`,
-`1`, `"off"`, `"warn"` and their list forms each disarmed the check), and `prettier-ignore`, which
+`/* eslint <rule>: <value> */` whose value is not that rule raised to `error` - a severity below it
+(eslint exits 0 on a warning, so `0`, `1`, `"off"`, `"warn"` and their list forms each disarmed the
+check), or `error` carrying options, which keeps the severity and reconfigures the rule (measured,
+`["error", {"varsIgnorePattern": ".*"}]`, `["error", {"args": "none"}]` and `["error", "smart"]`
+each left a real error at rc 0) - each rule read on its own, one pair per top-level comma, so the
+legal two-rule raise `/* eslint no-console: error, eqeqeq: error */` passes while the pair that
+carries options is named for what it is, and `prettier-ignore`, which
 exempts the next node from the `prettier --check` half of the same job with a misformatted file left
 in the tree. Kept: a rule-scoped `// eslint-disable-next-line <rule>[, <rule>] [-- why]` and its block
 spelling, the same shape as `# noqa: E402`. Measured as no hole: eslint reads its directives in
@@ -140,10 +145,10 @@ ESLINT_BLOCK_DISABLE = re.compile(r"^\s*eslint-disable(?![\w-])(?P<rest>.*)$", r
 #: The two line-scoped forms. Legal only when they name a rule.
 ESLINT_LINE_DISABLE = re.compile(r"^\s*eslint-disable-(?:next-)?line(?![\w-])(?P<rest>.*)$", re.DOTALL)
 
-#: An inline config comment, `/* eslint <rule>: <value> */`, which reconfigures a rule to the end of
-#: the file. It never counts as a suppression: the value is what eslint applies, severity and
-#: options both, so the pin reads the whole of it.
-ESLINT_INLINE_CONFIG = re.compile(r"^\s*eslint\s+(?P<rule>[^:]+):(?P<severity>.*)$", re.DOTALL)
+#: An inline config comment, `/* eslint <rule>: <value>[, <rule>: <value>] */`, which reconfigures
+#: its rules to the end of the file. It never counts as a suppression: the value is what eslint
+#: applies, severity and options both, so the pin reads the whole of it, one pair per rule.
+ESLINT_INLINE_CONFIG = re.compile(r"^\s*eslint\s+(?P<body>.*)$", re.DOTALL)
 
 #: The only inline config value the pin accepts: a raise to `error` on that rule and nothing else.
 INLINE_CONFIG_RAISE = re.compile(r"^(?:\[\s*)?(?:2|error|\"error\"|'error')(?:\s*\])?$", re.IGNORECASE)
@@ -482,6 +487,59 @@ def eslint_rules(rest):
     return rules
 
 
+def split_top_level(text, separator):
+    """`text` cut at every `separator` that sits outside brackets and quoted strings.
+
+    An inline config's value holds both, `["error", {"varsIgnorePattern": ".*"}]`, so a plain
+    `str.split` reads one rule's options as the start of the next rule.
+    """
+    pieces = []
+    depth = 0
+    quote = ""
+    escaped = False
+    start = 0
+    for index, char in enumerate(text):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in "\"'`":
+            quote = char
+        elif char in "[{(":
+            depth += 1
+        elif char in "]})":
+            depth = max(depth - 1, 0)
+        elif char == separator and depth == 0:
+            pieces.append(text[start:index])
+            start = index + 1
+    pieces.append(text[start:])
+    return pieces
+
+
+def inline_config_pairs(body):
+    """`(rule, value)` for each `rule: value` pair of an inline config's body, one per top-level comma.
+
+    Measured at eslint 10.15.0: `/* eslint no-console: error, eqeqeq: error */` raises both rules
+    and reports a violation of either at rc 1, so a two-rule raise is two pairs, not one rule
+    carrying a comma-laden value. A pair with no value (`eqeqeq:`) is dropped by eslint while the
+    rest of the comment still applies, so it comes back as an empty string and is judged nothing; a
+    segment with no `:` at all is one eslint fails the file on (`Failed to parse JSON from
+    '"no-console": error, eqeqeq'`, rc 1), so it comes back as `None` and is refused.
+    """
+    pairs = []
+    for segment in split_top_level(body, ","):
+        segment = segment.strip()
+        if not segment:
+            continue
+        head, *tail = split_top_level(segment, ":")
+        pairs.append((head.strip(), ":".join(tail).strip() if tail else None))
+    return pairs
+
+
 def inline_config_fault(value):
     """What an inline config's value does beyond raising one rule to `error`, or `None` when it does.
 
@@ -532,25 +590,39 @@ def javascript_suppression_problems(root, paths):
                 continue
             config = ESLINT_INLINE_CONFIG.match(comment)
             if block and config:
-                rule = config.group("rule").strip()
-                fault = inline_config_fault(config.group("severity"))
-                if fault == "options":
-                    problems.append(
-                        f"{where} reconfigures `{rule}` rather than raising it: the value carries "
-                        "options after the severity, and eslint honours them with the severity still "
-                        'at `error` - measured, `["error", {"varsIgnorePattern": ".*"}]`, '
-                        '`["error", {"args": "none"}]` and `["error", "smart"]` each left a real '
-                        "error at rc 0. The pin cannot read an options object as safe, and moving it "
-                        "into `eslint.config.js` keeps nothing: that file is read for directives only "
-                        "(#208), so a rule entry carrying options sits outside the pin. Keep the "
-                        "inline comment to `<rule>: error` (#196)"
-                    )
-                elif fault == "below":
-                    problems.append(
-                        f"{where} turns `{rule}` below error: eslint exits 0 on a warning, so "
-                        '`/* eslint <rule>: 0` / `1` / `"off"` / `"warn"` disarms the check as surely '
-                        "as removing the rule - an inline config may only raise a rule to error (#196)"
-                    )
+                for rule, value in inline_config_pairs(config.group("body")):
+                    if value is None:
+                        problems.append(
+                            f"{where} is not a `rule: value` list: `{rule}` carries no value, and "
+                            "eslint fails the file on the comment rather than reading it - "
+                            "measured, `Failed to parse JSON` at rc 1 - so write `<rule>: error` "
+                            "(#204)"
+                        )
+                        continue
+                    # eslint drops a pair with no value and applies the rest of the comment
+                    # (measured), so there is nothing to refuse there.
+                    if not value:
+                        continue
+                    fault = inline_config_fault(value)
+                    if fault == "options":
+                        problems.append(
+                            f"{where} reconfigures `{rule}` rather than raising it: the value "
+                            "carries options after the severity, and eslint honours them with the "
+                            'severity still at `error` - measured, `["error", '
+                            '{"varsIgnorePattern": ".*"}]`, `["error", {"args": "none"}]` and '
+                            '`["error", "smart"]` each left a real error at rc 0. The pin cannot '
+                            "read an options object as safe, so a rule entry carrying options "
+                            "belongs outside the pin - `eslint.config.js` is read for directives "
+                            "only (#208), so it is not the way out either. Keep the inline "
+                            "comment to `<rule>: error` (#196)"
+                        )
+                    elif fault == "below":
+                        problems.append(
+                            f"{where} turns `{rule}` below error: eslint exits 0 on a warning, so "
+                            '`/* eslint <rule>: 0` / `1` / `"off"` / `"warn"` disarms the check as '
+                            "surely as removing the rule - an inline config may only raise a rule "
+                            "to error (#196)"
+                        )
     return problems
 
 
@@ -841,6 +913,55 @@ class InlineSuppressionTestCase(unittest.TestCase):
                 self.assertIn("#208", problems[0])
                 self.assertIn("directives only", problems[0])
 
+    def test_a_multi_rule_inline_config_is_read_one_pair_per_rule(self):
+        """Measured: eslint raises both rules and reports a violation of either (rc 1, 2 errors)."""
+        for body in (
+            "/* eslint no-console: error, eqeqeq: error */\nexport const v = 1;\n",
+            "/* eslint eqeqeq: error, no-console: error */\nexport const v = 1;\n",
+            "/* eslint no-console: 2, eqeqeq: 2 */\nexport const v = 1;\n",
+            "/* eslint   no-console :  error ,  eqeqeq :error  */\nexport const v = 1;\n",
+            "/* eslint no-console: error,\n   eqeqeq: error */\nexport const v = 1;\n",
+            '/* eslint no-console: error, eqeqeq: ["error"] */\nexport const v = 1;\n',
+            # A trailing comma, and a pair with no value: eslint drops the empty pair and applies
+            # the rest of the comment (measured), so neither is a refusal.
+            "/* eslint no-console: error, */\nexport const v = 1;\n",
+            "/* eslint no-console: error, eqeqeq: */\nexport const v = 1;\n",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(self.problems(javascript=body), [], "a legal two-rule raise was refused")
+
+    def test_a_multi_rule_inline_config_names_the_pair_at_fault(self):
+        """The message names the rule that carries the options, not the first rule in the comment."""
+        body = (
+            "/* eslint no-console: error, "
+            '@typescript-eslint/no-unused-vars: ["error", {"varsIgnorePattern": ".*"}] */\n'
+            "const neverUsed = 2;\n"
+        )
+        problems = self.problems(javascript=body)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("reconfigures `@typescript-eslint/no-unused-vars`", problems[0])
+        self.assertNotIn("reconfigures `no-console`", problems[0])
+        body = "/* eslint no-console: error, eqeqeq: warn */\nexport const v = 1;\n"
+        problems = self.problems(javascript=body)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("turns `eqeqeq` below error", problems[0])
+        # Two faults are two problems, one for each pair that carries one.
+        body = '/* eslint no-console: 1, eqeqeq: "off" */\nexport const v = 1;\n'
+        problems = self.problems(javascript=body)
+        self.assertEqual(len(problems), 2, problems)
+
+    def test_an_inline_config_segment_that_is_not_a_pair_is_refused(self):
+        """Measured: eslint fails the file on it, `Failed to parse JSON`, rather than reading it."""
+        for body in (
+            "/* eslint no-console: error, eqeqeq */\nexport const v = 1;\n",
+            "/* eslint eqeqeq */\nexport const v = 1;\n",
+        ):
+            with self.subTest(body=body):
+                problems = self.problems(javascript=body)
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("not a `rule: value` list", problems[0])
+                self.assertIn("#204", problems[0])
+
     def test_a_division_after_an_increment_is_not_a_regex(self):
         """Measured: `counter++ / 2` was read as a regex, so the directive behind it went unread."""
         for body, expected in (
@@ -1010,6 +1131,19 @@ class LinterBitesTest(unittest.TestCase):
         self.assertEqual(len(problems), 1, problems)
         self.assertIn("probe.ts:1", problems[0])
         self.assertIn("block form", problems[0])
+
+    def test_a_two_rule_inline_raise_keeps_both_rules_armed(self):
+        """Measured: `/* eslint a: error, b: error */` is legal, and eslint reports both rules."""
+        body = "console.log(1);\nexport const same = (a, b) => a == b;\n"
+        self.write(body)
+        self.assertEqual(self.eslint(), (0, 0), "the fixture no longer starts clean")
+        self.write("/* eslint no-console: error, eqeqeq: error */\n" + body)
+        self.assertEqual(self.eslint(), (1, 2), "eslint no longer reads both pairs of the raise")
+        self.assertEqual(
+            javascript_suppression_problems(self.root, ["probe.ts"]),
+            [],
+            "the pin refused a raise eslint itself honours",
+        )
 
     def test_one_prettier_ignore_takes_the_api_step_from_rc_1_to_rc_0(self):
         """The formatter half of the same job, the same way."""
