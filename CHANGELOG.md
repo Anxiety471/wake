@@ -103,6 +103,21 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **A `*.jsonl` directory or a dangling `*.jsonl` symlink no longer turns a quiet inbox into a
+  store error.** The empty answer's confirmation asked only whether a listed name ends in
+  `.jsonl`, so `mkdir stray.jsonl` in a store holding no records answered `cannot read the thread
+  store`, exit 1, and sent the reader to `WAKE_HOSTOPS` and permissions that were fine. The
+  confirmation asks `ls -F` now and reads each entry's type mark: the store read keeps only
+  regular files (`[ -f "$f" ] || continue`), so a directory, a dangling symlink, a fifo or a
+  socket under a thread's name is an entry it was right to leave out, and only a regular thread
+  file the read did not return still means the store could not be entered (#177). The marked
+  listing is a new command shape, so a gate that predates it refuses the call and the plain
+  `ls <store>` question is asked instead - the answer #177 shipped, which keeps a quiet store
+  quiet and an unenterable one loud. `tests/test_gate_pins.py` pins the new shape, and the tests
+  build every shape: a `*.jsonl` directory, a dangling symlink, a fifo and a socket, the
+  gate-refused fallback, and a `threads` that is an executable regular file, whose `*` mark is
+  what `entry_name` is for ([#186](https://github.com/Anxiety471/wake/issues/186)).
+
 - **The `lint` pin reads the interpreter too, and every test file runs on the module path.**
   Three holes left by #178's pin: `python-version` inside `lint`'s `actions/setup-python` step
   was not read, so `"3.13"` → `"3.9"` kept both lint pins green while a different interpreter

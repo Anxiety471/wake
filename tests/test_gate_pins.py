@@ -22,6 +22,7 @@ the inbox read one at a time and records what each one did.
 import json
 import os
 import re
+import shutil
 import unittest
 
 try:  # `tests/run.sh` runs `discover -s tests`, which puts tests/ on sys.path
@@ -52,6 +53,9 @@ PINNED = (
     'cat "$f" || printf \'\\n@@wake-fail %s\\n\' "${f##*/}"; done 2>/dev/null',
     # wake.threads_all_one_by_one: the listing it asks for after a refused store read
     "ls {T} 2>/dev/null",
+    # wake.store_dir_unreadable: the empty answer's confirmation, marked with each entry's type
+    # so a `*.jsonl` directory or a dangling symlink is not read as an unreadable store (#186)
+    "ls -F {T} 2>/dev/null",
     # wake.inbox_live
     "ls -t {A}/*.json 2>/dev/null | head -10",
     "cat {A}/{K}.json 2>/dev/null",
@@ -161,9 +165,28 @@ def inbox_read_over_the_host(test):
     return slurp(log).splitlines()
 
 
+def empty_store_confirmation(test):
+    """The empty answer's confirmation, which is the one shape a store with threads never builds.
+
+    `--inbox` asks it only when nothing came back (#168), so the pinned marked listing is reached
+    here or not at all: a store with no entries, driven through a stub host that runs everything.
+    """
+    log = os.path.join(test.tmp, "hostops-empty-store.log")
+    hostops, _inbox = _session(test, log, "hostops-empty-store")
+    store = os.path.join(test.state, "threads")
+    shutil.rmtree(store, ignore_errors=True)
+    os.makedirs(store)
+    open(log, "w").close()
+    r = test.wake("--inbox", env={"WAKE_HOSTOPS": hostops, "WAKE_SOURCE": "bot:engineer"})
+    test.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+    return slurp(log).splitlines()
+
+
 def every_shape(test):
     """Every command the two programs built, in the order they were seen."""
-    commands = list(exercise(test)) + list(exercise_inbox_io(test)) + refused_store_read(test)
+    commands = (
+        list(exercise(test)) + list(exercise_inbox_io(test)) + refused_store_read(test) + empty_store_confirmation(test)
+    )
     if not IS_ROOT:
         commands += inbox_read_over_the_host(test)
     return normalize(commands, test.state)

@@ -720,6 +720,19 @@ class InboxStoreReadTests(WakeTestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("cannot read the thread store", r.stderr)
 
+    def test_an_executable_regular_file_at_the_store_path_is_not_reported_as_no_threads(self):
+        """The mark `entry_name` is for: `ls -F` appends `*` to an executable regular file, so a
+        `threads` at mode 755 no longer equals the store path and would read as a listing with no
+        thread files in it - a broken store answered as a quiet one."""
+        bridge, log = self.bridge("hostops-exec-regular-file")
+        store = os.path.join(self.state, "threads")
+        with open(store, "w"):
+            pass
+        os.chmod(store, 0o755)
+        r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("cannot read the thread store", r.stderr)
+
     @unittest.skipIf(IS_ROOT, "root reads a 000 dir, so the case cannot be built")
     def test_an_unreadable_store_dir_is_not_reported_as_no_threads(self):
         """The case #168 names: the directory exists and cannot be entered. Ungated, every store
@@ -773,6 +786,141 @@ class InboxStoreReadTests(WakeTestCase):
             os.chmod(store, 0o755)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+
+    def test_a_jsonl_directory_does_not_make_a_quiet_store_an_error(self):
+        """#186: a `mkdir stray.jsonl` in a store holding no records answered `cannot read the
+        thread store`, exit 1, where the store is readable and simply quiet. The store read
+        keeps only regular files (`[ -f "$f" ] || continue`), so a directory under a thread's
+        name is an entry it was right to leave out. The confirmation asks `ls -F`, whose `/`
+        mark is what tells the two apart."""
+        store = os.path.join(self.state, "threads")
+        os.makedirs(os.path.join(store, "stray.jsonl"))
+        bridge, log = self.bridge("hostops-jsonl-dir")
+        r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        cmds = self.commands(log)
+        self.assertIn("@@wake-file", cmds[0])
+        self.assertTrue(cmds[1].startswith("ls -F "), cmds[1])
+
+    def test_a_dangling_jsonl_symlink_does_not_make_a_quiet_store_an_error(self):
+        """The other shape #186 names: a pruned store leaves `x.jsonl -> /gone`. The store read's
+        `-f` follows the link, finds nothing and skips it, so the link is not evidence either;
+        `ls -F` marks it `@`."""
+        store = os.path.join(self.state, "threads")
+        os.makedirs(store)
+        os.symlink("/nonexistent-wake-store-file", os.path.join(store, "dangling.jsonl"))
+        r = self.wake(
+            "--inbox",
+            env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": self.bridge("hostops-jsonl-link")[0]},
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+
+    def test_a_fifo_under_a_thread_name_is_quiet_too(self):
+        """The other entries `ls -F` marks and the store read skips: `-F` says `|` for a fifo and
+        `=` for a socket, and `[ -f "$f" ]` is false for both, so neither is a thread the read
+        should have returned. Named in the docstring, so pinned here rather than claimed."""
+        store = os.path.join(self.state, "threads")
+        os.makedirs(store)
+        try:
+            os.mkfifo(os.path.join(store, "pipe.jsonl"))
+        except (AttributeError, OSError):
+            self.skipTest("this platform cannot make a fifo")
+        bridge, log = self.bridge("hostops-jsonl-fifo")
+        r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        self.assertTrue(self.commands(log)[1].startswith("ls -F "), self.commands(log)[1])
+
+    def test_a_socket_under_a_thread_name_is_quiet_too(self):
+        """`ls -F` marks a socket `=` and `[ -f "$f" ]` is false for it, so a store holding only
+        one is quiet as well. The socket is unlinked by the test case's own cleanup of state."""
+        import socket
+
+        store = os.path.join(self.state, "threads")
+        os.makedirs(store)
+        sock = socket.socket(socket.AF_UNIX)
+        self.addCleanup(sock.close)
+        try:
+            sock.bind(os.path.join(store, "s.jsonl"))
+        except OSError as e:
+            self.skipTest(f"this platform cannot bind a unix socket here: {e}")
+        bridge, log = self.bridge("hostops-jsonl-socket")
+        r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        self.assertTrue(self.commands(log)[1].startswith("ls -F "), self.commands(log)[1])
+
+    def test_a_plain_thread_name_the_read_did_not_return_is_still_loud(self):
+        """#177's actual question, kept under the marked listing: the listing names a regular
+        thread file (no type mark) and the store read returned nothing, so the read could not
+        enter the store. Driven through a host stub, because no local shape reaches it any more -
+        a store `ls -F` can list but the read cannot enter answers rc 1 on the listing itself."""
+        log = os.path.join(self.tmp, "hostops-plain-name.log")
+        path = os.path.join(self.fakebin, "hostops-plain-name")
+        store = os.path.join(self.state, "threads")
+        os.makedirs(store, exist_ok=True)
+        write_exe(
+            path,
+            f"""
+            #!/bin/sh
+            printf '%s\\n' "$1" >> {log}
+            case "$1" in
+                "ls -F "*) printf '%s\\n' "0101-a.jsonl"; exit 0 ;;
+                "for f in "*) exit 0 ;;
+            esac
+            exec bash -c "$1"
+            """,
+        )
+        r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": path})
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertEqual(r.stdout.strip(), "", "a store the read did not enter answered as quiet")
+        self.assertIn("cannot read the thread store", r.stderr)
+
+    def test_a_gate_that_refuses_the_marked_listing_gets_the_plain_one(self):
+        """`ls -F` is a new shape, so a host gate that predates it refuses the call with a message
+        on stderr, which is `bridge_failed` and nothing else. The confirmation then asks the plain
+        shape #177 shipped, and a quiet store stays quiet - gate first, client second."""
+        os.makedirs(os.path.join(self.state, "threads"), exist_ok=True)
+        log = os.path.join(self.tmp, "hostops-no-marked.log")
+        path = os.path.join(self.fakebin, "hostops-no-marked")
+        write_exe(
+            path,
+            f"""
+            #!/bin/sh
+            printf '%s\\n' "$1" >> {log}
+            case "$1" in
+                "ls -F "*) echo "wake-gate: refused (not a wake-store op)" >&2; exit 1 ;;
+            esac
+            exec bash -c "$1"
+            """,
+        )
+        r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": path})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        cmds = self.commands(log)
+        self.assertTrue(cmds[1].startswith("ls -F "), cmds[1])
+        self.assertEqual(cmds[2], f"ls {os.path.join(self.state, 'threads')} 2>/dev/null", cmds[2])
+
+    @unittest.skipIf(IS_ROOT, "root enters a 444 dir, so the case cannot be built")
+    def test_an_unenterable_store_is_still_loud_with_the_marked_listing(self):
+        """The marked listing must not lose #177: `ls -F` cannot stat what a 444 or 644 directory
+        holds, so it answers rc 1, and the store is reported the way it was."""
+        store = os.path.join(self.state, "threads")
+        os.makedirs(store, exist_ok=True)
+        with open(os.path.join(store, "0101-a.jsonl"), "w") as f:
+            f.write('{"kind": "ask"}\n')
+        os.chmod(store, 0o644)
+        try:
+            r = self.wake(
+                "--inbox",
+                env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": self.bridge("hostops-644-marked")[0]},
+            )
+        finally:
+            os.chmod(store, 0o755)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("cannot read the thread store", r.stderr)
 
     def test_a_store_holding_no_thread_files_is_still_quiet(self):
         """A stray non-thread file must not turn "nobody asked you anything" into a store error:
