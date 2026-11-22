@@ -117,6 +117,24 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   build every shape: a `*.jsonl` directory, a dangling symlink, a fifo and a socket, the
   gate-refused fallback, and a `threads` that is an executable regular file, whose `*` mark is
   what `entry_name` is for ([#186](https://github.com/Anxiety471/wake/issues/186)).
+- **The files the linters read for themselves are pinned.** `lint`'s workflow was pinned by value
+  (#174, #178, #182), its tool configuration was not: at `33578c5` one line in `[tool.ruff]`,
+  `extend-exclude = ["tests"]`, left `ruff check .` at "All checks passed!" with a planted F821 in
+  `tests/test_wake.py` (26 files read became 12) while both lint pins and the whole suite stayed
+  green, and a root `.shellcheckrc` reading `disable=all` silenced the shipped shellcheck line.
+  `tests/test_linter_configs.py` reads `pyproject.toml` as ruff does (a small parser, because the
+  test job starts at Python 3.9 and has no `tomllib`) and pins every `[tool.ruff*]` table, key and
+  value, with `extend-include` computed from the tree's python scripts that have no `.py`
+  suffix. It also refuses a second linter config file at any depth (`.ruff.toml`, `ruff.toml`,
+  another `pyproject.toml`, `.shellcheckrc`, `shellcheckrc`), and a `.gitignore` pattern that
+  matches a tracked file, which ruff honours (`git check-ignore --no-index`, since plain
+  `check-ignore` never reports a tracked path). `.ignore` counts as well: ruff's ignore-file
+  support reads it, a tracked root `.ignore` naming `tests/` left `ruff check .` at rc 0 with a
+  planted F401 (27 files read became 12) while this module stayed green, and
+  `git check-ignore --no-index` never reports it either, so it is refused by name
+  ([#188](https://github.com/Anxiety471/wake/issues/188)). Measured with ruff 0.17.5 and
+  shellcheck 0.11.0: 22 mutations each fail the module. A deliberate change edits the pin in the
+  same commit ([#185](https://github.com/Anxiety471/wake/issues/185)).
 
 - **The `lint` pin reads the interpreter too, and every test file runs on the module path.**
   Three holes left by #178's pin: `python-version` inside `lint`'s `actions/setup-python` step
