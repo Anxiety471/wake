@@ -77,6 +77,23 @@ COMPETING_LINTER_FILES = (
     ".ignore",
 )
 
+#: Whether a new name belongs above is measured, not guessed. ruff's ignore-file support is a walk
+#: rule, and `ruff check --show-settings` prints only `file_resolver.respect_gitignore`, so an
+#: unhonoured name and an untested one look identical there. Recipe, run at `dbb5814` with ruff
+#: 0.17.5 (#202):
+#:
+#:     printf '_x = undefined_name\n' > tests/_probe.py   # F821 is on by default
+#:     ruff check .                                       # rc 1, names tests/_probe.py
+#:     printf 'tests/\n' > <candidate>                    # at the repo root
+#:     ruff check .                                       # rc 0 -> honoured: add the name above
+#:                                                        # rc 1 -> not honoured: leave it out
+#:     rm -f <candidate> tests/_probe.py                  # untracked scratch, never committed
+#:
+#: `ruff check . -v` prints the read set as `Checked 29 files` with the probe planted and
+#: `Checked 12 files` once a `tests/` pattern is honoured. Honoured today: `.ignore`, `.gitignore`,
+#: `.git/info/exclude`. Not honoured: `.ruffignore`, `.ruff-ignore`, `.lintignore`, `.eslintignore`,
+#: `.dockerignore`.
+
 ROOT_PYPROJECT = "pyproject.toml"
 
 
