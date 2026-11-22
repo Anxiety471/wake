@@ -231,6 +231,34 @@ def bridge_failed(r):
     return r.returncode != 0 and bool((getattr(r, "stderr", "") or "").strip())
 
 
+def store_dir_entries(r):
+    """The store directory's own entries from an `ls` result, or None when the directory itself
+    cannot be read (#168).
+
+    Every store command the client sends silences stderr, because that is the shape the host
+    gate matches; the same silence throws away the reason a read failed. The one-call store read
+    prints nothing both for a store with no files and for a store the shell could not enter, so
+    an empty answer on its own cannot tell a quiet store from a broken one. `ls` is the command
+    whose exit status carries the difference, and `ls <store> 2>/dev/null` is a shape the gate
+    already allows, so this needs no gate change. A `threads` that is a regular file prints its
+    own path and exits 0, which is the other way a broken store reads as an empty one.
+    """
+    if bridge_failed(r) or r.returncode != 0:
+        return None
+    out = (r.stdout or "").strip()
+    if out == THREADS:
+        return None
+    return out.split()
+
+
+def store_dir_unreadable():
+    """True when the store directory itself cannot be listed, so an empty answer means nothing."""
+    try:
+        return store_dir_entries(_host_run(f"ls {q(THREADS)} 2>/dev/null")) is None
+    except OSError:
+        return True
+
+
 def thread_read(tid):
     """One thread's records: [] when the thread does not exist, None when the store itself cannot be read."""
     if "/" in tid or ".." in tid:
@@ -322,10 +350,11 @@ def threads_all_one_by_one():
         r = _host_run(f"ls {q(THREADS)} 2>/dev/null")
     except OSError:
         return None
-    if bridge_failed(r):
+    entries = store_dir_entries(r)
+    if entries is None:
         return None
     out = []
-    for fn in (r.stdout or "").split():
+    for fn in entries:
         if not fn.endswith(".jsonl"):
             continue
         recs = thread_read(fn[:-6])
@@ -341,6 +370,11 @@ def threads_mine(sender):
     if threads is None:
         threads = threads_all_one_by_one()
     if threads is None:
+        return None
+    if not threads and store_dir_unreadable():
+        # Nothing came back: either the store holds no threads or it could not be entered, and
+        # `--inbox` must never answer the second as the first (#168). One extra call, paid only
+        # when the answer is empty, in a shape the gate already allows, so no gate change.
         return None
     mine = [(tid, recs) for tid, recs in threads if recs and recs[0].get("from") == sender]
     return sorted(mine, key=lambda x: x[1][0].get("ts", ""), reverse=True)

@@ -678,8 +678,69 @@ class InboxStoreReadTests(WakeTestCase):
         self.assertEqual(len(self.commands(log)), 1, "one host call, not one per thread")
         self.assertLess(elapsed, 10, f"--inbox took {elapsed:.1f}s for 128 threads")
 
-    def test_an_empty_store_is_no_threads_in_one_call(self):
+    def test_an_empty_store_is_no_threads_after_confirming_the_dir(self):
+        """An empty answer costs one more call, and it has to: the store read prints nothing for a
+        store with no files and nothing for a store the shell could not enter, so the listing is
+        what tells them apart (#168). A store that answers with threads pays nothing extra."""
+        os.makedirs(os.path.join(self.state, "threads"), exist_ok=True)
         bridge, log = self.bridge("hostops-empty")
+        r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        cmds = self.commands(log)
+        self.assertEqual(len(cmds), 2, cmds)
+        self.assertIn("@@wake-file", cmds[0])
+        self.assertTrue(cmds[1].startswith("ls "), cmds[1])
+
+    def test_a_store_with_threads_pays_no_extra_call(self):
+        """The #165 cost is the reason the confirmation is not pre-flight (#168)."""
+        self.seed("bot:coordinator", 4)
+        bridge, log = self.bridge("hostops-no-extra")
+        r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.commands(log)), 1, self.commands(log))
+
+    def test_a_missing_store_dir_is_not_reported_as_no_threads(self):
+        """#168: `threads/` absent read as an empty inbox with exit 0, so a mistyped
+        WAKE_HOSTOPS or a wrong state dir looked like a quiet morning."""
+        bridge, log = self.bridge("hostops-missing")
+        shutil.rmtree(os.path.join(self.state, "threads"), ignore_errors=True)
+        r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertEqual(r.stdout.strip(), "", "an inbox that cannot be read printed an answer")
+        self.assertIn("cannot read the thread store", r.stderr)
+
+    def test_a_threads_that_is_a_regular_file_is_not_reported_as_no_threads(self):
+        """The second way a store reads as empty: `ls` prints the path itself and exits 0."""
+        bridge, log = self.bridge("hostops-regular-file")
+        store = os.path.join(self.state, "threads")
+        with open(store, "w"):
+            pass
+        r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("cannot read the thread store", r.stderr)
+
+    @unittest.skipIf(IS_ROOT, "root reads a 000 dir, so the case cannot be built")
+    def test_an_unreadable_store_dir_is_not_reported_as_no_threads(self):
+        """The case #168 names: the directory exists and cannot be entered. Ungated, every store
+        command silences stderr, so nothing but the exit status of a listing can tell."""
+        bridge, log = self.bridge("hostops-dir-000")
+        self.seed("bot:coordinator", 2)
+        store = os.path.join(self.state, "threads")
+        os.chmod(store, 0)
+        try:
+            r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
+        finally:
+            os.chmod(store, 0o755)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertEqual(r.stdout.strip(), "", "an unreadable store answered as an empty inbox")
+        self.assertIn("cannot read the thread store", r.stderr)
+
+    def test_an_inbox_on_a_store_with_threads_of_another_source_is_still_quiet(self):
+        """The confirmation must not turn 'nobody asked you anything' into a store failure: a
+        readable store with other people's threads is still an empty inbox, exit 0."""
+        self.seed("bot:somebody-else", 3)
+        bridge, log = self.bridge("hostops-other-source")
         r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")

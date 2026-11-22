@@ -152,6 +152,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   step is pinned too, so a reviewer sees it in the diff
   ([#172](https://github.com/Anxiety471/wake/issues/172)).
 
+- **A store directory that cannot be read is reported, not answered as an empty inbox.** `--inbox`
+  answered `no threads opened by <source>` with exit 0 when `threads/` was missing, unreadable, or
+  a regular file, so a mistyped `WAKE_HOSTOPS`, a wrong state dir, or a permissions problem read as
+  a quiet morning. Every store command silences stderr, because that is the shape the host gate
+  matches, so a store with no files and a store the shell could not enter printed the same thing.
+  When the answer is empty the client now confirms it with `ls <store> 2>/dev/null`, whose exit
+  status is the difference, and reports `cannot read the thread store`, exit 1, otherwise. The
+  confirmation costs one call and only when the answer is empty, and `ls <store> 2>/dev/null` is
+  the gate's own `thread list` route, so this needs no gate change
+  ([#168](https://github.com/Anxiety471/wake/issues/168)).
+
 - **CI's secret scan cannot be quietly switched off any more.** #164 pinned the flag `ci.yml`
   passes and left the job around it open: an `if:`, a `continue-on-error:` or a job `defaults` on
   `secret-scan` skips the only history scan in CI, or reports a failed one as neutral, while every
