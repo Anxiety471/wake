@@ -17,6 +17,11 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   instead of skipping the control again. The step runs `tests/run_module_strict.py`, which fails
   on any skip at all - `@unittest.skipIf`, a version guard, `self.skipTest` inside an arm - because
   `python3 -m unittest` exits 0 on `OK (skipped=1)` and that is the same silent green one level up.
+  An expected failure is refused the same way - `unittest` reports `OK (expected failures=1)` at
+  rc 0, so `@unittest.expectedFailure` on an arm would turn the control off with no red check -
+  and the runner's docstring names the two shapes it cannot catch, a `load_tests()` that drops an
+  arm and an `os._exit(0)` before the verdict
+  ([#234](https://github.com/Anxiety471/wake/issues/234)).
   The runner's own verdict is pinned as well: `StrictRunnerTest` runs a fixture whose test fails and
   one with no module name, so `return 0` in place of `0 if result.wasSuccessful() else 1` - which
   survived all 38 tests before those two - fails a test instead of reporting a broken control as a

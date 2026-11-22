@@ -1219,6 +1219,26 @@ class StrictRunnerTest(unittest.TestCase):
         self.assertIn("FAILED (failures=1)", finished.stderr)
         self.assertIn("the control no longer bites", finished.stderr)
 
+    def test_an_expected_failure_is_a_failure(self):
+        """`@unittest.expectedFailure` is how a rotten control goes quiet without a red check.
+
+        Measured at `ae59de6`: a fixture whose only test is an expected failure that then fails
+        left the runner at rc 0 with `OK (expected failures=1)`, so the step reports a control
+        that did not pass as a pass (#234). Same silent green as the skip, one decorator in, and
+        the realistic route is a platform difference: "prettier differs on the runner, mark the arm
+        an expected failure".
+        """
+        finished = self.run_fixture(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n"
+            "    @unittest.expectedFailure\n"
+            "    def test_dimmed(self):\n"
+            "        self.assertTrue(False, 'the control no longer bites')\n"
+        )
+        self.assertEqual(finished.returncode, 1, finished.stdout[-400:])
+        self.assertIn("refused: 1 test(s) marked an expected failure", finished.stderr)
+        self.assertIn("test_dimmed", finished.stderr)
+
     def test_usage_is_two(self):
         """No module name is a usage error, so a mistyped name cannot read as success either."""
         finished = subprocess.run(
