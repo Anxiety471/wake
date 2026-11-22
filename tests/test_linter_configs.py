@@ -58,9 +58,14 @@ RUFF_VALUES = {
 
 #: A file by one of these names gives a linter a configuration of its own. `pyproject.toml` is
 #: listed because a second one decides the files under it; the root one is the pinned config.
-#: Caveat: ruff's ignore-file support is a walk rule, not a fixed config-file name, so a ruff
-#: release can honour an ignore name this tuple does not carry. Add the measured name here;
-#: `test_no_other_linter_config_file_is_tracked` stays the guard.
+#:
+#: Only a name git does not track belongs here. The tuple is matched against `git ls-files`, so a
+#: tracked name - the root `.gitignore` - fails `test_no_other_linter_config_file_is_tracked` on
+#: this repo the moment it is added, which reads as the guard rejecting the file it protects.
+#: The git-known ignore files are that test's sibling instead:
+#: `test_no_tracked_file_is_hidden_from_ruff_by_gitignore` asks `git check-ignore --no-index`
+#: whether a `.gitignore` or `.git/info/exclude` pattern matches a tracked path, which is the
+#: shape ruff acts on (#201).
 COMPETING_LINTER_FILES = (
     "pyproject.toml",
     ".ruff.toml",
@@ -71,6 +76,23 @@ COMPETING_LINTER_FILES = (
     # reports it, so nothing else in the tree looks at it (#188).
     ".ignore",
 )
+
+#: Whether a new name belongs above is measured, not guessed. ruff's ignore-file support is a walk
+#: rule, and `ruff check --show-settings` prints only `file_resolver.respect_gitignore`, so an
+#: unhonoured name and an untested one look identical there. Recipe, run at `dbb5814` with ruff
+#: 0.17.5 (#202):
+#:
+#:     printf '_x = undefined_name\n' > tests/_probe.py   # F821 is on by default
+#:     ruff check .                                       # rc 1, names tests/_probe.py
+#:     printf 'tests/\n' > <candidate>                    # at the repo root
+#:     ruff check .                                       # rc 0 -> honoured: add the name above
+#:                                                        # rc 1 -> not honoured: leave it out
+#:     rm -f <candidate> tests/_probe.py                  # untracked scratch, never committed
+#:
+#: `ruff check . -v` prints the read set as `Checked 29 files` with the probe planted and
+#: `Checked 12 files` once a `tests/` pattern is honoured. Honoured today: `.ignore`, `.gitignore`,
+#: `.git/info/exclude`. Not honoured: `.ruffignore`, `.ruff-ignore`, `.lintignore`, `.eslintignore`,
+#: `.dockerignore`.
 
 ROOT_PYPROJECT = "pyproject.toml"
 
