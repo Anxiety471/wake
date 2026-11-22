@@ -103,6 +103,22 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **A suppression inside a linted file is pinned, so one comment cannot disarm CI.** #185 closed the
+  config files a linter loads on its own; a suppression comment is the same trust boundary one level
+  in, and nothing read it. At `e4ca592` a standalone `# ruff: noqa` anywhere in a test file left
+  `ruff check .` at "All checks passed!", rc 0, with a real F821 further down the file (the whole
+  suite at 489 OK), a bare `# noqa` on that offending line did the same for one line, a
+  `# shellcheck disable=SC2154` above a real `SC2154` in `scripts/scrub-check.sh` took the shipped
+  shellcheck step from rc 1 to rc 0, and `# fmt: off` at line 1 hid a misformatted file from
+  `ruff format --check .`. `tests/test_inline_suppressions.py` reads the comments out of the files
+  the two linters actually read - `tokenize` for python, so a directive quoted in a docstring is not
+  one, and line by line for shell, where the directive must begin its line as shellcheck requires -
+  and refuses a file-level `# ruff: noqa` / `# flake8: noqa`, a `noqa` that names no code, any
+  `# fmt:` directive, and a `# shellcheck disable=` that names more than one code or carries no
+  justification. The tree's own 21 code-scoped suppressions pass unchanged, and the two shipped
+  shellcheck directives are listed by path and line, so a new one is a deliberate edit to the pin
+  ([#191](https://github.com/Anxiety471/wake/issues/191)).
+
 - **The `lint` pin reads the interpreter too, and every test file runs on the module path.**
   Three holes left by #178's pin: `python-version` inside `lint`'s `actions/setup-python` step
   was not read, so `"3.13"` → `"3.9"` kept both lint pins green while a different interpreter
