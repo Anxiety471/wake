@@ -80,7 +80,13 @@ lower case only, so `/* ESLINT-DISABLE */` does nothing; `// eslint-disable` wit
 does nothing; a directive after other text (`// see eslint-disable-next-line`) does nothing; and
 `@ts-nocheck` needs no pin, because `tseslint.configs.strict` reports it itself (rc 1). JSX text is
 the one place this reader can over-report - the tree has no `.tsx` file today, and over-reporting a
-directive is the direction a pin should fail in.
+directive is the direction a pin should fail in. It also under-reports three shapes, because it
+decides whether `/` opens a regular expression from the previous character alone: a property named
+after a keyword then a division (`record.in / 2`), a regex holding a quote after `)`, and a regex
+holding `/*` after `}`. Each was measured with a real `no-unused-vars` behind the directive at rc 0
+(#205). The durable fix is to read comments from `@typescript-eslint/parser` where `node_modules`
+exists and keep this scanner as the fallback; until then the list above is what it does, not a claim
+that it misses nothing.
 
 Run with the rest: `python3 -m unittest discover -s tests`
 """

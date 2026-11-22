@@ -148,7 +148,13 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   `@typescript-eslint/no-unused-vars` takes `eslint apps` to rc 1, and one `/* eslint-disable */`
   line on top takes it to rc 0 with `suppressedMessages: 1`, while this module read no `.ts` file at
   all. It reads them now, one character at a time past strings, template literals and regular
-  expressions, and refuses the block `/* eslint-disable */` wherever it sits, a `-line` /
+  expressions, and refuses the block `/* eslint-disable */` on every line that reader reads. It has
+  one measured limit, recorded rather than glossed: it decides whether `/` starts a regular
+  expression from the previous character alone, and JavaScript does not decide it there, so three
+  shapes still hide a directive - a property named after a keyword then a division (`record.in / 2`),
+  a regex holding a quote after `)`, and a regex holding `/*` after `}`, each measured at rc 0 with a
+  real `no-unused-vars` behind it
+  ([#205](https://github.com/Anxiety471/wake/issues/205)) - a `-line` /
   `-next-line` form that names no rule, an inline `/* eslint <rule>: <value> */` that is anything
   but that rule raised to `error`, and `prettier-ignore`, which exempts the next node from the
   `prettier --check` half of the same job. The value arm reads the whole value, not its severity:
