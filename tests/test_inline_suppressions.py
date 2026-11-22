@@ -60,10 +60,33 @@ is not a directive - ruff does not honour it there either (measured). Shell file
 line and a directive has to begin its line, which is shellcheck's own placement rule: SC1126
 already refuses a trailing one, so nothing can hide a disable at the end of a command.
 
+`api (bun)` runs a third linter over the same tree, and its directives were unpinned: at `ab6e0e8`
+with eslint 10.15.0 from the repo's own lockfile, a `.ts` file whose only defect is a real
+`@typescript-eslint/no-unused-vars` takes `eslint apps` to rc 1, and one `/* eslint-disable */` line
+on top takes it to rc 0 with `suppressedMessages: 1` - the same shape one linter over, while this
+file read no `.ts` file at all (#196). `javascript_comments` reads one character at a time and skips
+strings, template literals and regular expressions, because a directive quoted in any of the three
+is not a directive and a `//` in a URL is not a comment, and it reports the text after the `//` or
+`/*` the way eslint matches it: anchored at the comment's start, case-sensitively. Refused there:
+the block `/* eslint-disable */`, which exempts everything below it - measured mid-file as well as
+at line 1 - a `-line` / `-next-line` form that names no rule (and `//eslint-disable-next-line` with
+no space after the `//` is honoured, so the marker cannot need one), an inline
+`/* eslint <rule>: <severity> */` whose severity is not `error` (eslint exits 0 on a warning, so `0`,
+`1`, `"off"`, `"warn"` and their list forms each disarmed the check), and `prettier-ignore`, which
+exempts the next node from the `prettier --check` half of the same job with a misformatted file left
+in the tree. Kept: a rule-scoped `// eslint-disable-next-line <rule>[, <rule>] [-- why]` and its block
+spelling, the same shape as `# noqa: E402`. Measured as no hole: eslint reads its directives in
+lower case only, so `/* ESLINT-DISABLE */` does nothing; `// eslint-disable` with no `-line` suffix
+does nothing; a directive after other text (`// see eslint-disable-next-line`) does nothing; and
+`@ts-nocheck` needs no pin, because `tseslint.configs.strict` reports it itself (rc 1). JSX text is
+the one place this reader can over-report - the tree has no `.tsx` file today, and over-reporting a
+directive is the direction a pin should fail in.
+
 Run with the rest: `python3 -m unittest discover -s tests`
 """
 
 import io
+import json
 import os
 import re
 import shutil
@@ -100,6 +123,37 @@ ISORT_DIRECTIVE = re.compile(r"#\s*(?:ruff\s*:\s*)?isort\s*:\s*(?:skip_file|skip
 #: A file- or block-wide rule switch, the bracket form ruff added for one rule at a time.
 RULE_SWITCH = re.compile(r"#\s*ruff\s*:\s*(?:disable|enable|ignore)\s*\[", re.IGNORECASE)
 
+#: The suffixes eslint reads a comment out of. `prettier --check` reads the same files.
+JAVASCRIPT_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts")
+
+#: The block form. Everything below it, to the end of the file, is exempt, so it names no line and
+#: is refused whatever rules it lists. Read against the comment's text without its markers, as
+#: eslint matches it, and case-sensitively: `/* ESLINT-DISABLE */` was measured to do nothing.
+ESLINT_BLOCK_DISABLE = re.compile(r"^\s*eslint-disable(?![\w-])(?P<rest>.*)$", re.DOTALL)
+
+#: The two line-scoped forms. Legal only when they name a rule.
+ESLINT_LINE_DISABLE = re.compile(r"^\s*eslint-disable-(?:next-)?line(?![\w-])(?P<rest>.*)$", re.DOTALL)
+
+#: An inline config comment, `/* eslint <rule>: <severity> */`, which turns a rule down to the end of
+#: the file. It never counts as a suppression, so only the rule's own severity decides it.
+ESLINT_INLINE_CONFIG = re.compile(r"^\s*eslint\s+(?P<rule>[^:]+):(?P<severity>.*)$", re.DOTALL)
+
+#: `prettier-ignore`, the formatter's own file- or node-wide exemption. Lower case only: the upper
+#: case spelling was measured to leave a misformatted file at rc 1.
+PRETTIER_IGNORE = re.compile(r"^\s*prettier-ignore\s*$")
+
+#: A rule name as eslint spells it: `no-console`, `eqeqeq`, `@typescript-eslint/no-unused-vars`.
+RULE_NAME = re.compile(r"^@?[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_.-]+)?$")
+
+#: Keywords after which `/` opens a regular expression rather than dividing.
+REGEX_KEYWORDS = frozenset("await case delete do else in instanceof new of return throw typeof void yield".split())
+
+#: The characters after which `/` opens a regular expression.
+REGEX_PRECEDERS = frozenset("(,=:[!&|?{};+-*%<>~^")
+
+IDENTIFIER_START = re.compile(r"[A-Za-z_$]")
+IDENTIFIER_PART = re.compile(r"[A-Za-z0-9_$]")
+
 #: How much text counts as a reason for a `# shellcheck disable=`.
 MIN_JUSTIFICATION = 10
 
@@ -115,6 +169,16 @@ PINNED_SHELL_FILES = (
     "install.sh",
     "scripts/scrub-check.sh",
     "tests/run.sh",
+)
+
+#: Files the javascript scan must read: two the api job lints, the config file eslint loads, and the
+#: one `.ts` the lint script's paths leave out - a directive in a file lint does not read yet is
+#: still this class.
+PINNED_JAVASCRIPT_FILES = (
+    "apps/api/src/app.ts",
+    "eslint.config.js",
+    "packages/shared/src/index.ts",
+    "scripts/e2e-threads.ts",
 )
 
 
@@ -255,6 +319,198 @@ def shell_suppression_problems(root, paths):
     return problems
 
 
+def eslint_files(root=ROOT, paths=None):
+    """Every tracked file eslint can read a comment out of, by suffix."""
+    listed = tracked_paths(root) if paths is None else paths
+    return sorted(rel for rel in listed if rel.lower().endswith(JAVASCRIPT_SUFFIXES))
+
+
+def skip_quoted(source, index):
+    """The index after the quoted string opening at `index`, or the line end when it never closes."""
+    quote = source[index]
+    index += 1
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == quote:
+            return index + 1
+        if char in "\r\n":
+            return index
+        index += 1
+    return index
+
+
+def skip_regex(source, index):
+    """The index after the regular expression opening at `index`, or the line end."""
+    index += 1
+    in_class = False
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char in "\r\n":
+            return index
+        if in_class:
+            if char == "]":
+                in_class = False
+        elif char == "[":
+            in_class = True
+        elif char == "/":
+            index += 1
+            while index < len(source) and source[index].isalpha():
+                index += 1
+            return index
+        index += 1
+    return index
+
+
+def skip_template(source, index, found):
+    """The index after the template literal opening at `index`.
+
+    A comment inside its `${ ... }` is a real comment, so the interpolation is scanned as code.
+    """
+    index += 1
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "`":
+            return index + 1
+        if source.startswith("${", index):
+            index = scan_javascript(source, index + 2, True, found)
+            continue
+        index += 1
+    return index
+
+
+def scan_javascript(source, index, in_interpolation, found):
+    """Append `(offset, text, block)` for every real comment; return the index the scan stopped at.
+
+    With `in_interpolation`, the scan stops at the `}` that closes the `${ ... }` it started in. The
+    text is the comment without its markers, which is what eslint matches a directive against.
+    """
+    previous = ""
+    while index < len(source):
+        char = source[index]
+        if char in " \t\r\n\f\v":
+            index += 1
+        elif source.startswith("//", index):
+            end = source.find("\n", index)
+            if end < 0:
+                end = len(source)
+            found.append((index, source[index + 2 : end], False))
+            index = end
+        elif source.startswith("/*", index):
+            end = source.find("*/", index + 2)
+            if end < 0:
+                found.append((index, source[index + 2 :], True))
+                index = len(source)
+            else:
+                found.append((index, source[index + 2 : end], True))
+                index = end + 2
+            previous = "value"
+        elif char in "\"'":
+            index = skip_quoted(source, index)
+            previous = "value"
+        elif char == "`":
+            index = skip_template(source, index, found)
+            previous = "value"
+        elif char == "/":
+            if previous in REGEX_KEYWORDS or previous in REGEX_PRECEDERS or previous == "":
+                index = skip_regex(source, index)
+                previous = "value"
+            else:
+                index += 1
+                previous = "/"
+        elif char == "}":
+            if in_interpolation:
+                return index + 1
+            index += 1
+            previous = "value"
+        elif IDENTIFIER_START.match(char):
+            end = index + 1
+            while end < len(source) and IDENTIFIER_PART.match(source[end]):
+                end += 1
+            word = source[index:end]
+            previous = word if word in REGEX_KEYWORDS else "value"
+            index = end
+        else:
+            index += 1
+            previous = char if char in REGEX_PRECEDERS else "value"
+    return index
+
+
+def javascript_comments(source):
+    """`(line, text, block)` for every real comment in a JS or TS source.
+
+    A `//` inside a string, a template literal or a regular expression is not a comment, and the
+    same text inside one cannot pass for a directive.
+    """
+    found = []
+    scan_javascript(source, 0, False, found)
+    return [(source.count("\n", 0, offset) + 1, text, block) for offset, text, block in found]
+
+
+def eslint_rules(rest):
+    """The rule names a line-scoped directive covers, the ones before any `-- why`."""
+    body = rest.split("--", 1)[0].strip()
+    rules = []
+    for token in (part for part in re.split(r"[,\s]+", body) if part):
+        if not RULE_NAME.match(token):
+            break
+        rules.append(token)
+    return rules
+
+
+def severity_disarms(severity):
+    """True when an inline config comment leaves the rule below `error`, so eslint exits 0."""
+    text = severity.strip().strip("[]").split(",")[0].strip()
+    return text.strip("\"'") not in ("2", "error")
+
+
+def javascript_suppression_problems(root, paths):
+    """Every eslint or prettier directive in a JS/TS file that exempts more than it names."""
+    problems = []
+    for rel in paths:
+        for line, comment, block in javascript_comments(text(os.path.join(root, rel))):
+            where = f"{rel}:{line}: '{comment.strip()}'"
+            if PRETTIER_IGNORE.match(comment):
+                problems.append(
+                    f"{where} exempts the next node from `prettier --check`: one comment on top of a "
+                    "misformatted file left the formatter half of the `api` job at rc 0 - format the "
+                    "code (#196)"
+                )
+                continue
+            line_directive = ESLINT_LINE_DISABLE.match(comment)
+            if line_directive and not eslint_rules(line_directive.group("rest")):
+                problems.append(
+                    f"{where} names no rule: `// eslint-disable-next-line` with no rule exempts every "
+                    "rule on the next line, and one comment took `eslint apps` from rc 1 to rc 0 - "
+                    "write `// eslint-disable-next-line <rule>` (#196)"
+                )
+                continue
+            if block and ESLINT_BLOCK_DISABLE.match(comment):
+                problems.append(
+                    f"{where} is the block form: it exempts every rule below it to the end of the file, "
+                    "and one comment took `eslint apps` from rc 1 to rc 0 - write "
+                    "`// eslint-disable-next-line <rule>` on the line it covers (#196)"
+                )
+                continue
+            config = ESLINT_INLINE_CONFIG.match(comment)
+            if block and config and severity_disarms(config.group("severity")):
+                rule = config.group("rule").strip()
+                problems.append(
+                    f"{where} turns `{rule}` below error: eslint exits 0 on a warning, so "
+                    '`/* eslint <rule>: 0` / `1` / `"off"` / `"warn"` disarms the check as surely as '
+                    "removing the rule - an inline config may only raise a rule to error (#196)"
+                )
+    return problems
+
+
 class InlineSuppressionTestCase(unittest.TestCase):
     """#191: a suppression inside a linted file is pinned, so one comment cannot disarm CI."""
 
@@ -274,6 +530,12 @@ class InlineSuppressionTestCase(unittest.TestCase):
             [],
             "a `# shellcheck disable=` is unpinned: one directive above a warning takes the shipped "
             "shellcheck step from rc 1 to rc 0 (#191)",
+        )
+        self.assertEqual(
+            javascript_suppression_problems(ROOT, eslint_files()),
+            [],
+            "an eslint directive is unpinned: one `/* eslint-disable */` in a `.ts` file takes the `api` "
+            "job's eslint step from rc 1 to rc 0 while every other check stays green (#196)",
         )
 
     def test_the_scans_read_the_files_the_linters_read(self):
@@ -299,6 +561,12 @@ class InlineSuppressionTestCase(unittest.TestCase):
         )
         comments = sum(len(python_comments(text(os.path.join(ROOT, rel)))) for rel in python)
         self.assertGreater(comments, 100, f"the python comment scan found only {comments} comments")
+        javascript = eslint_files()
+        self.assertGreaterEqual(len(javascript), 30, f"the javascript scan read only {len(javascript)} files")
+        for rel in PINNED_JAVASCRIPT_FILES:
+            self.assertIn(rel, javascript, f"eslint reads {rel}, and the javascript scan does not read it")
+        js_comments = sum(len(javascript_comments(text(os.path.join(ROOT, rel)))) for rel in javascript)
+        self.assertGreater(js_comments, 150, f"the javascript comment scan found only {js_comments} comments")
 
     def test_a_file_level_noqa_is_refused(self):
         """Measured: a standalone `# ruff: noqa` anywhere in the file, with a real F821 further down."""
@@ -446,7 +714,125 @@ class InlineSuppressionTestCase(unittest.TestCase):
                 finally:
                     shutil.rmtree(root, ignore_errors=True)
 
-    def problems(self, python="", shell=""):
+    def test_an_eslint_block_disable_is_refused(self):
+        """Measured: `/* eslint-disable */` at line 1 and mid-file each took `eslint apps` to rc 0."""
+        for comment in (
+            "/* eslint-disable */",
+            "/*eslint-disable*/",
+            "/* eslint-disable @typescript-eslint/no-unused-vars */",
+            "/* eslint-disable -- a reason does not help */",
+        ):
+            with self.subTest(comment=comment):
+                problems = self.problems(javascript=f"{comment}\nconst neverUsed = 2;\n")
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("block form", problems[0])
+                self.assertIn("planted.ts:1", problems[0])
+        problems = self.problems(javascript="export const value = 1;\n/* eslint-disable */\nconst neverUsed = 2;\n")
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("planted.ts:2", problems[0])
+
+    def test_an_eslint_line_disable_must_name_a_rule(self):
+        """A `-line` / `-next-line` form with no rule exempts every rule on its line."""
+        cases = (
+            "const neverUsed = 2; // eslint-disable-line\n",
+            "const neverUsed = 2; /* eslint-disable-line */\n",
+            "const neverUsed = 2; /*eslint-disable-line */\n",
+            "// eslint-disable-next-line\nconst neverUsed = 2;\n",
+            "//eslint-disable-next-line\nconst neverUsed = 2;\n",
+            "/* eslint-disable-next-line */\nconst neverUsed = 2;\n",
+            "// eslint-disable-next-line -- a reason and no rule\nconst neverUsed = 2;\n",
+        )
+        for body in cases:
+            with self.subTest(body=body):
+                problems = self.problems(javascript=body)
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("names no rule", problems[0])
+
+    def test_a_rule_scoped_eslint_disable_passes(self):
+        """The form the tree may use: the rule named, optionally with a `-- why` tail."""
+        for body in (
+            "const neverUsed = 2; // eslint-disable-line @typescript-eslint/no-unused-vars\n",
+            "const neverUsed = 2; // eslint-disable-line @typescript-eslint/no-unused-vars -- a reason\n",
+            "const neverUsed = 2; /* eslint-disable-line @typescript-eslint/no-unused-vars */\n",
+            "// eslint-disable-next-line @typescript-eslint/no-unused-vars\nconst neverUsed = 2;\n",
+            "/* eslint-disable-next-line eqeqeq */\nconst neverUsed = 2;\n",
+            "// eslint-disable-next-line eqeqeq, no-console\nconst neverUsed = 2;\n",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(self.problems(javascript=body), [])
+
+    def test_an_inline_eslint_config_may_only_raise_a_rule(self):
+        """Measured: `0`, `1`, `"off"`, `"warn"` and their list forms all left eslint at rc 0."""
+        rule = "@typescript-eslint/no-unused-vars"
+        for severity in ("0", "1", '"off"', '"warn"', "[0]", "[1]", " 0 ", '["warn"]'):
+            with self.subTest(severity=severity):
+                problems = self.problems(javascript=f"/* eslint {rule}: {severity} */\nconst neverUsed = 2;\n")
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("below error", problems[0])
+        for severity in ("2", '"error"', '["error", "smart"]'):
+            with self.subTest(severity=severity):
+                self.assertEqual(
+                    self.problems(javascript=f"/* eslint eqeqeq: {severity} */\nexport const f = (a, b) => a == b;\n"),
+                    [],
+                )
+
+    def test_a_prettier_ignore_is_refused(self):
+        """Measured: `// prettier-ignore` above a misformatted line left `prettier --check` at rc 0."""
+        for body in (
+            "// prettier-ignore\nexport const  misformatted   =    1;\n",
+            "/* prettier-ignore */\nexport const  misformatted   =    1;\n",
+        ):
+            with self.subTest(body=body):
+                problems = self.problems(javascript=body)
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("prettier --check", problems[0])
+                self.assertIn("planted.ts:1", problems[0])
+        self.assertEqual(
+            self.problems(javascript="// PRETTIER-IGNORE\nexport const  misformatted   =    1;\n"),
+            [],
+            "the upper case spelling was measured to leave prettier at rc 1, so it is not a directive",
+        )
+
+    def test_a_directive_inside_a_string_or_a_template_is_not_a_directive(self):
+        """A `//` in a URL and a directive quoted in a template are the reader's own trap."""
+        for body in (
+            'export const url = "http://localhost";\n',
+            'export const s = "/* eslint-disable */ http://localhost";\n',
+            "export const s = 'it\\'s // not a comment';\n",
+            "export const t = `/* eslint-disable */ a // b`;\n",
+            "export const t = `\n// eslint-disable-next-line\n`;\n",
+            "export const t = `a // b /* c */ ${d} // e`;\n",
+            "export const re = /\\/\\* eslint-disable \\*\\//;\n",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(self.problems(javascript=body), [], "a literal was read as a comment")
+        # The same file, with a real directive after the literal: one problem, and it is the real one.
+        body = 'export const url = "http://localhost";\n// eslint-disable-next-line\nconst neverUsed = 2;\n'
+        problems = self.problems(javascript=body)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("planted.ts:2", problems[0])
+
+    def test_the_regex_arm_leaves_the_rest_of_the_line_to_read(self):
+        """A quoted character inside a regex is not a string: reading it as one eats the comment."""
+        body = "export const re = /['\"]/; // eslint-disable-next-line\nconst neverUsed = 2;\n"
+        problems = self.problems(javascript=body)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("planted.ts:1", problems[0])
+
+    def test_the_eslint_spellings_that_do_not_bite_are_left_alone(self):
+        """Measured inert: upper case, no `-line` suffix, after other text, and `@ts-nocheck`."""
+        for body in (
+            "/* ESLINT-DISABLE */\nconst neverUsed = 2;\n",
+            "// eslint-disable\nconst neverUsed = 2;\n",
+            "// see eslint-disable-next-line\nconst neverUsed = 2;\n",
+            "// my-eslint-disable-next-line\nconst neverUsed = 2;\n",
+            "// @ts-nocheck\nconst neverUsed = 2;\n",
+            "/* eslint-enable */\nconst neverUsed = 2;\n",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(self.problems(javascript=body), [], "a form eslint ignores was refused")
+
+    def problems(self, python="", shell="", javascript=""):
         """The scan's verdict on fixture files, without touching the tree."""
         root = tempfile.mkdtemp(prefix="inline-")
         try:
@@ -459,7 +845,95 @@ class InlineSuppressionTestCase(unittest.TestCase):
                 with open(os.path.join(root, "planted.sh"), "w", encoding="utf-8") as handle:
                     handle.write("#!/bin/bash\n" + shell)
                 paths.append("planted.sh")
+            if javascript:
+                with open(os.path.join(root, "planted.ts"), "w", encoding="utf-8") as handle:
+                    handle.write(javascript)
+                paths.append("planted.ts")
             python_paths, shell_paths = linters_files(root, paths)
-            return python_suppression_problems(root, python_paths) + shell_suppression_problems(root, shell_paths)
+            return (
+                python_suppression_problems(root, python_paths)
+                + shell_suppression_problems(root, shell_paths)
+                + javascript_suppression_problems(
+                    root, [rel for rel in eslint_files(root, paths) if rel == "planted.ts"]
+                )
+            )
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+
+class LinterBitesTest(unittest.TestCase):
+    """#196: the real eslint and prettier, both directions, and the pin's verdict on the same file.
+
+    Skipped where `bun install --frozen-lockfile` has not run - the `test` job has no `node_modules`,
+    so this is the arm the suite cannot guarantee on its own. It is the control the pure scan rests
+    on: the reader is only worth its fixtures while the linter still honours the forms it refuses.
+    """
+
+    DEFECT = "const neverUsed = 2;\nexport const value = 1;\n"
+
+    def setUp(self):
+        if shutil.which("node") is None:
+            raise unittest.SkipTest("no node on PATH")
+        if not os.path.isdir(os.path.join(ROOT, "node_modules", "eslint")):
+            raise unittest.SkipTest("eslint is not installed here: run bun install --frozen-lockfile")
+        self.root = tempfile.mkdtemp(prefix="eslint-arm-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        os.symlink(os.path.join(ROOT, "node_modules"), os.path.join(self.root, "node_modules"))
+        # `eslint.config.js` is an ES module, so the scratch checkout needs the repo's `"type": "module"`.
+        for name in ("eslint.config.js", "package.json"):
+            shutil.copyfile(os.path.join(ROOT, name), os.path.join(self.root, name))
+
+    def write(self, body, name="probe.ts"):
+        with open(os.path.join(self.root, name), "w", encoding="utf-8") as handle:
+            handle.write(body)
+
+    def eslint(self, name="probe.ts"):
+        """`(rc, errors)` for the real eslint over one file, told apart from a formatter crash."""
+        finished = subprocess.run(
+            [shutil.which("node"), os.path.join(ROOT, "node_modules/eslint/bin/eslint.js"), name, "--format", "json"],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+        )
+        try:
+            report = json.loads(finished.stdout or "[]")
+        except ValueError:
+            self.fail(f"eslint printed no JSON report: {finished.stdout[-400:]}{finished.stderr[-400:]}")
+        return finished.returncode, sum(entry["errorCount"] for entry in report)
+
+    def prettier(self, name="probe.ts"):
+        """The rc of the real prettier over one file."""
+        finished = subprocess.run(
+            [shutil.which("node"), os.path.join(ROOT, "node_modules/prettier/bin/prettier.cjs"), "--check", name],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn(finished.returncode, (0, 1), finished.stderr[-400:])
+        return finished.returncode
+
+    def test_one_eslint_disable_takes_the_api_step_from_rc_1_to_rc_0(self):
+        """The planted defect fails eslint, one comment hides it, and the pin names the file and line."""
+        self.write(self.DEFECT)
+        rc, errors = self.eslint()
+        self.assertEqual(rc, 1, "the planted defect no longer fails eslint")
+        self.assertGreaterEqual(errors, 1)
+        self.assertEqual(javascript_suppression_problems(self.root, ["probe.ts"]), [], "a clean file was refused")
+
+        self.write("/* eslint-disable */\n" + self.DEFECT)
+        self.assertEqual(self.eslint(), (0, 0), "one comment no longer disarms eslint: the arms moved")
+        problems = javascript_suppression_problems(self.root, ["probe.ts"])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("probe.ts:1", problems[0])
+        self.assertIn("block form", problems[0])
+
+    def test_one_prettier_ignore_takes_the_api_step_from_rc_1_to_rc_0(self):
+        """The formatter half of the same job, the same way."""
+        self.write("export const  misformatted   =    1;\n")
+        self.assertEqual(self.prettier(), 1, "the planted formatting no longer fails prettier")
+
+        self.write("// prettier-ignore\nexport const  misformatted   =    1;\n")
+        self.assertEqual(self.prettier(), 0, "one comment no longer disarms prettier: the arm moved")
+        problems = javascript_suppression_problems(self.root, ["probe.ts"])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("probe.ts:1", problems[0])

@@ -142,7 +142,19 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   `# shellcheck disable=` that names more than one code or carries no justification. The tree's own
   21 code-scoped suppressions pass unchanged, and the two shipped shellcheck directives are listed
   by path and line, so a new one is a deliberate edit to the pin
-  ([#191](https://github.com/Anxiety471/wake/issues/191)).
+  ([#191](https://github.com/Anxiety471/wake/issues/191)). The `api (bun)` job runs a third linter
+  over the same tree, and its directives were unpinned the same way: at `ab6e0e8`, with eslint
+  10.15.0 from the repo's own lockfile, a `.ts` file whose only defect is a real
+  `@typescript-eslint/no-unused-vars` takes `eslint apps` to rc 1, and one `/* eslint-disable */`
+  line on top takes it to rc 0 with `suppressedMessages: 1`, while this module read no `.ts` file at
+  all. It reads them now, one character at a time past strings, template literals and regular
+  expressions, and refuses the block `/* eslint-disable */` wherever it sits, a `-line` /
+  `-next-line` form that names no rule, an inline `/* eslint <rule>: <severity> */` that leaves a
+  rule below `error` (eslint exits 0 on a warning, so `"warn"` disarms the step as surely as
+  `"off"`), and `prettier-ignore`, which exempts the next node from the `prettier --check` half of
+  the same job. A rule-scoped `// eslint-disable-next-line <rule>` stays legal, the same shape as
+  `# noqa: E402` ([#196](https://github.com/Anxiety471/wake/issues/196)).
+
 - **A `*.jsonl` directory or a dangling `*.jsonl` symlink no longer turns a quiet inbox into a
   store error.** The empty answer's confirmation asked only whether a listed name ends in
   `.jsonl`, so `mkdir stray.jsonl` in a store holding no records answered `cannot read the thread
