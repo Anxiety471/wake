@@ -18,10 +18,12 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   check, and one `except OSError: return []` around the same call would drop it. `GateStoreListingTests`
   in `tests/test_gate_shapes.py` now holds the contract against a staged gate: a store dir made
   searchable but not listable must refuse every route with `store path cannot be listed: <dir>` and
-  an empty body, while a readable store and an empty one keep their answers. It fails against the
-  v8 gate and passes from v9, which proves listability once in `_check_store()` before any handler
-  runs - the order the two artifacts ship in: gate first
-  ([#195](https://github.com/Anxiety471/wake/issues/195)).
+  an empty body, while a readable store and an empty one keep their answers. The check ships as
+  gate **v11** - v10 plus this listing in `_check_store()`, which proves listability once before
+  any handler runs. The test fails against v8 and against v10, which is the point: v10 is newer
+  than v9 and does not carry the check, and v9 predates the `ls -F` route #186 needs, so
+  installing v9 instead of v11 would put #186 back on the host. Gate first, then the client that
+  relies on it ([#195](https://github.com/Anxiety471/wake/issues/195)).
 
 - **Every command wake sends is pinned, so a shape that drifts fails CI instead of a host.**
   `rakazo-wake-gate` performs only the shapes it knows and refuses everything else, and a refusal

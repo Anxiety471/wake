@@ -84,6 +84,16 @@ def exercise(test):
         json.dump({"inbox": inbox, "pid": os.getpid()}, f)
 
     env = {"WAKE_HOSTOPS": hostops}
+    # An empty store is the one place the client asks whether the store can be entered at all,
+    # and it asks with `ls -F <store>`: the marked listing #186 added and gate v10 routes. Ask
+    # before the first thread exists so the allow-list check covers that shape too, otherwise a
+    # gate without the route (v9) passes every test here while the client silently falls back to
+    # the plain listing that is wrong on a host with a `*.jsonl` directory in the store.
+    os.makedirs(os.path.join(test.state, "threads"), exist_ok=True)  # an installed store, still empty
+    r = test.wake("--inbox", env=dict(env, WAKE_SOURCE="skill:agent"))
+    test.assertEqual(r.returncode, 0, r.stderr)
+    test.assertIn("no threads opened by skill:agent", r.stdout)
+
     r = test.wake("--ask", "engineer", "gate shapes", env=dict(env, WAKE_INBOX=inbox, WAKE_SOURCE="skill:agent"))
     test.assertEqual(r.returncode, 0, r.stderr)
     tid = re.search(r"thread (\S+) opened", r.stdout).group(1)
@@ -184,7 +194,16 @@ class StagedGateCase(WakeTestCase):
 class GateAllowListTests(StagedGateCase):
     def test_every_command_wake_sends_is_allow_listed(self):
         gate = self.load_gate()
-        refused = [c for c in exercise(self) if gate.match(c) is None]
+        cmds = exercise(self)
+        # The marked listing is the shape this test exists to protect (#186): assert the driver
+        # still reaches it, so deleting the empty-store `--inbox` cannot turn a missing route back
+        # into a silent pass.
+        self.assertTrue(
+            any(c.startswith("ls -F ") for c in cmds),
+            "exercise() no longer reaches store_dir_unreadable(); the allow-list check would miss "
+            "the `ls -F` route: " + repr(cmds),
+        )
+        refused = [c for c in cmds if gate.match(c) is None]
         self.assertEqual(refused, [], "the gate would refuse these wake commands:\n" + "\n".join(refused))
 
     def test_every_inbox_io_command_is_allow_listed(self):
@@ -210,10 +229,12 @@ class GateStoreListingTests(StagedGateCase):
     each handler that lists the dir lets the opendir's EACCES escape as an `OSError`, which `run()`
     prints as `io error: Permission denied` with no path, and the routes that do not touch the
     broken dir answer normally - so the guarantee sits in three handlers, not in the check, and one
-    `except FileNotFoundError: return []` around the same call would drop it. A gate from v9 on
-    proves listability in `_check_store()` before any handler runs and names the dir it cannot read.
+    `except FileNotFoundError: return []` around the same call would drop it. A gate from v11 on
+    proves listability in `_check_store()` before any handler runs and names the dir it cannot read;
+    v9 and v10 do not carry it, and v10 is what that check has to be added to (v10 is newer than v9
+    and also carries the `ls -F` route #186 needs, so v11 = v10 + this check is the one that ships).
 
-    Against a v8 gate these tests fail. That is the point: the gate is installed before the client
+    Against a v8 or v10 gate these tests fail. That is the point: the gate is installed before the client
     that relies on it, so the staging directory shows the order the two artifacts ship in.
     """
 
@@ -241,6 +262,7 @@ class GateStoreListingTests(StagedGateCase):
             rc = gate.run(cmd, b"", out)
         return rc, out.getvalue(), err.getvalue()
 
+    @unittest.skipUnless(os.geteuid() != 0, "root lists a 0300 dir, so the refusal cannot be measured as root")
     def test_an_unlistable_store_dir_is_refused_by_name(self):
         gate = self.store()
         for d in (gate.THREADS, gate.INBOX, gate.ACTIVE):
