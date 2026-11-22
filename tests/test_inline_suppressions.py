@@ -1072,15 +1072,25 @@ class LinterBitesTest(unittest.TestCase):
     Skipped where `bun install --frozen-lockfile` has not run - the `test` job has no `node_modules`,
     so this is the arm the suite cannot guarantee on its own. It is the control the pure scan rests
     on: the reader is only worth its fixtures while the linter still honours the forms it refuses.
+    `api (bun)` runs this module with `WAKE_REQUIRE_LINTERS=1`, so a missing `node_modules` there
+    fails the step instead of skipping the control and reporting green
+    ([#216](https://github.com/Anxiety471/wake/issues/216)).
     """
 
     DEFECT = "const neverUsed = 2;\nexport const value = 1;\n"
 
     def setUp(self):
+        missing = None
         if shutil.which("node") is None:
-            raise unittest.SkipTest("no node on PATH")
-        if not os.path.isdir(os.path.join(ROOT, "node_modules", "eslint")):
-            raise unittest.SkipTest("eslint is not installed here: run bun install --frozen-lockfile")
+            missing = "no node on PATH"
+        elif not os.path.isdir(os.path.join(ROOT, "node_modules", "eslint")):
+            missing = "eslint is not installed here: run bun install --frozen-lockfile"
+        if missing:
+            # A job that claims to run this arm says so: skipping it and staying green is the
+            # failure #216 was filed about (measured at ce29cf01, both tests skipped in CI).
+            if os.environ.get("WAKE_REQUIRE_LINTERS"):
+                self.fail(f"WAKE_REQUIRE_LINTERS is set and the linters are unusable: {missing}")
+            raise unittest.SkipTest(missing)
         self.root = tempfile.mkdtemp(prefix="eslint-arm-")
         self.addCleanup(shutil.rmtree, self.root, True)
         os.symlink(os.path.join(ROOT, "node_modules"), os.path.join(self.root, "node_modules"))

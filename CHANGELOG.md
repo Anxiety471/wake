@@ -7,6 +7,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **The inline pin's control now runs in CI, in the one job that installs the linters.** The
+  scanner tests ran in the Python jobs; the two tests that prove a directive really takes
+  `eslint apps` from rc 1 to rc 0 - and `prettier --check` the same way - need `node_modules` and
+  skipped there, `OK (skipped=10)` at `ce29cf01`, so a linter change that stops the bite left every
+  check green while the pin watched a behaviour that was no longer there. `api (bun)` already runs
+  `bun install --frozen-lockfile`, so it runs `tests.test_inline_suppressions` with a pinned
+  interpreter, and `WAKE_REQUIRE_LINTERS=1` makes a missing `node_modules` there fail the step
+  instead of skipping the control again. `tests/test_ops_scripts.py` pins that step, its order
+  after the install and its exact `run` body, so removing it fails CI rather than quietly
+  restoring the skip ([#216](https://github.com/Anxiety471/wake/issues/216)).
+
 - **A store dir the gate cannot list is refused by name, never answered as an empty store.**
   Every answer `rakazo-wake-gate` gives is built from a listing, and `list_dir()` / `list_active()`
   turn a lost directory into `[]`: a store that cannot be read then answers "no threads" with rc 0,

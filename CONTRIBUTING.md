@@ -19,7 +19,7 @@ shellcheck install.sh tests/run.sh scripts/scrub-check.sh scripts/changelog-guar
 scripts/scrub-check.sh --history           # no IPs, emails or tokens in files or commits
 ```
 
-CI tests Python 3.9 to 3.13 on Ubuntu and pins ruff in `.github/workflows/ci.yml`. Ruff settings are in `pyproject.toml`.
+CI tests Python 3.9 to 3.13 on Ubuntu and pins ruff in `.github/workflows/ci.yml`. Ruff settings are in `pyproject.toml`. The inline-suppression pin also runs in `api (bun)`, the one job with `node_modules` installed, where its eslint and prettier arm is not skipped ([#216](https://github.com/Anxiety471/wake/issues/216)).
 
 ## Rules
 
