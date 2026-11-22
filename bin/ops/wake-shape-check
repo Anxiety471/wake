@@ -32,7 +32,15 @@ BUILDERS = ("thread_append", "thread_read", "threads_mine", "inbox_live", "inbox
 # store read is new, but a gate that refuses either turns the inbox into a silent no-op (#165).
 # `store_dir_entries`/`store_dir_unreadable` are the confirmation that an empty answer is a
 # quiet store and not an unreadable one (#168): its `ls` is the gate's own "thread list" route.
-HELPERS = ("_recs", "threads_all", "threads_all_one_by_one", "store_dir_entries", "store_dir_unreadable")
+HELPERS = (
+    "_recs",
+    "threads_all",
+    "threads_all_one_by_one",
+    "store_dir_entries",
+    "store_dir_unreadable",
+    "store_dir_unreadable_plain",
+    "entry_name",
+)
 
 USAGE = """usage: wake-shape-check FILE [GATE]
 

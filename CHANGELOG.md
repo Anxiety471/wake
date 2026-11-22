@@ -119,6 +119,61 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **A suppression inside a linted file is pinned, so one comment cannot disarm CI.** #185 closed the
+  config files a linter loads on its own; a suppression comment is the same trust boundary one level
+  in, and nothing read it. At `e4ca592` a standalone `# ruff: noqa` anywhere in a test file left
+  `ruff check .` at "All checks passed!", rc 0, with a real F821 further down the file (the whole
+  suite at 489 OK), a bare `# noqa` on that offending line did the same for one line, a
+  `# shellcheck disable=SC2154` above a real `SC2154` in `scripts/scrub-check.sh` took the shipped
+  shellcheck step from rc 1 to rc 0, and `# fmt: off` at line 1 hid a misformatted file from
+  `ruff format --check .`. Three more spellings ruff honours did the same at the first head of this
+  branch: `# yapf: disable` at line 1 left `ruff format --check .` at rc 0 with the file
+  misformatted (rc 1 with the comment removed), `# isort: skip_file` - and the same directive
+  written `# ruff: isort: skip_file`, and `# isort: off` with no `on` closing the block - took a
+  real I001 to rc 0, and `# ruff: disable[F821]` / `# ruff: ignore[F821]` took a real F821 further
+  down the file to rc 0. `tests/test_inline_suppressions.py` reads the comments out of the files
+  the two linters actually read - `tokenize` for python, so a directive quoted in a docstring is not
+  one, and line by line for shell, where the directive must begin its line as shellcheck requires -
+  and refuses a file-level `# ruff: noqa` / `# flake8: noqa`, a `noqa` that names no code, the
+  `# fmt:` and `# yapf:` formatter directives, the `# isort:` / `# ruff: isort:` import-order
+  directives, a `# ruff: disable[CODE]` / `enable[CODE]` / `ignore[CODE]` rule switch, and a
+  `# shellcheck disable=` that names more than one code or carries no justification. The tree's own
+  21 code-scoped suppressions pass unchanged, and the two shipped shellcheck directives are listed
+  by path and line, so a new one is a deliberate edit to the pin
+  ([#191](https://github.com/Anxiety471/wake/issues/191)).
+- **A `*.jsonl` directory or a dangling `*.jsonl` symlink no longer turns a quiet inbox into a
+  store error.** The empty answer's confirmation asked only whether a listed name ends in
+  `.jsonl`, so `mkdir stray.jsonl` in a store holding no records answered `cannot read the thread
+  store`, exit 1, and sent the reader to `WAKE_HOSTOPS` and permissions that were fine. The
+  confirmation asks `ls -F` now and reads each entry's type mark: the store read keeps only
+  regular files (`[ -f "$f" ] || continue`), so a directory, a dangling symlink, a fifo or a
+  socket under a thread's name is an entry it was right to leave out, and only a regular thread
+  file the read did not return still means the store could not be entered (#177). The marked
+  listing is a new command shape, so a gate that predates it refuses the call and the plain
+  `ls <store>` question is asked instead - the answer #177 shipped, which keeps a quiet store
+  quiet and an unenterable one loud. `tests/test_gate_pins.py` pins the new shape, and the tests
+  build every shape: a `*.jsonl` directory, a dangling symlink, a fifo and a socket, the
+  gate-refused fallback, and a `threads` that is an executable regular file, whose `*` mark is
+  what `entry_name` is for ([#186](https://github.com/Anxiety471/wake/issues/186)).
+- **The files the linters read for themselves are pinned.** `lint`'s workflow was pinned by value
+  (#174, #178, #182), its tool configuration was not: at `33578c5` one line in `[tool.ruff]`,
+  `extend-exclude = ["tests"]`, left `ruff check .` at "All checks passed!" with a planted F821 in
+  `tests/test_wake.py` (26 files read became 12) while both lint pins and the whole suite stayed
+  green, and a root `.shellcheckrc` reading `disable=all` silenced the shipped shellcheck line.
+  `tests/test_linter_configs.py` reads `pyproject.toml` as ruff does (a small parser, because the
+  test job starts at Python 3.9 and has no `tomllib`) and pins every `[tool.ruff*]` table, key and
+  value, with `extend-include` computed from the tree's python scripts that have no `.py`
+  suffix. It also refuses a second linter config file at any depth (`.ruff.toml`, `ruff.toml`,
+  another `pyproject.toml`, `.shellcheckrc`, `shellcheckrc`), and a `.gitignore` pattern that
+  matches a tracked file, which ruff honours (`git check-ignore --no-index`, since plain
+  `check-ignore` never reports a tracked path). `.ignore` counts as well: ruff's ignore-file
+  support reads it, a tracked root `.ignore` naming `tests/` left `ruff check .` at rc 0 with a
+  planted F401 (27 files read became 12) while this module stayed green, and
+  `git check-ignore --no-index` never reports it either, so it is refused by name
+  ([#188](https://github.com/Anxiety471/wake/issues/188)). Measured with ruff 0.17.5 and
+  shellcheck 0.11.0: 22 mutations each fail the module. A deliberate change edits the pin in the
+  same commit ([#185](https://github.com/Anxiety471/wake/issues/185)).
+
 - **The `lint` pin reads the interpreter too, and every test file runs on the module path.**
   Three holes left by #178's pin: `python-version` inside `lint`'s `actions/setup-python` step
   was not read, so `"3.13"` → `"3.9"` kept both lint pins green while a different interpreter
