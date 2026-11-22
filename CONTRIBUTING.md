@@ -43,7 +43,9 @@ CI tests Python 3.9 to 3.13 on Ubuntu and pins ruff in `.github/workflows/ci.yml
   wrapped bullet's continuation lines start with two spaces - and an entry that matches no removed
   line is printed back. Remove the
   entry once the change has merged: an entry is a standing permission, not a note about one pull
-  request. The guard is not scoped to Unreleased - it accepts an entry for a released line too and
+  request. The guard fails when the base branch's own allowlist carries an entry that matches no
+  line the base loses (#321), so a merged entry left behind fails the next pull request that does
+  not need it; an entry this pull request adds is only reported. The guard is not scoped to Unreleased - it accepts an entry for a released line too and
   prints the released heading it came from, because dropping a released note is the owner's decision
   in the pull request, not a reflow.
 - One logical change per commit, with a message that says what and why.
