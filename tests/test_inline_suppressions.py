@@ -134,9 +134,13 @@ ESLINT_BLOCK_DISABLE = re.compile(r"^\s*eslint-disable(?![\w-])(?P<rest>.*)$", r
 #: The two line-scoped forms. Legal only when they name a rule.
 ESLINT_LINE_DISABLE = re.compile(r"^\s*eslint-disable-(?:next-)?line(?![\w-])(?P<rest>.*)$", re.DOTALL)
 
-#: An inline config comment, `/* eslint <rule>: <severity> */`, which turns a rule down to the end of
-#: the file. It never counts as a suppression, so only the rule's own severity decides it.
+#: An inline config comment, `/* eslint <rule>: <value> */`, which reconfigures a rule to the end of
+#: the file. It never counts as a suppression: the value is what eslint applies, severity and
+#: options both, so the pin reads the whole of it.
 ESLINT_INLINE_CONFIG = re.compile(r"^\s*eslint\s+(?P<rule>[^:]+):(?P<severity>.*)$", re.DOTALL)
+
+#: The only inline config value the pin accepts: a raise to `error` on that rule and nothing else.
+INLINE_CONFIG_RAISE = re.compile(r"^(?:\[\s*)?(?:2|error|\"error\"|'error')(?:\s*\])?$", re.IGNORECASE)
 
 #: `prettier-ignore`, the formatter's own file- or node-wide exemption. Lower case only: the upper
 #: case spelling was measured to leave a misformatted file at rc 1.
@@ -148,7 +152,8 @@ RULE_NAME = re.compile(r"^@?[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_.-]+)?$")
 #: Keywords after which `/` opens a regular expression rather than dividing.
 REGEX_KEYWORDS = frozenset("await case delete do else in instanceof new of return throw typeof void yield".split())
 
-#: The characters after which `/` opens a regular expression.
+#: The characters after which `/` opens a regular expression. `++` and `--` are handled before this
+#: set is consulted: an increment yields a value, so the `/` after one divides.
 REGEX_PRECEDERS = frozenset("(,=:[!&|?{};+-*%<>~^")
 
 IDENTIFIER_START = re.compile(r"[A-Za-z_$]")
@@ -419,6 +424,11 @@ def scan_javascript(source, index, in_interpolation, found):
         elif char == "`":
             index = skip_template(source, index, found)
             previous = "value"
+        elif char in "+-" and source.startswith(char * 2, index):
+            # `counter++ / 2` divides: reading the `/` as a regex ate the rest of the line, and a
+            # `/* eslint-disable */` after it went unread (#196).
+            index += 2
+            previous = "value"
         elif char == "/":
             if previous in REGEX_KEYWORDS or previous in REGEX_PRECEDERS or previous == "":
                 index = skip_regex(source, index)
@@ -466,10 +476,23 @@ def eslint_rules(rest):
     return rules
 
 
-def severity_disarms(severity):
-    """True when an inline config comment leaves the rule below `error`, so eslint exits 0."""
-    text = severity.strip().strip("[]").split(",")[0].strip()
-    return text.strip("\"'") not in ("2", "error")
+def inline_config_fault(value):
+    """What an inline config's value does beyond raising one rule to `error`, or `None` when it does.
+
+    Measured at eslint 10.15.0: a list that carries an options object after the severity keeps its
+    `error` and still disarms the rule - `{"varsIgnorePattern": ".*"}` on a real unused variable,
+    `{"args": "none"}` on an unused parameter, `{"caughtErrors": "none"}` on an unused catch
+    binding - and a string option does the same, `["error", "smart"]` letting `x == null` through
+    `eqeqeq`. No list of options can be read as safe here, so the value is refused whole unless it
+    is the severity alone.
+    """
+    text = value.strip()
+    if INLINE_CONFIG_RAISE.match(text):
+        return None
+    inner = text[1:-1].strip() if text.startswith("[") and text.endswith("]") else text
+    if "," in inner:
+        return "options"
+    return "below"
 
 
 def javascript_suppression_problems(root, paths):
@@ -495,24 +518,37 @@ def javascript_suppression_problems(root, paths):
                 continue
             if block and ESLINT_BLOCK_DISABLE.match(comment):
                 problems.append(
-                    f"{where} is the block form: it exempts every rule below it to the end of the file, "
-                    "and one comment took `eslint apps` from rc 1 to rc 0 - write "
-                    "`// eslint-disable-next-line <rule>` on the line it covers (#196)"
+                    f"{where} is the block form: it exempts the rules it names, and every rule when it "
+                    "names none, from here to the end of the file, and one comment took "
+                    "`eslint apps` from rc 1 to rc 0 - write `// eslint-disable-next-line <rule>` "
+                    "on the line it covers (#196)"
                 )
                 continue
             config = ESLINT_INLINE_CONFIG.match(comment)
-            if block and config and severity_disarms(config.group("severity")):
+            if block and config:
                 rule = config.group("rule").strip()
-                problems.append(
-                    f"{where} turns `{rule}` below error: eslint exits 0 on a warning, so "
-                    '`/* eslint <rule>: 0` / `1` / `"off"` / `"warn"` disarms the check as surely as '
-                    "removing the rule - an inline config may only raise a rule to error (#196)"
-                )
+                fault = inline_config_fault(config.group("severity"))
+                if fault == "options":
+                    problems.append(
+                        f"{where} reconfigures `{rule}` rather than raising it: the value carries "
+                        "options after the severity, and eslint honours them with the severity still "
+                        'at `error` - measured, `["error", {"varsIgnorePattern": ".*"}]`, '
+                        '`["error", {"args": "none"}]` and `["error", "smart"]` each left a real '
+                        "error at rc 0. The pin cannot read an options object as safe, so put the "
+                        "options in `eslint.config.js`, where this scan reads them, and keep the "
+                        "inline comment to `<rule>: error` (#196)"
+                    )
+                elif fault == "below":
+                    problems.append(
+                        f"{where} turns `{rule}` below error: eslint exits 0 on a warning, so "
+                        '`/* eslint <rule>: 0` / `1` / `"off"` / `"warn"` disarms the check as surely '
+                        "as removing the rule - an inline config may only raise a rule to error (#196)"
+                    )
     return problems
 
 
 class InlineSuppressionTestCase(unittest.TestCase):
-    """#191: a suppression inside a linted file is pinned, so one comment cannot disarm CI."""
+    """#191: a suppression inside a linted file is pinned, so one comment cannot silence a check."""
 
     maxDiff = None
 
@@ -769,12 +805,48 @@ class InlineSuppressionTestCase(unittest.TestCase):
                 problems = self.problems(javascript=f"/* eslint {rule}: {severity} */\nconst neverUsed = 2;\n")
                 self.assertEqual(len(problems), 1, problems)
                 self.assertIn("below error", problems[0])
-        for severity in ("2", '"error"', '["error", "smart"]'):
+        for severity in ("2", '"error"', "error", '["error"]', "[2]"):
             with self.subTest(severity=severity):
                 self.assertEqual(
                     self.problems(javascript=f"/* eslint eqeqeq: {severity} */\nexport const f = (a, b) => a == b;\n"),
                     [],
                 )
+
+    def test_an_inline_eslint_config_that_carries_options_is_refused(self):
+        """Measured: each of these left a real error at rc 0 with the severity still at `error`."""
+        rule = "@typescript-eslint/no-unused-vars"
+        for value in (
+            '["error", {"varsIgnorePattern": ".*"}]',
+            '[2, {"varsIgnorePattern": ".*"}]',
+            '["error", {"args": "none"}]',
+            '["error", {"argsIgnorePattern": ".*"}]',
+            '["error", {"caughtErrors": "none"}]',
+            '["error", "smart"]',
+        ):
+            with self.subTest(value=value):
+                problems = self.problems(javascript=f"/* eslint {rule}: {value} */\nconst neverUsed = 2;\n")
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("reconfigures", problems[0])
+                self.assertIn("#196", problems[0])
+
+    def test_a_division_after_an_increment_is_not_a_regex(self):
+        """Measured: `counter++ / 2` was read as a regex, so the directive behind it went unread."""
+        for body, expected in (
+            ("let c = 1;\nexport function f() { return c++ / 2; } /* eslint-disable */\n", "block form"),
+            ("let c = 1;\nexport function f() { return c-- / 2; } /* eslint-disable */\n", "block form"),
+            ("let c = 1;\nexport const g = () => c++ / 2; // eslint-disable-next-line\n", "names no rule"),
+        ):
+            with self.subTest(body=body):
+                problems = self.problems(javascript=body)
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn(expected, problems[0])
+                self.assertIn("planted.ts:2", problems[0])
+        # A `/` after a single `+` still opens a regex, so a directive inside it is not a comment.
+        self.assertEqual(
+            self.problems(javascript="export const n = 1 + /\\/\\* eslint-disable \\*\\//.source.length;\n"),
+            [],
+            "a regex after `+` was read as division, and the text in it as a comment",
+        )
 
     def test_a_prettier_ignore_is_refused(self):
         """Measured: `// prettier-ignore` above a misformatted line left `prettier --check` at rc 0."""

@@ -121,7 +121,7 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
-- **A suppression inside a linted file is pinned, so one comment cannot disarm CI.** #185 closed the
+- **A suppression inside a linted file is pinned, so one comment cannot silence a whole check.** #185 closed the
   config files a linter loads on its own; a suppression comment is the same trust boundary one level
   in, and nothing read it. At `e4ca592` a standalone `# ruff: noqa` anywhere in a test file left
   `ruff check .` at "All checks passed!", rc 0, with a real F821 further down the file (the whole
@@ -149,10 +149,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   line on top takes it to rc 0 with `suppressedMessages: 1`, while this module read no `.ts` file at
   all. It reads them now, one character at a time past strings, template literals and regular
   expressions, and refuses the block `/* eslint-disable */` wherever it sits, a `-line` /
-  `-next-line` form that names no rule, an inline `/* eslint <rule>: <severity> */` that leaves a
-  rule below `error` (eslint exits 0 on a warning, so `"warn"` disarms the step as surely as
-  `"off"`), and `prettier-ignore`, which exempts the next node from the `prettier --check` half of
-  the same job. A rule-scoped `// eslint-disable-next-line <rule>` stays legal, the same shape as
+  `-next-line` form that names no rule, an inline `/* eslint <rule>: <value> */` that is anything
+  but that rule raised to `error`, and `prettier-ignore`, which exempts the next node from the
+  `prettier --check` half of the same job. The value arm reads the whole value, not its severity:
+  a rule below `error` exits 0 on a warning, so `"warn"` disarms the step as surely as `"off"`,
+  and a list that carries options keeps `error` while reconfiguring the rule - measured,
+  `["error", {"varsIgnorePattern": ".*"}]`, `["error", {"args": "none"}]`,
+  `["error", {"caughtErrors": "none"}]` and `["error", "smart"]` each left a real error at rc 0 -
+  so options belong in `eslint.config.js`, which this module reads, and the inline comment stays
+  `<rule>: error`. The scanner also reads `++` and `--` as the values they yield, because
+  `return counter++ / 2; /* eslint-disable */` was read as one regex and the directive vanished.
+  A rule-scoped `// eslint-disable-next-line <rule>` stays legal, the same shape as
   `# noqa: E402` ([#196](https://github.com/Anxiety471/wake/issues/196)).
 
 - **A `*.jsonl` directory or a dangling `*.jsonl` symlink no longer turns a quiet inbox into a
