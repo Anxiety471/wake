@@ -19,7 +19,7 @@ shellcheck install.sh tests/run.sh scripts/scrub-check.sh scripts/changelog-guar
 scripts/scrub-check.sh --history           # no IPs, emails or tokens in files or commits
 ```
 
-CI tests Python 3.9 to 3.13 on Ubuntu and pins ruff in `.github/workflows/ci.yml`. Ruff settings are in `pyproject.toml`. The inline-suppression pin also runs in `api (bun)`, the one job with `node_modules` installed, where its eslint and prettier arm is not skipped ([#216](https://github.com/Anxiety471/wake/issues/216)).
+CI tests Python 3.9 to 3.13 on Ubuntu and pins ruff in `.github/workflows/ci.yml`. Ruff settings are in `pyproject.toml`. The inline-suppression pin also runs in `api (bun)`, the one job with `node_modules` installed, through `python3 tests/run_module_strict.py test_inline_suppressions`, which refuses any skip: a `@unittest.skipIf` on the eslint or prettier arm fails the step instead of restoring the silent green ([#216](https://github.com/Anxiety471/wake/issues/216)).
 
 ## Rules
 

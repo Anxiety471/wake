@@ -14,9 +14,16 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   check green while the pin watched a behaviour that was no longer there. `api (bun)` already runs
   `bun install --frozen-lockfile`, so it runs `tests.test_inline_suppressions` with a pinned
   interpreter, and `WAKE_REQUIRE_LINTERS=1` makes a missing `node_modules` there fail the step
-  instead of skipping the control again. `tests/test_ops_scripts.py` pins that step, its order
-  after the install and its exact `run` body, so removing it fails CI rather than quietly
-  restoring the skip ([#216](https://github.com/Anxiety471/wake/issues/216)).
+  instead of skipping the control again. The step runs `tests/run_module_strict.py`, which fails
+  on any skip at all - `@unittest.skipIf`, a version guard, `self.skipTest` inside an arm - because
+  `python3 -m unittest` exits 0 on `OK (skipped=1)` and that is the same silent green one level up.
+  `tests/test_ops_scripts.py` pins that step, its order after the install, its exact `run` body and
+  the `api` job's own keys, so removing it fails CI rather than quietly restoring the skip, and a
+  job `defaults: run: shell:` or a `container:` - which swaps or moves the shell of every step in
+  the job, the shape measured on `lint` at `06c2c75` - is refused instead of turning every step
+  into a no-op
+  ([#216](https://github.com/Anxiety471/wake/issues/216),
+  [#178](https://github.com/Anxiety471/wake/issues/178)).
 
 - **A store dir the gate cannot list is refused by name, never answered as an empty store.**
   Every answer `rakazo-wake-gate` gives is built from a listing, and `list_dir()` / `list_active()`

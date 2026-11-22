@@ -680,6 +680,28 @@ class OpsFilesTestCase(unittest.TestCase):
             if line.startswith("  ") and not line.startswith("   ") and line.strip():
                 break
             block.append(line)
+        # The job's own keys, the shape #178 measured on `lint` at 06c2c75 and this test missed:
+        # a job `defaults: run: shell:` replaces the shell of every run step below it - Install,
+        # Typecheck, Lint, Test, Build, the e2e step and this pin - so the whole job exits 0
+        # without running, and `container:` runs them in another image while `runs-on` keeps its
+        # pinned value. Neither touches a line the assertions below read. `services` and the job
+        # `env` are what `api` legitimately carries; their child keys sit one level deeper and are
+        # not job keys, as they already are not for `lint`.
+        keys = [
+            line.strip().split(":", 1)[0]
+            for line in block
+            if line.startswith("    ")
+            and not line.startswith("     ")
+            and ":" in line
+            and not line.strip().startswith("#")
+        ]
+        self.assertEqual(
+            keys,
+            ["name", "runs-on", "services", "env", "steps"],
+            f"api job keys {keys}: only these are allowed - `if`, `continue-on-error`, `defaults` "
+            "or `container` would let a job that never ran, or ran another image, report green "
+            "with the inline pin inside it (#178)",
+        )
         disarming = [
             line.strip()
             for line in block
@@ -693,8 +715,10 @@ class OpsFilesTestCase(unittest.TestCase):
         self.assertEqual(
             disarming,
             [],
-            f"a key that can disarm the inline pin step was added: {disarming} - a skipped or "
-            "neutral step still reports green",
+            f"a job or step key that can disarm the api job was added: {disarming} - `if` skips "
+            "the job or the step and `continue-on-error` reports it neutral, so it reports green "
+            "without running. A step that legitimately needs `if:` (a pull-request-only e2e, say) "
+            "fails here on purpose: allow it deliberately rather than letting the pin go quiet",
         )
         steps = ci_steps(block)
         named = [step["values"].get("name") or step["values"].get("uses") for step in steps]
@@ -714,9 +738,15 @@ class OpsFilesTestCase(unittest.TestCase):
         )
         self.assertEqual(
             pin["values"].get("run"),
-            "python3 -m unittest tests.test_inline_suppressions",
+            "python3 tests/run_module_strict.py test_inline_suppressions",
             f"the inline pin runs {pin['values'].get('run')!r}: the whole module, or the scan "
-            "arms run without the control beside them",
+            "arms run without the control beside them, and it must run through the strict "
+            "runner - `python3 -m unittest` exits 0 on `OK (skipped=1)`, so one "
+            "`@unittest.skipIf` on an arm restores the silent green this step closes (#216)",
+        )
+        self.assertTrue(
+            os.path.isfile(os.path.join(ROOT, "tests/run_module_strict.py")),
+            "tests/run_module_strict.py is gone: the pin step names a runner that refuses a skip",
         )
         # Without this variable the two tests go back to skipping where node_modules is missing,
         # which is the silent green #216 measured. With it, the step fails instead.
@@ -749,10 +779,11 @@ class OpsFilesTestCase(unittest.TestCase):
             1,
             f"{len(setups)} setup-python steps: the pin needs exactly one pinned interpreter",
         )
-        self.assertRegex(
-            setups[0]["values"].get("uses", ""),
-            r"^actions/setup-python@v\d+$",
-            f"setup-python action is {setups[0]['values'].get('uses')!r}",
+        self.assertEqual(
+            setups[0]["values"].get("uses"),
+            "actions/setup-python@v6",
+            f"setup-python action is {setups[0]['values'].get('uses')!r}: pinned by value like "
+            "the runner, because `@v5` is a downgrade this pin would otherwise not notice",
         )
         self.assertEqual(
             setups[0]["sections"].get("with"),
