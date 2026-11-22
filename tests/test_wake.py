@@ -736,6 +736,58 @@ class InboxStoreReadTests(WakeTestCase):
         self.assertEqual(r.stdout.strip(), "", "an unreadable store answered as an empty inbox")
         self.assertIn("cannot read the thread store", r.stderr)
 
+    @unittest.skipIf(IS_ROOT, "root enters a 444 dir, so the case cannot be built")
+    def test_a_store_dir_without_an_execute_bit_is_not_reported_as_no_threads(self):
+        """#177: listing needs `r`, entering needs `x`. So `ls` answers with every name while the
+        store read's glob expands to nothing, and that used to read as a quiet morning."""
+        bridge, log = self.bridge("hostops-dir-444")
+        self.seed("bot:coordinator", 2)
+        store = os.path.join(self.state, "threads")
+        os.chmod(store, 0o444)
+        try:
+            r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
+        finally:
+            os.chmod(store, 0o755)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertEqual(r.stdout.strip(), "", "a store that could not be entered answered as an empty inbox")
+        self.assertIn("cannot read the thread store", r.stderr)
+        # the confirmation is the same one #168 already pays: the store read, then one listing
+        cmds = self.commands(log)
+        self.assertEqual(len(cmds), 2, cmds)
+        self.assertIn("@@wake-file", cmds[0])
+        self.assertTrue(cmds[1].startswith("ls "), cmds[1])
+
+    @unittest.skipIf(IS_ROOT, "root enters a 444 dir, so the case cannot be built")
+    def test_an_empty_store_dir_without_an_execute_bit_is_still_quiet(self):
+        """The other half of #177: no thread files in the listing means there is nothing the read
+        could have missed, so a quiet store stays quiet even when it cannot be entered."""
+        os.makedirs(os.path.join(self.state, "threads"), exist_ok=True)
+        store = os.path.join(self.state, "threads")
+        os.chmod(store, 0o444)
+        try:
+            r = self.wake(
+                "--inbox",
+                env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": self.bridge("hostops-444-empty")[0]},
+            )
+        finally:
+            os.chmod(store, 0o755)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+
+    def test_a_store_holding_no_thread_files_is_still_quiet(self):
+        """A stray non-thread file must not turn "nobody asked you anything" into a store error:
+        only a name the store read should have returned is evidence that it could not enter."""
+        store = os.path.join(self.state, "threads")
+        os.makedirs(store, exist_ok=True)
+        with open(os.path.join(store, "notes.txt"), "w") as f:
+            f.write("not a thread\n")
+        r = self.wake(
+            "--inbox",
+            env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": self.bridge("hostops-not-threads")[0]},
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+
     def test_an_inbox_on_a_store_with_threads_of_another_source_is_still_quiet(self):
         """The confirmation must not turn 'nobody asked you anything' into a store failure: a
         readable store with other people's threads is still an empty inbox, exit 0."""

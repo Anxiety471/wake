@@ -252,11 +252,24 @@ def store_dir_entries(r):
 
 
 def store_dir_unreadable():
-    """True when the store directory itself cannot be listed, so an empty answer means nothing."""
+    """True when the store directory cannot be entered, so an empty answer means nothing.
+
+    Listing needs only `r` on the directory; the store read's glob needs `x` as well, so a
+    `threads/` holding files at mode 444 or 644 prints every name to `ls` while the one-call
+    read prints nothing - the empty answer #168 is about, one permission bit further out
+    (#177). So the listing is not just checked for a failure: a name ending in `.jsonl` there,
+    with nothing read back, is a store that could not be entered. This runs only when the
+    answer is already empty, and `ls <store> 2>/dev/null` is the gate's own `thread list`
+    route, so neither case needs a new gate shape. A `threads` that is a regular file prints
+    its own path and exits 0, which is the other way a broken store reads as an empty one.
+    """
     try:
-        return store_dir_entries(_host_run(f"ls {q(THREADS)} 2>/dev/null")) is None
+        entries = store_dir_entries(_host_run(f"ls {q(THREADS)} 2>/dev/null"))
     except OSError:
         return True
+    if entries is None:
+        return True
+    return any(e.endswith(".jsonl") for e in entries)
 
 
 def thread_read(tid):
@@ -373,8 +386,8 @@ def threads_mine(sender):
         return None
     if not threads and store_dir_unreadable():
         # Nothing came back: either the store holds no threads or it could not be entered, and
-        # `--inbox` must never answer the second as the first (#168). One extra call, paid only
-        # when the answer is empty, in a shape the gate already allows, so no gate change.
+        # `--inbox` must never answer the second as the first (#168, #177). One extra call, paid
+        # only when the answer is empty, in a shape the gate already allows, so no gate change.
         return None
     mine = [(tid, recs) for tid, recs in threads if recs and recs[0].get("from") == sender]
     return sorted(mine, key=lambda x: x[1][0].get("ts", ""), reverse=True)

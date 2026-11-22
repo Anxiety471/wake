@@ -209,10 +209,13 @@ call, and `--inbox` then falls back to one call per thread — slow, never wrong
 figure is the ungated path: on a gated host the speedup arrives when the gate learns the
 store-wide read, which is a host change. A thread file this user cannot read is reported
 (`cannot read the thread store`, exit 1), never left out of a short inbox. A store directory that
-cannot be read at all — missing, not a directory, or not readable by this user — is reported the
-same way, never answered as an empty inbox: an empty answer is confirmed with one listing call
-(`ls <store> 2>/dev/null`, the shape a host gate already allows), and that call is made only when
-the answer is empty.
+cannot be read at all — missing, not a directory, not listable, or not enterable by this user — is
+reported the same way, never answered as an empty inbox: an empty answer is confirmed with one
+listing call (`ls <store> 2>/dev/null`, the shape a host gate already allows), and that call is
+made only when the answer is empty. The listing is what separates the two ways a store can look
+quiet: it must fail (missing, a regular file, no read permission), or name a thread file the read
+did not return — a directory at mode 444 or 644 lists every name but cannot be entered, so the
+store read's glob expands to nothing.
 
 ### `--setup`: create a webhook key
 
