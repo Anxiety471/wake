@@ -22,6 +22,7 @@ CHANGELOG = os.path.join(ROOT, "CHANGELOG.md")
 CI = os.path.join(ROOT, ".github", "workflows", "ci.yml")
 
 UNRELEASED = "- An unreleased note that a change is rewording (#900)."
+FIXED_NOTE = "- An unreleased fix under its own heading (#901)."
 RELEASED = "- A released note that must not vanish (#185)."
 
 BASE = f"""# Changelog
@@ -31,6 +32,10 @@ BASE = f"""# Changelog
 ### Added
 
 {UNRELEASED}
+
+### Fixed
+
+{FIXED_NOTE}
 
 ## [0.2.0] - 2026-11-15
 
@@ -140,6 +145,22 @@ class ChangelogGuardTestCase(unittest.TestCase):
         result = self.run_guard(self.base)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_trailing_whitespace_on_the_base_side_is_ignored(self):
+        """The comparison strips trailing whitespace from both sides; the base side had no test."""
+        self.write("CHANGELOG.md", BASE.replace(UNRELEASED, UNRELEASED + "   "))
+        base = self.commit("base revision with trailing whitespace")
+        self.write("CHANGELOG.md", BASE)
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_crlf_base_against_a_lf_head_is_clean(self):
+        """A Windows checkout of the base must not read as a whole-file deletion."""
+        self.write("CHANGELOG.md", BASE.replace("\n", "\r\n"))
+        base = self.commit("base revision with CRLF")
+        self.write("CHANGELOG.md", BASE)
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     # -- what fails --------------------------------------------------------------
 
     def test_a_deleted_released_note_fails(self):
@@ -194,6 +215,98 @@ class ChangelogGuardTestCase(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("no reason comment above it", result.stderr)
         self.assertIn(UNRELEASED, result.stderr)
+
+    def test_a_heading_line_must_be_listed_with_a_leading_backslash(self):
+        """A heading is what a reflow of the file itself deletes; a bare `#` line can never be an entry."""
+        merged = BASE.replace(
+            "### Added\n\n" + UNRELEASED + "\n\n### Fixed\n\n" + FIXED_NOTE + "\n",
+            "### Added\n\n" + UNRELEASED + "\n" + FIXED_NOTE + "\n",
+        )
+        self.assertNotEqual(merged, BASE)
+        self.write("CHANGELOG.md", merged)
+        refused = self.run_guard(self.base)
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("### Fixed", refused.stdout)
+        # The failure says how to list it: without that, a heading is unlistable in practice.
+        self.assertIn("listed with a leading backslash", refused.stdout)
+
+        self.write_allow("# collapsing two Fixed subsections before the release\n\\### Fixed\n")
+        listed = self.run_guard(self.base)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertIn("1 of 1 removed line(s) listed", listed.stdout)
+
+    def test_a_heading_without_the_backslash_is_a_comment_and_allows_nothing(self):
+        merged = BASE.replace(
+            "### Added\n\n" + UNRELEASED + "\n\n### Fixed\n\n" + FIXED_NOTE + "\n",
+            "### Added\n\n" + UNRELEASED + "\n" + FIXED_NOTE + "\n",
+        )
+        self.write("CHANGELOG.md", merged)
+        self.write_allow("# a bare heading is a comment, not an entry\n### Fixed\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("### Fixed", result.stdout)
+
+    def test_an_escaped_entry_still_needs_a_reason(self):
+        self.write_allow("# a reason for something else\n\n\\### Fixed\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no reason comment above it", result.stderr)
+
+    def test_an_entry_that_matches_no_removed_line_is_reported(self):
+        """An entry carries its whitespace, so a wrong indent matches nothing: say so, do not ignore it."""
+        self.write("CHANGELOG.md", BASE.replace(UNRELEASED + "\n", ""))
+        self.write_allow(f"# looks like an entry, is not one\n  {UNRELEASED}\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("match no line this base loses", result.stdout)
+        self.assertIn(UNRELEASED, result.stdout)
+        # The deleted line is still named as unlisted, so the failure is not hidden by the note.
+        self.assertIn("CHANGELOG.md drops 1 line(s)", result.stdout)
+
+    def test_a_wrapped_bullets_continuation_line_is_listed_with_its_indent(self):
+        """Reflowing a bullet deletes its continuation lines, which start with two spaces."""
+        wrapped = BASE.replace(
+            UNRELEASED + "\n",
+            UNRELEASED + "\n  The rest of that note, on its own line (#900).\n",
+        )
+        self.write("CHANGELOG.md", wrapped)
+        base = self.commit("a wrapped bullet")
+        self.write("CHANGELOG.md", wrapped.replace("\n  The rest of that note", " The rest of that note"))
+        self.write_allow(
+            f"# joining a wrapped bullet\n{UNRELEASED}\n  The rest of that note, on its own line (#900).\n"
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("2 of 2 removed line(s) listed", result.stdout)
+        self.assertNotIn("match no line this base loses", result.stdout)
+
+    def test_a_listed_line_from_a_released_section_is_reported_as_released(self):
+        """The allowlist is not scoped to Unreleased, so the output has to say when it covered a release."""
+        self.write("CHANGELOG.md", BASE.replace(RELEASED + "\n", ""))
+        self.write_allow(f"# dropping a released note on purpose\n{RELEASED}\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("come from a released section", result.stdout)
+        self.assertIn("## [0.2.0]", result.stdout)
+
+    def test_a_listed_unreleased_line_is_not_reported_as_released(self):
+        self.write("CHANGELOG.md", BASE.replace(UNRELEASED + "\n", ""))
+        self.write_allow(f"# reflowing an unreleased note\n{UNRELEASED}\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("come from a released section", result.stdout)
+
+    def test_text_that_also_sits_under_unreleased_is_not_called_released(self):
+        """A heading appears once per section; the line compared by content cannot say which copy went."""
+        merged = BASE.replace(
+            "### Added\n\n" + UNRELEASED + "\n\n### Fixed\n\n" + FIXED_NOTE + "\n",
+            "### Added\n\n" + UNRELEASED + "\n" + FIXED_NOTE + "\n",
+        )
+        self.write("CHANGELOG.md", merged)
+        self.write_allow("# collapsing two Fixed subsections before the release\n\\### Fixed\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("come from a released section", result.stdout)
 
     def test_a_missing_allowlist_is_refused(self):
         result = self.run_guard(self.base, allow=os.path.join(self.repo, "scripts", "absent.txt"))

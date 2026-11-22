@@ -37,8 +37,15 @@ CI tests Python 3.9 to 3.13 on Ubuntu and pins ruff in `.github/workflows/ci.yml
 - Update `README.md`, `docs/` and `CHANGELOG.md` (under an "Unreleased" heading) for user-visible changes.
 - A pull request may add `CHANGELOG.md` lines freely, and reorder them. If it deletes a line its
   base branch still has, list that exact line in `scripts/changelog-allow.txt` with a short reason
-  above it, or the `lint` job fails; reflowing an unreleased bullet is that case. Remove the entry
-  once the change has merged: an entry is a standing permission, not a note about one pull request.
+  above it, or the `lint` job fails; reflowing an unreleased bullet is that case. A line that starts
+  with `#` is a heading, so write it with a leading backslash (`\### Fixed`): an unescaped `#` line
+  is a comment. An entry is compared with its own indentation, so copy the line as it stands - a
+  wrapped bullet's continuation lines start with two spaces - and an entry that matches no removed
+  line is printed back. Remove the
+  entry once the change has merged: an entry is a standing permission, not a note about one pull
+  request. The guard is not scoped to Unreleased - it accepts an entry for a released line too and
+  prints the released heading it came from, because dropping a released note is the owner's decision
+  in the pull request, not a reflow.
 - One logical change per commit, with a message that says what and why.
 - Keep it civil: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) applies to issues, pull requests
   and reviews.

@@ -34,8 +34,12 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   the `lint` job runs it against a pull request's base, fetched by sha, so it needs no deeper
   checkout. A deletion passes only when that exact line is listed in `scripts/changelog-allow.txt`
   with a reason comment above it, and the output names the lines the allowlist bought; a reflow of
-  an unreleased bullet is therefore a deliberate, reviewed edit, and a released note cannot vanish
-  unnoticed ([#199](https://github.com/Anxiety471/wake/issues/199)).
+  an unreleased bullet is therefore a deliberate, reviewed edit. A released note goes only when the
+  same diff lists its line, and the guard then prints the released heading that line came from, so
+  the deletion sits in front of the reviewer instead of in a resolution nobody read
+  ([#199](https://github.com/Anxiety471/wake/issues/199)). A heading is what a reflow of the file
+  itself deletes, so a line that starts with `#` is listed with a leading backslash (`\### Fixed`),
+  and an entry that matches no removed line is printed back with what it probably got wrong.
 - **Every command wake sends is pinned, so a shape that drifts fails CI instead of a host.**
   `rakazo-wake-gate` performs only the shapes it knows and refuses everything else, and a refusal
   is silent inside wake: the call fails and `--inbox` answers from the per-thread fallback.
