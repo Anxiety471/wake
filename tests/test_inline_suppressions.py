@@ -540,8 +540,9 @@ def javascript_suppression_problems(root, paths):
                         "options after the severity, and eslint honours them with the severity still "
                         'at `error` - measured, `["error", {"varsIgnorePattern": ".*"}]`, '
                         '`["error", {"args": "none"}]` and `["error", "smart"]` each left a real '
-                        "error at rc 0. The pin cannot read an options object as safe, so put the "
-                        "options in `eslint.config.js`, where this scan reads them, and keep the "
+                        "error at rc 0. The pin cannot read an options object as safe, and moving it "
+                        "into `eslint.config.js` keeps nothing: that file is read for directives only "
+                        "(#208), so a rule entry carrying options sits outside the pin. Keep the "
                         "inline comment to `<rule>: error` (#196)"
                     )
                 elif fault == "below":
@@ -834,6 +835,11 @@ class InlineSuppressionTestCase(unittest.TestCase):
                 self.assertEqual(len(problems), 1, problems)
                 self.assertIn("reconfigures", problems[0])
                 self.assertIn("#196", problems[0])
+                # The refusal used to send the developer to eslint.config.js as if the pin read
+                # rule values there. It does not: the file is scanned for directives, so an entry
+                # carrying options leaves the rule unguarded, and the message now says so (#208).
+                self.assertIn("#208", problems[0])
+                self.assertIn("directives only", problems[0])
 
     def test_a_division_after_an_increment_is_not_a_regex(self):
         """Measured: `counter++ / 2` was read as a regex, so the directive behind it went unread."""

@@ -162,7 +162,9 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   and a list that carries options keeps `error` while reconfiguring the rule - measured,
   `["error", {"varsIgnorePattern": ".*"}]`, `["error", {"args": "none"}]`,
   `["error", {"caughtErrors": "none"}]` and `["error", "smart"]` each left a real error at rc 0 -
-  so options belong in `eslint.config.js`, which this module reads, and the inline comment stays
+  so moving the options into `eslint.config.js` is not the way out either: that file is read for
+  directives only, so a rule entry carrying options sits outside the pin
+  ([#208](https://github.com/Anxiety471/wake/issues/208)), and the inline comment stays
   `<rule>: error`. The scanner also reads `++` and `--` as the values they yield, because
   `return counter++ / 2; /* eslint-disable */` was read as one regex and the directive vanished.
   A rule-scoped `// eslint-disable-next-line <rule>` stays legal, the same shape as
