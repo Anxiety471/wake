@@ -339,8 +339,8 @@ class GateAppendOwnershipTests(StagedGateCase):
     the file belongs to neither the caller nor the directory's owner. The gate runs as `wakeops`
     and the store belongs to `root`, so a thread file a host-side client created as `hitori` -
     `_host_run` runs the shell directly when there is no `WAKE_HOSTOPS` - was un-appendable:
-    reads answered normally, every append was refused as a bare `errno=13`, and nine messages
-    were lost between 2026-11-19 and 2026-11-23 (#221). The flags are what this test can hold on
+    reads answered normally, every append was refused as a bare `errno=13`, and nine appends
+    were refused between 2026-11-19 and 2026-11-23 (#221). The flags are what this test can hold on
     any machine: the ownership that triggers the refusal cannot be set up by a single-user test,
     and CI runs as one user, so the test asserts the open never asks to create an existing file.
 
