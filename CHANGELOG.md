@@ -184,6 +184,11 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   ([#208](https://github.com/Anxiety471/wake/issues/208)), and the inline comment stays
   `<rule>: error`. The scanner also reads `++` and `--` as the values they yield, because
   `return counter++ / 2; /* eslint-disable */` was read as one regex and the directive vanished.
+  Each rule is read on its own, one pair per top-level comma, so a legal
+  `/* eslint no-console: error, eqeqeq: error */` passes - eslint reported both rules at rc 1,
+  while the pin refused it as `no-console` carrying options - and a comment whose second rule
+  carries options is blamed on that rule
+  ([#204](https://github.com/Anxiety471/wake/issues/204)).
   A rule-scoped `// eslint-disable-next-line <rule>` stays legal, the same shape as
   `# noqa: E402` ([#196](https://github.com/Anxiety471/wake/issues/196)). It has one measured
   limit, recorded rather than glossed: it decides whether `/` starts a regular expression from the
