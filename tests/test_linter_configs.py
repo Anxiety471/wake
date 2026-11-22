@@ -23,8 +23,10 @@ Three things decide what the `lint` job sees, and all three are read here:
    nearest `.ruff.toml`/`ruff.toml`/`pyproject.toml` as the whole configuration for the files
    under it, and shellcheck reads a `.shellcheckrc` (or `shellcheckrc`, with no dot) from the
    working directory and from each script's own directory.
-3. `.gitignore`, which ruff honours (`file_resolver.respect_gitignore = true` in
-   `ruff check --show-settings`): a pattern matching a tracked file drops it from the read set.
+3. `.gitignore` (`file_resolver.respect_gitignore = true` in `ruff check --show-settings`) and
+   `.ignore`, which it honours the same way: with either file naming `tests/`, `ruff check .` reads
+   12 files instead of 27. Git never mentions `.ignore`, so it is refused by name below rather than
+   left to `git check-ignore`.
 
 Run with the rest: `python3 -m unittest discover -s tests`
 """
@@ -56,7 +58,16 @@ RUFF_VALUES = {
 
 #: A file by one of these names gives a linter a configuration of its own. `pyproject.toml` is
 #: listed because a second one decides the files under it; the root one is the pinned config.
-COMPETING_LINTER_FILES = ("pyproject.toml", ".ruff.toml", "ruff.toml", ".shellcheckrc", "shellcheckrc")
+COMPETING_LINTER_FILES = (
+    "pyproject.toml",
+    ".ruff.toml",
+    "ruff.toml",
+    ".shellcheckrc",
+    "shellcheckrc",
+    # ruff's ignore-file support reads `.ignore` too, and `git check-ignore --no-index` never
+    # reports it, so nothing else in the tree looks at it (#188).
+    ".ignore",
+)
 
 ROOT_PYPROJECT = "pyproject.toml"
 
@@ -295,11 +306,12 @@ class LinterConfigTestCase(unittest.TestCase):
         self.assertEqual(
             found,
             [],
-            "a linter reads a config file of its own: "
+            "a linter reads a file of its own: "
             + ", ".join(found)
-            + " - ruff takes the nearest one as the whole configuration for the files under it and "
-            "shellcheck reads one from the working directory and from each script's directory, so a second "
-            "file decides what the job reads without touching pyproject.toml or ci.yml (#185)",
+            + " - ruff takes the nearest config as the whole configuration for the files under it, shellcheck "
+            "reads one from the working directory and from each script's directory, and ruff's ignore-file "
+            "support drops whatever a `.ignore` pattern matches, so a second file decides what the job reads "
+            "without touching pyproject.toml or ci.yml (#185, #188)",
         )
         self.assertEqual(
             competing_linter_configs(
@@ -310,9 +322,19 @@ class LinterConfigTestCase(unittest.TestCase):
                     "tests/pyproject.toml",
                     "shellcheckrc",
                     "scripts/.shellcheckrc",
+                    ".ignore",
+                    "tests/.ignore",
                 ]
             ),
-            [".ruff.toml", "scripts/.shellcheckrc", "shellcheckrc", "tests/.ruff.toml", "tests/pyproject.toml"],
+            [
+                ".ignore",
+                ".ruff.toml",
+                "scripts/.shellcheckrc",
+                "shellcheckrc",
+                "tests/.ignore",
+                "tests/.ruff.toml",
+                "tests/pyproject.toml",
+            ],
             "the refusal does not name every second config file",
         )
 

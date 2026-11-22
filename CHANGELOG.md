@@ -114,9 +114,13 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   suffix. It also refuses a second linter config file at any depth (`.ruff.toml`, `ruff.toml`,
   another `pyproject.toml`, `.shellcheckrc`, `shellcheckrc`), and a `.gitignore` pattern that
   matches a tracked file, which ruff honours (`git check-ignore --no-index`, since plain
-  `check-ignore` never reports a tracked path). Measured with ruff 0.17.5 and shellcheck 0.11.0:
-  22 mutations each fail the module. A deliberate change edits the pin in the same commit
-  ([#185](https://github.com/Anxiety471/wake/issues/185)).
+  `check-ignore` never reports a tracked path). `.ignore` counts as well: ruff's ignore-file
+  support reads it, a tracked root `.ignore` naming `tests/` left `ruff check .` at rc 0 with a
+  planted F401 (27 files read became 12) while this module stayed green, and
+  `git check-ignore --no-index` never reports it either, so it is refused by name
+  ([#188](https://github.com/Anxiety471/wake/issues/188)). Measured with ruff 0.17.5 and
+  shellcheck 0.11.0: 22 mutations each fail the module. A deliberate change edits the pin in the
+  same commit ([#185](https://github.com/Anxiety471/wake/issues/185)).
 
 - **The `lint` pin reads the interpreter too, and every test file runs on the module path.**
   Three holes left by #178's pin: `python-version` inside `lint`'s `actions/setup-python` step
