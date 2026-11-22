@@ -17,6 +17,8 @@ pinned there, so a shape that changes fails the suite even with no gate staged, 
 the diff that updates the pin is the review signal for a new gate route (#167).
 """
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -147,7 +149,13 @@ class CommandShapeTests(WakeTestCase):
                 self.assertTrue(c.endswith("2>/dev/null"), c)
 
 
-class GateAllowListTests(WakeTestCase):
+class StagedGateCase(WakeTestCase):
+    """Base for the tests that need a gate artifact staged on this machine.
+
+    Where a gate lives is a property of one machine, so the repository has no opinion: without
+    `WAKE_GATE` (one artifact) or `WAKE_GATE_STAGE` (the staging directory) these tests skip.
+    """
+
     def setUp(self):
         super().setUp()
         self.gate_path = os.environ.get("WAKE_GATE") or GATE_DEFAULT
@@ -172,6 +180,8 @@ class GateAllowListTests(WakeTestCase):
         ]
         return mod
 
+
+class GateAllowListTests(StagedGateCase):
     def test_every_command_wake_sends_is_allow_listed(self):
         gate = self.load_gate()
         refused = [c for c in exercise(self) if gate.match(c) is None]
@@ -181,6 +191,90 @@ class GateAllowListTests(WakeTestCase):
         gate = self.load_gate()
         refused = [c for c in exercise_inbox_io(self) if gate.match(c) is None]
         self.assertEqual(refused, [], "the gate would refuse these wake-inbox-io commands:\n" + "\n".join(refused))
+
+
+def _chmod_if_there(path, mode):
+    """Restore a store dir's mode, tolerating a state directory `tearDown` already removed."""
+    try:
+        os.chmod(path, mode)
+    except FileNotFoundError:
+        pass
+
+
+class GateStoreListingTests(StagedGateCase):
+    """A store dir the gate cannot list is refused by name, never answered as an empty store.
+
+    Every answer the gate gives is built from a listing, and `list_dir()` / `list_active()` turn a
+    lost directory into `[]`: a store that cannot be read then answers "no threads" with rc 0, and
+    the caller cannot tell it from a quiet morning (#168). v8 holds that line only by accident -
+    each handler that lists the dir lets the opendir's EACCES escape as an `OSError`, which `run()`
+    prints as `io error: Permission denied` with no path, and the routes that do not touch the
+    broken dir answer normally - so the guarantee sits in three handlers, not in the check, and one
+    `except FileNotFoundError: return []` around the same call would drop it. A gate from v9 on
+    proves listability in `_check_store()` before any handler runs and names the dir it cannot read.
+
+    Against a v8 gate these tests fail. That is the point: the gate is installed before the client
+    that relies on it, so the staging directory shows the order the two artifacts ship in.
+    """
+
+    ROUTES = ("thread list", "thread store read", "inbox active list")
+
+    def store(self):
+        """The three dirs the loaded gate points at, emptied, and restored to 0755 on cleanup.
+
+        `WakeTestCase` deletes the state directory in `tearDown`, and cleanups run after it, so the
+        restore has to tolerate a path that is already gone.
+        """
+        gate = self.load_gate()
+        for d in (gate.THREADS, gate.INBOX, gate.ACTIVE):
+            os.makedirs(d, exist_ok=True)
+            self.addCleanup(_chmod_if_there, d, 0o755)
+            for name in os.listdir(d):
+                os.unlink(os.path.join(d, name))
+        return gate
+
+    def answer(self, gate, label):
+        """Run one allow-listed route through the gate's own `run()`, as sshd would."""
+        cmd = next(t for lab, t in gate._TEMPLATES if lab == label)
+        out, err = io.BytesIO(), io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = gate.run(cmd, b"", out)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_an_unlistable_store_dir_is_refused_by_name(self):
+        gate = self.store()
+        for d in (gate.THREADS, gate.INBOX, gate.ACTIVE):
+            os.chmod(d, 0o300)  # stat-able and searchable, so every check before the listing passes
+            try:
+                for label in self.ROUTES:
+                    rc, body, err = self.answer(gate, label)
+                    self.assertEqual(rc, 1, f"{label} answered {rc} with {d} unlistable: {body!r}")
+                    self.assertEqual(body, b"", f"{label} answered data from an unlistable store")
+                    self.assertIn("store path cannot be listed: " + d, err, label)
+            finally:
+                os.chmod(d, 0o755)
+
+    def test_a_readable_store_still_answers(self):
+        """No over-refusal: the check must not cost a working store its answers."""
+        gate = self.store()
+        with open(os.path.join(gate.THREADS, "11141808-0a61.jsonl"), "w") as f:
+            f.write('{"kind":"ask"}\n')
+        rc, body, err = self.answer(gate, "thread list")
+        self.assertEqual((rc, err), (0, ""), err)
+        self.assertIn(b"11141808-0a61.jsonl", body)
+        rc, body, err = self.answer(gate, "thread store read")
+        self.assertEqual((rc, err), (0, ""), err)
+        self.assertTrue(body.startswith(b"\n@@wake-file 11141808-0a61.jsonl\n"), body)
+        rc, body, err = self.answer(gate, "inbox active list")
+        self.assertEqual((rc, body, err), (0, b"", ""), "an idle session list is quiet, not refused")
+
+    def test_a_quiet_store_stays_quiet(self):
+        """An empty store is the one answer rc 0 is for, and it is the one a broken store must not
+        be able to imitate."""
+        gate = self.store()
+        for label in self.ROUTES:
+            rc, body, err = self.answer(gate, label)
+            self.assertEqual((rc, body, err), (0, b"", ""), label)
 
 
 class InboxIoShapeTests(WakeTestCase):
