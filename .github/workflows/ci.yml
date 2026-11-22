@@ -155,20 +155,42 @@ jobs:
             python -m py_compile "$f"
           done
       # #199: nothing read CHANGELOG.md, so a conflict resolution that takes the branch's copy
-      # deleted a released bullet and every check stayed green. The guard compares the pull
-      # request's base revision with this checkout and fails on any line the base still carries
-      # unless that exact line is listed in scripts/changelog-allow.txt with a reason above it.
-      # A push has no pull request base, so the step says that instead of comparing nothing.
+      # deleted a released bullet and every check stayed green. The guard compares a base revision
+      # with this checkout and fails on any line the base still carries unless that exact line is
+      # listed in scripts/changelog-allow.txt with a reason above it.
+      # A pull request is compared with its own base revision, which is what it merges into. A push
+      # is compared with the tip the ref had before the push, so the merge commit that puts a
+      # deletion on main is judged there: until #218 this step said "not a pull request" and passed
+      # on every merge, so nothing read the merge that carried the deletion.
+      # A pull request whose checks ran before this step existed is still not judged by its own run,
+      # because GitHub does not re-run checks when the base branch moves. That is why the push arm
+      # is the one that decides whether main keeps its notes.
       - name: CHANGELOG.md deletions
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
-          if [ -z "$BASE_SHA" ]; then
-            echo "changelog-guard: not a pull request; nothing to compare"
-            exit 0
+          base="$BASE_SHA"
+          if [ -z "$base" ]; then
+            base="$BEFORE_SHA"
+            # A ref that did not exist before reports an all-zero tip. A commit sha cannot be all
+            # zeros, so "every digit is 0" - or no tip at all - is what says nothing sits behind it.
+            case "$base" in
+              *[!0]*) ;;
+              *)
+                echo "changelog-guard: a new ref has no previous tip; nothing to compare"
+                exit 0
+                ;;
+            esac
           fi
-          git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          scripts/changelog-guard.sh "$BASE_SHA"
+          # Fetched by sha, so the lint job keeps its default shallow checkout. A tip that cannot be
+          # fetched fails the step instead of passing: a pass would report a comparison that never
+          # ran, which is the hole this arm closes.
+          if ! git fetch --no-tags --depth=1 origin "$base"; then
+            echo "changelog-guard: cannot fetch $base; refusing to pass without comparing it" >&2
+            exit 1
+          fi
+          scripts/changelog-guard.sh "$base"
 
   secret-scan:
     # Pinned, not ubuntu-latest (#172): the scan's verdict comes from the runner's git and grep,
