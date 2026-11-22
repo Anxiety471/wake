@@ -58,9 +58,14 @@ RUFF_VALUES = {
 
 #: A file by one of these names gives a linter a configuration of its own. `pyproject.toml` is
 #: listed because a second one decides the files under it; the root one is the pinned config.
-#: Caveat: ruff's ignore-file support is a walk rule, not a fixed config-file name, so a ruff
-#: release can honour an ignore name this tuple does not carry. Add the measured name here;
-#: `test_no_other_linter_config_file_is_tracked` stays the guard.
+#:
+#: Only a name git does not track belongs here. The tuple is matched against `git ls-files`, so a
+#: tracked name - the root `.gitignore` - fails `test_no_other_linter_config_file_is_tracked` on
+#: this repo the moment it is added, which reads as the guard rejecting the file it protects.
+#: The git-known ignore files are that test's sibling instead:
+#: `test_no_tracked_file_is_hidden_from_ruff_by_gitignore` asks `git check-ignore --no-index`
+#: whether a `.gitignore` or `.git/info/exclude` pattern matches a tracked path, which is the
+#: shape ruff acts on (#201).
 COMPETING_LINTER_FILES = (
     "pyproject.toml",
     ".ruff.toml",
