@@ -1,0 +1,16 @@
+# lines of CHANGELOG.md that a change may delete. scripts/changelog-guard.sh fails when a change
+# removes a line the base revision still carries unless that line is listed here verbatim, one
+# entry per line, with a reason comment directly above it and no blank line in between.
+#
+# Only a deletion that has to happen belongs here: reflowing an unreleased bullet, or moving the
+# Unreleased notes into a release section at a tag. A line that was released and is being dropped
+# on purpose needs the owner's decision in the PR, not just an entry.
+#
+# An entry is a standing permission, not a one-PR note: once the change that needed it has merged,
+# remove the entry in its own commit, so the next deletion of that line is caught again.
+#
+# A line that starts with # is written with a leading backslash (\### Fixed), because a bare # line
+# is a comment here. Indentation is part of the entry: copy the line as it stands, and an entry that
+# matches no removed line is printed back. The guard is not
+# scoped to Unreleased - an entry for a released line is accepted, and printed back with the released
+# heading it came from, so a reviewer sees that a released note is going rather than a reflow.

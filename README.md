@@ -322,8 +322,9 @@ the short "talk to the other bots" skill.
 tests/run.sh                      # python3 from PATH
 PYTHON=python3.12 tests/run.sh    # a specific interpreter; the bin/ scripts run under it too
 uv run --with ruff ruff check . && uv run --with ruff ruff format --check .
-shellcheck install.sh tests/run.sh scripts/scrub-check.sh $(grep -lE '^#!/(usr/)?bin/(env )?(ba)?sh' bin/ops/wake-* bin/wake*)
+shellcheck install.sh tests/run.sh scripts/scrub-check.sh scripts/changelog-guard.sh $(grep -lE '^#!/(usr/)?bin/(env )?(ba)?sh' bin/ops/wake-* bin/wake*)
 scripts/scrub-check.sh --history  # fails on IPs other than 127.0.0.1, emails and token-like strings (every branch; CI uses --history-head)
+scripts/changelog-guard.sh origin/main  # fails on a CHANGELOG.md line that origin/main has and this tree lost (CI runs it per pull request)
 
 bun install                       # API and MCP workspace
 bun run typecheck
@@ -339,7 +340,7 @@ Tests are offline: a fake webhook server on 127.0.0.1 records every request; sta
 
 Run the suite as a non-root user. As root, the two `sg` fallback tests are skipped with a reason (root reads any file, so the fallback is never reached) and `run.sh` prints a note.
 
-CI (`.github/workflows/ci.yml`) runs the tests on Python 3.9 to 3.13, ruff, shellcheck, `compileall`, the secret scan, the API suite and the threads e2e on every push and pull request. The test job fetches tags as well as history, because `tests/test_publish_checklist.py` compares the release line in `docs/PUBLISH-CHECKLIST.md` with the commit the tag points at. See [CONTRIBUTING.md](CONTRIBUTING.md).
+CI (`.github/workflows/ci.yml`) runs the tests on Python 3.9 to 3.13, ruff, shellcheck, `compileall`, the secret scan, the changelog guard, the API suite and the threads e2e on every push and pull request. The changelog guard compares a pull request's base branch with the checkout, so a conflict resolution that deletes a released note fails instead of landing green. The test job fetches tags as well as history, because `tests/test_publish_checklist.py` compares the release line in `docs/PUBLISH-CHECKLIST.md` with the commit the tag points at. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Changelog
 
