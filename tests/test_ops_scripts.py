@@ -562,6 +562,31 @@ class OpsFilesTestCase(unittest.TestCase):
             ],
             f"the lint steps are {named}: a step added, dropped or renamed changes what lint reads",
         )
+        # A step carries keys of its own and the job-level list above cannot see them:
+        # `working-directory: /tmp` on `ruff check` runs `ruff check .` in an empty directory, which
+        # exits 0 with a warning, and `shell: /bin/true {0}` on the same step runs nothing at all -
+        # either one keeps every assertion above green (measured at 06c2c75, Grok's review of #180,
+        # TASK-228). Each step's keys are allowlisted here, as `secret-scan` allowlists checkout's
+        # `uses`/`with` and the scan's `name`/`run`.
+        allowed = {
+            "actions/checkout@v7": ["uses"],
+            "actions/setup-python@v6": ["uses", "with"],
+            "Install ruff": ["name", "run"],
+            "ruff check": ["name", "run"],
+            "ruff format --check": ["name", "run"],
+            "shellcheck": ["name", "run"],
+            "compileall": ["name", "run"],
+        }
+        for step, label in zip(steps, named):
+            with self.subTest(step=label):
+                self.assertIn(label, allowed, f"an unexpected lint step {label!r} was added")
+                self.assertEqual(
+                    step["keys"],
+                    allowed[label],
+                    f"{label} carries {step['keys']}: only {allowed[label]} are allowed - a step "
+                    "shell, a working-directory or an `env` decides what the command reads without "
+                    "changing a single pinned value",
+                )
         # What each step runs is pinned by value too, read off the raw lines: `run: "true"` swapped
         # into `ruff check` keeps every pin above green while lint checks nothing (measured at
         # 06c2c75), and so does a ruff version that is not the one the suite was proved on. A
