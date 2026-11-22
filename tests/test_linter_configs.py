@@ -58,6 +58,9 @@ RUFF_VALUES = {
 
 #: A file by one of these names gives a linter a configuration of its own. `pyproject.toml` is
 #: listed because a second one decides the files under it; the root one is the pinned config.
+#: Caveat: ruff's ignore-file support is a walk rule, not a fixed config-file name, so a ruff
+#: release can honour an ignore name this tuple does not carry. Add the measured name here;
+#: `test_no_other_linter_config_file_is_tracked` stays the guard.
 COMPETING_LINTER_FILES = (
     "pyproject.toml",
     ".ruff.toml",
