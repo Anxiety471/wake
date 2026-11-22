@@ -110,13 +110,20 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   suite at 489 OK), a bare `# noqa` on that offending line did the same for one line, a
   `# shellcheck disable=SC2154` above a real `SC2154` in `scripts/scrub-check.sh` took the shipped
   shellcheck step from rc 1 to rc 0, and `# fmt: off` at line 1 hid a misformatted file from
-  `ruff format --check .`. `tests/test_inline_suppressions.py` reads the comments out of the files
+  `ruff format --check .`. Three more spellings ruff honours did the same at the first head of this
+  branch: `# yapf: disable` at line 1 left `ruff format --check .` at rc 0 with the file
+  misformatted (rc 1 with the comment removed), `# isort: skip_file` - and the same directive
+  written `# ruff: isort: skip_file`, and `# isort: off` with no `on` closing the block - took a
+  real I001 to rc 0, and `# ruff: disable[F821]` / `# ruff: ignore[F821]` took a real F821 further
+  down the file to rc 0. `tests/test_inline_suppressions.py` reads the comments out of the files
   the two linters actually read - `tokenize` for python, so a directive quoted in a docstring is not
   one, and line by line for shell, where the directive must begin its line as shellcheck requires -
-  and refuses a file-level `# ruff: noqa` / `# flake8: noqa`, a `noqa` that names no code, any
-  `# fmt:` directive, and a `# shellcheck disable=` that names more than one code or carries no
-  justification. The tree's own 21 code-scoped suppressions pass unchanged, and the two shipped
-  shellcheck directives are listed by path and line, so a new one is a deliberate edit to the pin
+  and refuses a file-level `# ruff: noqa` / `# flake8: noqa`, a `noqa` that names no code, the
+  `# fmt:` and `# yapf:` formatter directives, the `# isort:` / `# ruff: isort:` import-order
+  directives, a `# ruff: disable[CODE]` / `enable[CODE]` / `ignore[CODE]` rule switch, and a
+  `# shellcheck disable=` that names more than one code or carries no justification. The tree's own
+  21 code-scoped suppressions pass unchanged, and the two shipped shellcheck directives are listed
+  by path and line, so a new one is a deliberate edit to the pin
   ([#191](https://github.com/Anxiety471/wake/issues/191)).
 
 - **The `lint` pin reads the interpreter too, and every test file runs on the module path.**

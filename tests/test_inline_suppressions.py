@@ -19,10 +19,22 @@ file, it sits in the source CI already lints, and every linter honours it. Measu
 
     `# fmt: off` at line 1             ->  `ruff format --check .` rc 0 with the file misformatted
 
+    `# yapf: disable` at line 1        ->  `ruff format --check .` rc 0 with the file misformatted
+                                           (rc 1 with the comment removed)
+
+    `# isort: skip_file`,              ->  `ruff check .` rc 0 with a real I001 in the file
+    `# ruff: isort: skip_file`,            (`# isort: skip_file` and `# ruff: isort: skip_file` are
+    `# isort: off` with no `on`            the same directive to ruff; `# isort: off` exempts the
+                                           rest of the file when no `on` closes the block)
+
+    `# ruff: disable[F821]` /          ->  `ruff check .` rc 0 with a real F821 further down
+    `# ruff: ignore[F821]`                 (rc 1 with the comment removed)
+
 The rule is not a ban: the tree legitimately uses code-scoped suppressions, and a pin that refused
 them would be turned off rather than obeyed. It is green on the tree today (no file-level form, no
-bare `noqa`, no `# fmt:` at all, and the only two `# shellcheck disable=` both name one code and
-carry a justification), and it still closes every arm above:
+bare `noqa`, no `# fmt:` / `# yapf:` / `# isort:` / `# ruff: disable[` at all, and the only two
+`# shellcheck disable=` both name one code and carry a justification), and it still closes every arm
+above:
 
 1. a `noqa` must name the code it covers - `# noqa: E402` passes, a bare `# noqa` and a malformed
    `# noqa:` are refused;
@@ -30,8 +42,15 @@ carry a justification), and it still closes every arm above:
    codes they name - or every rule - for the whole file, far from the line that needed them;
 3. a `# shellcheck disable=` must name exactly one code and carry a justification comment, as the
    two shipped ones do (`# shellcheck disable=SC2016  # the script is quoted for ...`);
-4. a `# fmt:` directive is refused outright: it names no code, and `# fmt: off` at line 1 exempts
-   a whole file from `ruff format --check .`.
+4. a formatter directive is refused outright: it names no code, and `# fmt: off` or
+   `# yapf: disable` at line 1 exempts a whole file from `ruff format --check .`;
+5. an isort directive is refused outright: `skip_file` exempts the whole file's import order,
+   `off` exempts everything below it until an `on` that may never come, and `skip` exempts one
+   import line, and none of them names a code. Written as `# isort: ...` or `# ruff: isort: ...`,
+   the same directive to ruff;
+6. a `# ruff: disable[CODE]` / `enable[CODE]` / `ignore[CODE]` rule switch is refused: it turns a
+   rule off for everything below it and names no line, so the finding it hides is not on the
+   comment's own line to review.
 
 Spelled `noq[a]` in this file's own regexes so the patterns do not trip ruff's
 "invalid `# noqa` directive" warning on the scanner that refuses them.
@@ -70,8 +89,16 @@ CODE = re.compile(r"[A-Z][A-Z0-9]*[0-9]")
 #: A shellcheck code, the only shape its `disable=` accepts.
 SHELLCHECK_CODE = re.compile(r"SC[0-9]{4}")
 
-#: A formatter directive. There is no code to name, so the only pinned count is zero.
-FMT_DIRECTIVE = re.compile(r"#\s*fmt:\s*(?:off|on|skip)\b", re.IGNORECASE)
+#: A formatter directive, as ruff's formatter honours it: the fmt and yapf spellings drive the same
+#: switch. There is no code to name, so the only pinned count is zero.
+FMT_DIRECTIVE = re.compile(r"#\s*(?:fmt|yapf)\s*:\s*(?:off|on|skip|disable|enable)\b", re.IGNORECASE)
+
+#: An import-order directive. `skip_file` exempts the whole file, `off` the rest of it, `skip` one
+#: line; ruff reads it with or without the `ruff:` prefix.
+ISORT_DIRECTIVE = re.compile(r"#\s*(?:ruff\s*:\s*)?isort\s*:\s*(?:skip_file|skip|off|on)\b", re.IGNORECASE)
+
+#: A file- or block-wide rule switch, the bracket form ruff added for one rule at a time.
+RULE_SWITCH = re.compile(r"#\s*ruff\s*:\s*(?:disable|enable|ignore)\s*\[", re.IGNORECASE)
 
 #: How much text counts as a reason for a `# shellcheck disable=`.
 MIN_JUSTIFICATION = 10
@@ -182,9 +209,23 @@ def python_suppression_problems(root, paths):
                 )
             if FMT_DIRECTIVE.search(comment):
                 problems.append(
-                    f"{where} exempts code from `ruff format --check .`: `# fmt: off` at line 1 took a whole "
-                    "misformatted file to rc 0. Format the code, and if a block is deliberate, this pin grows a "
-                    "PINNED entry in the same commit (#191)"
+                    f"{where} exempts code from `ruff format --check .`: `# fmt: off` or `# yapf: disable` at "
+                    "line 1 took a whole misformatted file to rc 0. Format the code, and if a block is "
+                    "deliberate, this pin grows a PINNED entry in the same commit (#191)"
+                )
+            if ISORT_DIRECTIVE.search(comment):
+                problems.append(
+                    f"{where} exempts import order from `ruff check .`: `# isort: skip_file` took a real I001 "
+                    "in the file to rc 0, `# isort: off` does the same for everything below it, and `# isort: "
+                    "skip` for one import line. Sort the imports, and if an order is deliberate, this pin "
+                    "grows a PINNED entry in the same commit (#191)"
+                )
+            if RULE_SWITCH.search(comment):
+                problems.append(
+                    f"{where} switches a rule off below it: `# ruff: disable[F821]` / `# ruff: ignore[F821]` "
+                    "took a real F821 further down the file to rc 0, and the hidden finding is not on the "
+                    "comment's own line. Write `# noqa: <CODE>` on the line it covers, or fix the finding "
+                    "(#191)"
                 )
     return problems
 
@@ -299,12 +340,52 @@ class InlineSuppressionTestCase(unittest.TestCase):
         self.assertEqual(len(python_comments(source)), 1)
 
     def test_a_formatter_directive_is_refused(self):
-        """Measured: `# fmt: off` at line 1 took `ruff format --check .` from rc 1 to rc 0."""
+        """Measured: `# fmt: off` and `# yapf: disable` at line 1 each took `ruff format --check .` to rc 0."""
         for comment in ("# fmt: off", "# fmt:skip", "# fmt: on", "# FMT: OFF"):
             with self.subTest(comment=comment):
                 problems = self.problems(python=f"X = 1  {comment}\n")
                 self.assertEqual(len(problems), 1, problems)
                 self.assertIn("ruff format --check", problems[0])
+        for comment in ("# yapf: disable", "# yapf: enable", "# YAPF: DISABLE", "# yapf:disable"):
+            with self.subTest(comment=comment):
+                problems = self.problems(python="x = {'a':1}\n" + comment + "\n")
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("ruff format --check", problems[0])
+
+    def test_an_isort_directive_is_refused(self):
+        """Measured: `# isort: skip_file`, `# ruff: isort: skip_file` and `# isort: off` each hid a real I001."""
+        for comment in (
+            "# isort: skip_file",
+            "# isort:skip_file",
+            "# ruff: isort: skip_file",
+            "# RUFF: ISORT: SKIP_FILE",
+            "# isort: off",
+            "# isort: skip",
+        ):
+            with self.subTest(comment=comment):
+                problems = self.problems(python=f"import sys\nimport os\n{comment}\n")
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("import order", problems[0])
+
+    def test_a_rule_switch_is_refused(self):
+        """Measured: `# ruff: disable[F821]` and `# ruff: ignore[F821]` each took a real F821 to rc 0."""
+        for comment in (
+            "# ruff: disable[F821]",
+            "# ruff: ignore[F821]",
+            "# ruff: disable[F821, E501]",
+            "# RUFF: DISABLE[F821]",
+        ):
+            with self.subTest(comment=comment):
+                problems = self.problems(python=f"SEED = 1\n{comment}\nX = undefined_name\n")
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn("switches a rule off", problems[0])
+
+    def test_the_spellings_ruff_honours_are_not_confused_with_prose(self):
+        """A docstring naming the forms is not a directive, same as the `noqa` arm."""
+        source = (
+            '"""`# yapf: disable`, `# isort: skip_file` and `# ruff: disable[F821]` are refused here."""\nSEED = 1\n'
+        )
+        self.assertEqual(self.problems(python=source), [])
 
     def test_a_shellcheck_disable_needs_one_code_and_a_reason(self):
         """`disable=all` and a list are blanket silences; both shipped directives name one code and say why."""
