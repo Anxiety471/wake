@@ -110,9 +110,13 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   skipped job reports green, a neutral one does too, and a `container` runs every step in another
   image. `lint` is one of the eight required checks on main, so
   `tests/test_ops_scripts.py::test_ci_lint_job_keys_cannot_disarm_it` pins its job keys (`runs-on`,
-  `steps`) and refuses a step-level `if` or `continue-on-error`, the pin `backgrounded` and
-  `secret-scan` already carry
-  ([#178](https://github.com/Anxiety471/wake/issues/178)).
+  `steps`), refuses a step-level `if` or `continue-on-error`, pins every step's name and `run`
+  payload by value, and allowlists each step's own keys - the pin `backgrounded` and `secret-scan`
+  already carry ([#178](https://github.com/Anxiety471/wake/issues/178)). The step keys are their
+  own hole: `working-directory: /tmp` on `ruff check` runs it in an empty directory, which exits 0
+  with a warning, and a step `shell:` or an added `env:` decides what the command reads without
+  touching a pinned value, so the allowlist is what makes the sentence above true
+  ([#181](https://github.com/Anxiety471/wake/issues/181)).
 
 - **The `lint` job's runner is pinned by value, not just present in a key list.** #172 pinned the
   `secret-scan` image and left `lint` on `ubuntu-latest`: at `24ca37d` nothing read that job's
