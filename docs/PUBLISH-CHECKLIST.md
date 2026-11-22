@@ -60,7 +60,7 @@ The private pattern list (site/user/host names, bot ids and aliases, internal pa
 scripts/scrub-check.sh --history   # tracked files, every commit message and patch, plus .git/scrub-patterns.txt
 ```
 
-`scripts/scrub-allow.txt` lists fixed strings whose lines are skipped: the test's fake minted key, and the owner's public identity (`Joshua M. Valderrama`, `@Anxiety471`). The private list contains the owner's first name, last name and GitHub handle, so without those entries `LICENSE`, `CODEOWNERS` and this file would fail; any other use of those names (for example in a home-directory path) still fails. CI runs the same script without the private list.
+`scripts/scrub-allow.txt` lists fixed strings that are blanked out of a hit line: the test's fake minted key, the owner's public identity (`Joshua M. Valderrama`, `@Anxiety471`), and the sha256 of the gate v11 installed on the operator host, which `CHANGELOG.md` records as the gate's identity ([#213](https://github.com/Anxiety471/wake/issues/213)). A public artifact hash is not a secret, and the rest of a line carrying one is still scanned. The private list contains the owner's first name, last name and GitHub handle, so without those entries `LICENSE`, `CODEOWNERS` and this file would fail; any other use of those names (for example in a home-directory path) still fails. CI runs the same script without the private list.
 The email stage ignores an address whose domain ends in a reserved test name (RFC 2606/6761:
 `example.com`, `example.net`, `example.org` and their subdomains, `*.invalid`, `*.test`, `*.example`,
 `*.localhost`), because no mailbox can exist there; a live address on the same line still fails, and

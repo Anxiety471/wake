@@ -21,3 +21,8 @@ Joshua M. Valderrama
 # a routable address sharing that line is still reported.
 0.0.0.0
 desk-secret-desk-secret-desk-secret
+
+# the sha256 of the rakazo-wake-gate v11 installed on the operator host, recorded in CHANGELOG.md so
+# an install can be checked against the bytes rather than the filename (#213). A public artifact
+# hash is not a secret; blanking it leaves the rest of the line scanned like every other entry.
+b032537a6ba58c37cc0e8ba475429b01230848f53b526d83e1ea980189ce1b70

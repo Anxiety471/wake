@@ -24,6 +24,14 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   than v9 and does not carry the check, and v9 predates the `ls -F` route #186 needs, so
   installing v9 instead of v11 would put #186 back on the host. Gate first, then the client that
   relies on it ([#195](https://github.com/Anxiety471/wake/issues/195)).
+  The gate prints no version of its own, so the installed bytes are its identity and the filename
+  is not: the copy installed on the operator host on 2026-11-22 at 23:34:53 PHT was 20,620 B, mode
+  `755` `root:root`, sha256
+  `b032537a6ba58c37cc0e8ba475429b01230848f53b526d83e1ea980189ce1b70` - check
+  `sha256sum /usr/local/bin/rakazo-wake-gate` against that rather than trusting what the file is
+  called. A 20,613 B draft by the same name was built on the workstation that night and never
+  reached the host; it survives only as `rakazo-wake-gate.v11.stale-4e68295b` in the scratch
+  directory it was built in ([#213](https://github.com/Anxiety471/wake/issues/213)).
 
 - **`CHANGELOG.md` is guarded, so a conflict resolution cannot drop a released note.** Nothing
   read the file: a branch cut before a note merged carried a copy of it without that note, and
