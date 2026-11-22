@@ -239,29 +239,73 @@ def store_dir_entries(r):
     gate matches; the same silence throws away the reason a read failed. The one-call store read
     prints nothing both for a store with no files and for a store the shell could not enter, so
     an empty answer on its own cannot tell a quiet store from a broken one. `ls` is the command
-    whose exit status carries the difference, and `ls <store> 2>/dev/null` is a shape the gate
-    already allows, so this needs no gate change. A `threads` that is a regular file prints its
-    own path and exits 0, which is the other way a broken store reads as an empty one.
+    whose exit status carries the difference, and a listing of the store is a shape the gate
+    already allows. A `threads` that is a regular file prints its own path and exits 0, which is
+    the other way a broken store reads as an empty one. Both listings land here: the plain one
+    from `threads_all_one_by_one` and the `ls -F` confirmation, whose entries keep a type mark
+    that `entry_name` strips before the store path is compared.
     """
     if bridge_failed(r) or r.returncode != 0:
         return None
     out = (r.stdout or "").strip()
-    if out == THREADS:
+    if entry_name(out) == THREADS:
         return None
     return out.split()
+
+
+def entry_name(entry):
+    """One `ls -F` entry without its type mark: `stray.jsonl/` and `link.jsonl@` keep only the
+    name. A plain `ls` entry carries no mark, so both listings answer here."""
+    return entry[:-1] if entry and entry[-1] in "*/@=>|" else entry
 
 
 def store_dir_unreadable():
     """True when the store directory cannot be entered, so an empty answer means nothing.
 
     Listing needs only `r` on the directory; the store read's glob needs `x` as well, so a
-    `threads/` holding files at mode 444 or 644 prints every name to `ls` while the one-call
-    read prints nothing - the empty answer #168 is about, one permission bit further out
-    (#177). So the listing is not just checked for a failure: a name ending in `.jsonl` there,
-    with nothing read back, is a store that could not be entered. This runs only when the
-    answer is already empty, and `ls <store> 2>/dev/null` is the gate's own `thread list`
-    route, so neither case needs a new gate shape. A `threads` that is a regular file prints
-    its own path and exits 0, which is the other way a broken store reads as an empty one.
+    `threads/` holding files at mode 444 or 644 prints every name while the one-call read
+    prints nothing - the empty answer #168 is about, one permission bit further out (#177).
+    So the listing is not just checked for a failure: a thread file there, with nothing read
+    back, is a store that could not be entered. The listing asks `ls -F` for one reason: its
+    type mark is appended to the name, so a directory (`stray.jsonl/`), a symlink, dangling or
+    not (`link.jsonl@`), a fifo (`pipe.jsonl|`) and a socket (`s.jsonl=`) no longer end in
+    `.jsonl`, and stop counting as a thread file the read should have returned. The store read
+    keeps only regular files (`[ -f "$f" ] || continue`), so those entries are what it was right
+    to leave out, and a store holding nothing but them is quiet, not unreadable (#186). An
+    executable regular thread file wears the `*` mark too, but the read does not skip it: if it
+    is readable the store read returned it and this question is never asked, and if it is not
+    readable the one-by-one read fails and reports the store itself, so `*` needs no clause here.
+    This runs only when the answer is already empty, so a store that answers with threads pays
+    nothing for it.
+
+    Two shapes follow from that. `ls -F` exits non-zero when it cannot stat what it lists -
+    a 444 or 644 directory - which is the unenterable store itself. And a gate that predates
+    this listing refuses the call with a message on stderr, which is what `bridge_failed`
+    names, so the plain shape #177 shipped still answers: a gate learns the new route before
+    this client ships, and until it does the old question is asked instead of guessing.
+    """
+    try:
+        marked = _host_run(f"ls -F {q(THREADS)} 2>/dev/null")
+    except OSError:
+        return True
+    if bridge_failed(marked):
+        return store_dir_unreadable_plain()
+    entries = store_dir_entries(marked)
+    if entries is None:
+        return True
+    # Any mark left here is `/`, `@`, `|`, `=` or `>` - none of them a regular file, so none a
+    # name the store read should have returned. The bare suffix is an entry `ls -F` could not
+    # stat, which is a 444 directory's own answer and already returned None above.
+    return any(e.endswith(".jsonl") for e in entries)
+
+
+def store_dir_unreadable_plain():
+    """The same question asked with `ls <store> 2>/dev/null`, the shape every gate allows.
+
+    A gate that predates #186 refuses the marked listing, and the refusal is on stderr, so the
+    client can tell it from a store that failed to list: here an entry ending in `.jsonl` is
+    taken at face value, which is #177's answer and is still wrong for a `*.jsonl` directory
+    on such a host until the gate route ships (#186).
     """
     try:
         entries = store_dir_entries(_host_run(f"ls {q(THREADS)} 2>/dev/null"))
