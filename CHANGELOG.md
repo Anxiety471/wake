@@ -44,6 +44,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   ([#216](https://github.com/Anxiety471/wake/issues/216),
   [#178](https://github.com/Anxiety471/wake/issues/178)).
 
+- **Every command the `api` job runs is pinned, not only the step the pin was added for.** The
+  `api` job's keys, the inline pin step and the lockfile install were pinned, but `Typecheck`,
+  `Lint`, `Test`, `Build` and the threads e2e step were matched by their `name` alone: `run: "true"`
+  swapped into `Test` and `Lint` - or into `Typecheck` or `Build` - kept `tests.test_ops_scripts` at
+  75 OK with the JS suite and the linter never run, and so did an e2e block with its last line
+  removed, because the block under a `run: |` is not what the step parser keeps. The pin now lists
+  the job's run steps in order with the keys each may carry, and compares every body, block lines
+  included, against the one measured here: a step this job gains enters it unpinned otherwise, and
+  a body that reports green without running anything fails CI
+  ([#231](https://github.com/Anxiety471/wake/issues/231)).
+
 - **A store dir the gate cannot list is refused by name, never answered as an empty store.**
   Every answer `rakazo-wake-gate` gives is built from a listing, and `list_dir()` / `list_active()`
   turn a lost directory into `[]`: a store that cannot be read then answers "no threads" with rc 0,

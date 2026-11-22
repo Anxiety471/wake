@@ -785,6 +785,88 @@ class OpsFilesTestCase(unittest.TestCase):
             f"the install step runs {install['values'].get('run')!r}: the pin's control reads "
             "node_modules/eslint, so the lockfile install is what makes it runnable",
         )
+        # Every command this job runs is pinned by value here (#231). #216 pinned the job's keys,
+        # the pin step's own body, its env and the install, but `Typecheck`, `Lint`, `Test`,
+        # `Build` and the e2e step were matched by name alone: `run: "true"` swapped into `Test`
+        # and `Lint`, or into `Typecheck` or `Build`, left this module at 75 OK with the JS suite
+        # and the linter never run, and an e2e block stripped of its last line stayed green too -
+        # measured at ebbb5906 in a full clone. A `run:` body is a decision like `uses` or
+        # `python-version` is, so every one of them is pinned, and the step list is compared whole:
+        # a step this job gains otherwise enters it unpinned and runs whatever it likes.
+        allowed_keys = {
+            "Install": ["name", "run"],
+            "Inline suppressions bite": ["name", "env", "run"],
+            "Typecheck": ["name", "run"],
+            "Lint": ["name", "run"],
+            "Test": ["name", "run"],
+            "Build": ["name", "run"],
+            "End-to-end threads over HTTP": ["name", "env", "run"],
+        }
+        run_steps = [step for step in steps if "run" in step["keys"]]
+        self.assertEqual(
+            [step["values"].get("name") for step in run_steps],
+            list(allowed_keys),
+            f"the api job's run steps are {[step['values'].get('name') for step in run_steps]}, "
+            f"and this pin knows {list(allowed_keys)}: a step added here runs something no pin has "
+            "measured, and one renamed or dropped changes what the job proves",
+        )
+        for step in run_steps:
+            label = step["values"].get("name")
+            with self.subTest(step=label):
+                self.assertEqual(
+                    step["keys"],
+                    allowed_keys[label],
+                    f"{label} carries {step['keys']}: only {allowed_keys[label]} are allowed - a "
+                    "`shell:`, a `working-directory:` or an added `env:` decides what the command "
+                    "reads without changing a single value pinned below",
+                )
+        # What each step runs, read off the raw lines: ci_steps() keeps a `key: value` line and
+        # drops the lines under a `run: |`, so the e2e block is read here, as the lint job's
+        # bodies are read in test_ci_lint_job_keys_cannot_disarm_it.
+        runs = []
+        i = 0
+        while i < len(block):
+            line = block[i]
+            i += 1
+            if not line.startswith("        run: "):
+                continue
+            payload = line[len("        run: ") :]
+            if payload != "|":
+                runs.append(payload)
+                continue
+            lines_of_block = []
+            while i < len(block) and (not block[i].strip() or block[i].startswith("         ")):
+                lines_of_block.append(block[i].strip())
+                i += 1
+            while lines_of_block and not lines_of_block[-1]:
+                lines_of_block.pop()
+            runs.append(lines_of_block)
+        self.assertEqual(
+            runs,
+            [
+                "bun install --frozen-lockfile",
+                "python3 tests/run_module_strict.py test_inline_suppressions",
+                "bun run typecheck",
+                "bun run lint",
+                "bun run test",
+                "bun run build",
+                # The e2e step creates a database of its own and then runs the script against it;
+                # both halves are what the job proves, so both are pinned.
+                [
+                    'bun -e \'import { Client } from "pg";',
+                    "const client = new Client({ connectionString: "
+                    '"postgres://postgres:postgres@127.0.0.1:5432/postgres" });',
+                    "await client.connect();",
+                    'await client.query("DROP DATABASE IF EXISTS wake_e2e_test");',
+                    'await client.query("CREATE DATABASE wake_e2e_test");',
+                    "await client.end();'",
+                    "bun scripts/e2e-threads.ts",
+                ],
+            ],
+            f"the api job runs {runs}: a step whose body is not this one reports green without "
+            'proving anything - `run: "true"` in `Test` and `Lint` left this module at 75 OK, and '
+            "so did an e2e block with its last line removed (#231)",
+        )
         # The interpreter is the runner's default unless it is pinned, and a runner image bump
         # would then change what the pin reads while every value here stays the same.
         setups = [step for step in steps if (step["values"].get("uses") or "").startswith("actions/setup-python@")]
