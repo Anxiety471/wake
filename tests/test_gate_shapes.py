@@ -28,7 +28,10 @@ import types
 import unittest
 from unittest import mock
 
-from test_wake import WakeTestCase, slurp, write_exe  # noqa: E402
+try:  # `tests/run.sh` runs `discover -s tests`, which puts tests/ on sys.path
+    from test_wake import WakeTestCase, slurp, write_exe  # noqa: E402
+except ImportError:  # `python3 -m unittest tests.test_gate_shapes` from the repo root
+    from tests.test_wake import WakeTestCase, slurp, write_exe  # noqa: E402
 
 GATE_STAGE = os.environ.get("WAKE_GATE_STAGE", "")
 
