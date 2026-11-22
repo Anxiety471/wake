@@ -1188,6 +1188,14 @@ class StrictRunnerTest(unittest.TestCase):
         )
         self.assertEqual(finished.returncode, 0, finished.stdout[-400:] + finished.stderr[-400:])
 
+    def test_a_failed_test_is_one(self):
+        # TASK-316: the runner's exit code is the only thing that turns a FAILED control
+        # into a red `api` step, so a failure must come back as 1, not 0.
+        finished = self.run_fixture(
+            "import unittest\nclass T(unittest.TestCase):\n    def test_bad(self):\n        self.assertTrue(False)\n"
+        )
+        self.assertEqual(finished.returncode, 1, finished.stdout[-400:] + finished.stderr[-400:])
+
     def test_a_skip_is_a_failure_naming_the_reason(self):
         finished = self.run_fixture(
             "import unittest\n"
