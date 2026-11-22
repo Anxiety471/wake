@@ -103,6 +103,21 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **The files the linters read for themselves are pinned.** `lint`'s workflow was pinned by value
+  (#174, #178, #182), its tool configuration was not: at `33578c5` one line in `[tool.ruff]`,
+  `extend-exclude = ["tests"]`, left `ruff check .` at "All checks passed!" with a planted F821 in
+  `tests/test_wake.py` (26 files read became 12) while both lint pins and the whole suite stayed
+  green, and a root `.shellcheckrc` reading `disable=all` silenced the shipped shellcheck line.
+  `tests/test_linter_configs.py` reads `pyproject.toml` as ruff does (a small parser, because the
+  test job starts at Python 3.9 and has no `tomllib`) and pins every `[tool.ruff*]` table, key and
+  value, with `extend-include` computed from the tree's python scripts that have no `.py`
+  suffix. It also refuses a second linter config file at any depth (`.ruff.toml`, `ruff.toml`,
+  another `pyproject.toml`, `.shellcheckrc`, `shellcheckrc`), and a `.gitignore` pattern that
+  matches a tracked file, which ruff honours (`git check-ignore --no-index`, since plain
+  `check-ignore` never reports a tracked path). Measured with ruff 0.17.5 and shellcheck 0.11.0:
+  22 mutations each fail the module. A deliberate change edits the pin in the same commit
+  ([#185](https://github.com/Anxiety471/wake/issues/185)).
+
 - **The `lint` pin reads the interpreter too, and every test file runs on the module path.**
   Three holes left by #178's pin: `python-version` inside `lint`'s `actions/setup-python` step
   was not read, so `"3.13"` → `"3.9"` kept both lint pins green while a different interpreter
