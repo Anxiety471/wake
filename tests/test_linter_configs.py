@@ -734,7 +734,10 @@ class EslintConfigTestCase(unittest.TestCase):
         """The pin says the presets are intact; this proves it where eslint is installed.
 
         The `test` job has neither node_modules nor eslint, so it skips there. The `api` job runs
-        eslint itself, and a developer's checkout runs it here (measured with eslint 10.15.0).
+        eslint itself but no Python module, so it skips in every CI job as well: what CI enforces
+        is the pin above, and this assertion is a backstop a developer's checkout runs (measured
+        with eslint 10.15.0). Wiring it into a job that has both Python and node_modules is
+        tracked as TASK-315, so nothing here claims CI coverage this tree does not have.
         """
         eslint = os.path.join(ROOT, "node_modules", "eslint", "bin", "eslint.js")
         node = shutil.which("node")

@@ -87,7 +87,8 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   pinned, an inline object other than `ignores` is refused by name, a relative import is refused
   because it is a second config file under another name, and an `ignores` pattern that matches a
   tracked file fails. A deliberate rule change edits this pin in the same commit, and where eslint
-  is installed the pin also proves the presets still report a planted unused parameter
+  is installed - a developer's checkout, not CI, which runs no Python module with `node_modules` -
+  the module also proves the presets still report a planted unused parameter
   ([#208](https://github.com/Anxiety471/wake/issues/208)).
 
 - **Every command wake sends is pinned, so a shape that drifts fails CI instead of a host.**
