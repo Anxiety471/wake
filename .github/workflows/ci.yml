@@ -93,6 +93,18 @@ jobs:
           node-version: "24"
       - name: Install
         run: bun install --frozen-lockfile
+      # The inline pin's control: tests.test_inline_suppressions proves that one eslint-disable
+      # line takes eslint from rc 1 to rc 0, and a prettier-ignore the formatter half. Both tests
+      # skip without node_modules, which every other job lacks, so this job runs them and fails
+      # if the linters are missing rather than skipping the control (#216). The runner fails on
+      # any skip at all, so a @unittest.skipIf on an arm cannot put the silent green back.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Inline suppressions bite
+        env:
+          WAKE_REQUIRE_LINTERS: "1"
+        run: python3 tests/run_module_strict.py test_inline_suppressions
       - name: Typecheck
         run: bun run typecheck
       - name: Lint

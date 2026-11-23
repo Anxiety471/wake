@@ -102,11 +102,42 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import tokenize
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def linters_unusable(which=None, isdir=None, root=None):
+    """Why the real-linter control cannot run here, or None when it can.
+
+    Two ways only, both measured: `node` is not on PATH, or `bun install --frozen-lockfile` has not
+    been run. The lookups are arguments so the decision is testable on a machine with no node.
+    """
+    which = shutil.which if which is None else which
+    isdir = os.path.isdir if isdir is None else isdir
+    root = ROOT if root is None else root
+    if which("node") is None:
+        return "no node on PATH"
+    if not isdir(os.path.join(root, "node_modules", "eslint")):
+        return "eslint is not installed here: run bun install --frozen-lockfile"
+    return None
+
+
+def linter_control_disposition(reason, environ):
+    """What `LinterBitesTest` does with that reason: `run`, `skip` or `fail`.
+
+    `api (bun)` sets `WAKE_REQUIRE_LINTERS=1`, so the one job that claims to run the control fails
+    instead of skipping it - skipping there and staying green is the failure #216 was filed about
+    (measured at ce29cf01, both tests skipped in CI). Only `1` arms it: `0`, `false` and an empty
+    value are how a shell says no, and a truthiness test would make `=0` mean the opposite.
+    """
+    if reason is None:
+        return "run"
+    return "fail" if environ.get("WAKE_REQUIRE_LINTERS") == "1" else "skip"
+
 
 #: The line marker, and everything after it: `: E402`, `: E402 - why`, or nothing at all.
 NOQA = re.compile(r"#\s*noq[a](?P<rest>.*)$", re.IGNORECASE)
@@ -1066,21 +1097,188 @@ class InlineSuppressionTestCase(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
 
+class LinterRequirementTest(unittest.TestCase):
+    """#216: the run/skip/fail decision, tested without a node or a lockfile installed."""
+
+    def test_no_node_on_path_is_a_reason(self):
+        self.assertEqual(linters_unusable(which=lambda name: None), "no node on PATH")
+
+    def test_a_missing_eslint_in_node_modules_is_a_reason(self):
+        seen = []
+
+        def isdir(path):
+            seen.append(path)
+            return False
+
+        reason = linters_unusable(which=lambda name: "/usr/bin/node", isdir=isdir)
+        self.assertIn("bun install --frozen-lockfile", reason)
+        self.assertTrue(seen[0].endswith(os.path.join("node_modules", "eslint")), seen)
+
+    def test_node_with_eslint_installed_is_no_reason(self):
+        self.assertIsNone(linters_unusable(which=lambda name: "/usr/bin/node", isdir=lambda path: True))
+
+    def test_without_the_variable_an_unusable_linter_skips(self):
+        self.assertEqual(linter_control_disposition("no node on PATH", {}), "skip")
+
+    def test_the_variable_turns_the_skip_into_a_failure(self):
+        self.assertEqual(linter_control_disposition("no node on PATH", {"WAKE_REQUIRE_LINTERS": "1"}), "fail")
+
+    def test_zero_and_false_are_how_a_shell_says_no(self):
+        for value in ("0", "false", "", "no"):
+            with self.subTest(value=value):
+                self.assertEqual(linter_control_disposition("no node on PATH", {"WAKE_REQUIRE_LINTERS": value}), "skip")
+
+    def test_a_usable_linter_runs_whatever_the_variable_says(self):
+        self.assertEqual(linter_control_disposition(None, {"WAKE_REQUIRE_LINTERS": "1"}), "run")
+
+
+class LinterRequirementWiringTest(unittest.TestCase):
+    """#216: the guard lives in `setUp`, so it is proved by running the control where node cannot
+    be found - with the variable it must fail, without it it must skip. A `LinterRequirementTest`
+    alone passes with the guard deleted, because the function it tests is still there."""
+
+    def run_control(self, extra):
+        bare = tempfile.mkdtemp(prefix="no-node-path-")
+        self.addCleanup(shutil.rmtree, bare, True)
+        env = {key: value for key, value in os.environ.items() if key != "WAKE_REQUIRE_LINTERS"}
+        env["PATH"] = bare
+        env.update(extra)
+        return subprocess.run(
+            [sys.executable, "-m", "unittest", "test_inline_suppressions.LinterBitesTest"],
+            cwd=os.path.join(ROOT, "tests"),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_the_variable_makes_the_control_fail_instead_of_skip(self):
+        finished = self.run_control({"WAKE_REQUIRE_LINTERS": "1"})
+        self.assertNotEqual(finished.returncode, 0, finished.stderr[-600:])
+        self.assertIn("WAKE_REQUIRE_LINTERS is set and the linters are unusable", finished.stderr)
+        self.assertNotIn("skipped", finished.stderr.strip().splitlines()[-1])
+
+    def test_without_the_variable_the_control_skips_and_the_step_can_see_it(self):
+        # Every test in the class skips in setUp when node is missing, so the count is the class's
+        # own test count. It was hard-coded as 2, and #204 added a third LinterBitesTest, which
+        # failed this test on main with no change to the guard.
+        finished = self.run_control({})
+        self.assertEqual(finished.returncode, 0, finished.stderr[-600:])
+        expected = unittest.defaultTestLoader.loadTestsFromTestCase(LinterBitesTest).countTestCases()
+        self.assertEqual(finished.stderr.strip().splitlines()[-1], f"OK (skipped={expected})")
+
+
+class StrictRunnerTest(unittest.TestCase):
+    """#216: the CI step runs `tests/run_module_strict.py`, so a skip there must fail the step."""
+
+    def run_fixture(self, body):
+        work = tempfile.mkdtemp(prefix="strict-runner-")
+        self.addCleanup(shutil.rmtree, work, True)
+        with open(os.path.join(work, "test_fixture_module.py"), "w", encoding="utf-8") as handle:
+            handle.write(body)
+        return subprocess.run(
+            [sys.executable, os.path.join(ROOT, "tests/run_module_strict.py"), "test_fixture_module"],
+            cwd=work,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_a_module_that_passes_is_zero(self):
+        finished = self.run_fixture(
+            "import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n"
+        )
+        self.assertEqual(finished.returncode, 0, finished.stdout[-400:] + finished.stderr[-400:])
+
+    def test_a_skip_is_a_failure_naming_the_reason(self):
+        finished = self.run_fixture(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_dimmed(self):\n"
+            "        self.skipTest('eslint is not installed here')\n"
+        )
+        self.assertEqual(finished.returncode, 1, finished.stdout[-400:])
+        self.assertIn("refused: 1 test(s) skipped", finished.stderr)
+        self.assertIn("eslint is not installed here", finished.stderr)
+
+    def test_a_module_with_no_test_is_a_failure(self):
+        finished = self.run_fixture("value = 1\n")
+        self.assertEqual(finished.returncode, 1, finished.stdout[-400:])
+        self.assertIn("loaded no test", finished.stderr)
+
+    def test_a_failing_test_is_a_failure(self):
+        """A control that FAILS must fail the step too, not only one that skips.
+
+        Every fixture above is a module that passes, skips or loads nothing, so the runner's own
+        `return 0 if result.wasSuccessful() else 1` was reached by no test: measured at `ebbb590`,
+        `return 0` in its place, and `0 if True else 1`, both survived all 38 tests, and the step
+        then reports a broken control as a pass - the silent green this runner exists to refuse,
+        one level below the skip it already refuses.
+        """
+        finished = self.run_fixture(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_broke(self):\n"
+            "        self.assertTrue(False, 'the control no longer bites')\n"
+        )
+        self.assertEqual(finished.returncode, 1, finished.stdout[-400:])
+        self.assertIn("FAILED (failures=1)", finished.stderr)
+        self.assertIn("the control no longer bites", finished.stderr)
+
+    def test_an_expected_failure_is_a_failure(self):
+        """`@unittest.expectedFailure` is how a rotten control goes quiet without a red check.
+
+        Measured at `ae59de6`: a fixture whose only test is an expected failure that then fails
+        left the runner at rc 0 with `OK (expected failures=1)`, so the step reports a control
+        that did not pass as a pass (#234). Same silent green as the skip, one decorator in, and
+        the realistic route is a platform difference: "prettier differs on the runner, mark the arm
+        an expected failure".
+        """
+        finished = self.run_fixture(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n"
+            "    @unittest.expectedFailure\n"
+            "    def test_dimmed(self):\n"
+            "        self.assertTrue(False, 'the control no longer bites')\n"
+        )
+        self.assertEqual(finished.returncode, 1, finished.stdout[-400:])
+        self.assertIn("refused: 1 test(s) marked an expected failure", finished.stderr)
+        self.assertIn("test_dimmed", finished.stderr)
+
+    def test_usage_is_two(self):
+        """A missing module name is a usage error, and the usage exit is 2."""
+        finished = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "tests/run_module_strict.py")],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(finished.returncode, 2, finished.stdout[-400:])
+        self.assertIn("usage: run_module_strict.py", finished.stderr)
+
+
 class LinterBitesTest(unittest.TestCase):
     """#196: the real eslint and prettier, both directions, and the pin's verdict on the same file.
 
     Skipped where `bun install --frozen-lockfile` has not run - the `test` job has no `node_modules`,
     so this is the arm the suite cannot guarantee on its own. It is the control the pure scan rests
     on: the reader is only worth its fixtures while the linter still honours the forms it refuses.
+    `api (bun)` runs this module with `WAKE_REQUIRE_LINTERS=1`, so a missing `node_modules` there
+    fails the step instead of skipping the control and reporting green, and it runs it through
+    `tests/run_module_strict.py`, which refuses a skip from any other route too
+    ([#216](https://github.com/Anxiety471/wake/issues/216)).
     """
 
     DEFECT = "const neverUsed = 2;\nexport const value = 1;\n"
 
     def setUp(self):
-        if shutil.which("node") is None:
-            raise unittest.SkipTest("no node on PATH")
-        if not os.path.isdir(os.path.join(ROOT, "node_modules", "eslint")):
-            raise unittest.SkipTest("eslint is not installed here: run bun install --frozen-lockfile")
+        # The reason and what to do with it are functions, so a mutant that deletes the guard, or
+        # that arms it on any non-empty value, fails `LinterRequirementTest` instead of passing
+        # quietly wherever the linters happen to be installed (#216).
+        reason = linters_unusable()
+        disposition = linter_control_disposition(reason, os.environ)
+        if disposition == "fail":
+            self.fail(f"WAKE_REQUIRE_LINTERS is set and the linters are unusable: {reason}")
+        if disposition == "skip":
+            raise unittest.SkipTest(reason)
         self.root = tempfile.mkdtemp(prefix="eslint-arm-")
         self.addCleanup(shutil.rmtree, self.root, True)
         os.symlink(os.path.join(ROOT, "node_modules"), os.path.join(self.root, "node_modules"))

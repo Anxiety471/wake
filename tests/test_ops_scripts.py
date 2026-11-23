@@ -661,6 +661,137 @@ class OpsFilesTestCase(unittest.TestCase):
             "version that is not the one the suite was proved on",
         )
 
+    def test_ci_api_job_runs_the_inline_pin_where_eslint_is_installed(self):
+        """#216: the inline pin's control never ran in CI. `LinterBitesTest` proves that one
+        `eslint-disable` line takes `eslint apps` from rc 1 to rc 0, and a `prettier-ignore` the
+        formatter half of the same job - and it skips where `node_modules` is absent, which is
+        every job but `api (bun)`. Measured at ce29cf01, job 137300777854: both tests reported
+        `skipped 'eslint is not installed here: run bun install --frozen-lockfile'` and the suite
+        `OK (skipped=10)`, so a change that stops the linter biting - or that mis-wires the
+        fixture - leaves every check green while the pin guards a behaviour that is no longer
+        there. `api (bun)` is the one job with the lockfile installed, so the step is pinned here
+        by value, as the lint job's steps are (#181).
+        """
+        lines = text(os.path.join(ROOT, ".github/workflows/ci.yml")).splitlines()
+        self.assertIn("  api:", lines, "the api (bun) job is gone")
+        start = lines.index("  api:")
+        block = []
+        for line in lines[start + 1 :]:
+            if line.startswith("  ") and not line.startswith("   ") and line.strip():
+                break
+            block.append(line)
+        # The job's own keys, the shape #178 measured on `lint` at 06c2c75 and this test missed:
+        # a job `defaults: run: shell:` replaces the shell of every run step below it - Install,
+        # Typecheck, Lint, Test, Build, the e2e step and this pin - so the whole job exits 0
+        # without running, and `container:` runs them in another image while `runs-on` keeps its
+        # pinned value. Neither touches a line the assertions below read. `services` and the job
+        # `env` are what `api` legitimately carries; their child keys sit one level deeper and are
+        # not job keys, as they already are not for `lint`.
+        keys = [
+            line.strip().split(":", 1)[0]
+            for line in block
+            if line.startswith("    ")
+            and not line.startswith("     ")
+            and ":" in line
+            and not line.strip().startswith("#")
+        ]
+        self.assertEqual(
+            keys,
+            ["name", "runs-on", "services", "env", "steps"],
+            f"api job keys {keys}: only these are allowed - `if`, `continue-on-error`, `defaults` "
+            "or `container` would let a job that never ran, or ran another image, report green "
+            "with the inline pin inside it (#178)",
+        )
+        disarming = [
+            line.strip()
+            for line in block
+            if not line.strip().startswith("#")
+            and re.match(
+                r"""^\s*(?:-\s+)?(?:&\S+\s+)?["']?(if|continue-on-error)["']?\s*:""",
+                line,
+                re.IGNORECASE,
+            )
+        ]
+        self.assertEqual(
+            disarming,
+            [],
+            f"a job or step key that can disarm the api job was added: {disarming} - `if` skips "
+            "the job or the step and `continue-on-error` reports it neutral, so it reports green "
+            "without running. A step that legitimately needs `if:` (a pull-request-only e2e, say) "
+            "fails here on purpose: allow it deliberately rather than letting the pin go quiet",
+        )
+        steps = ci_steps(block)
+        named = [step["values"].get("name") or step["values"].get("uses") for step in steps]
+        self.assertIn(
+            "Inline suppressions bite",
+            named,
+            f"the api steps are {named}: the pin's control skips without node_modules, so this "
+            "job is the only place LinterBitesTest can run (#216)",
+        )
+        pin = steps[named.index("Inline suppressions bite")]
+        self.assertEqual(
+            pin["keys"],
+            ["name", "env", "run"],
+            f"the inline pin step carries {pin['keys']}: only name, env and run are allowed - "
+            "shell replaces the interpreter, if skips the step and continue-on-error reports it "
+            "neutral",
+        )
+        self.assertEqual(
+            pin["values"].get("run"),
+            "python3 tests/run_module_strict.py test_inline_suppressions",
+            f"the inline pin runs {pin['values'].get('run')!r}: the whole module, or the scan "
+            "arms run without the control beside them, and it must run through the strict "
+            "runner - `python3 -m unittest` exits 0 on `OK (skipped=1)`, so one "
+            "`@unittest.skipIf` on an arm restores the silent green this step closes (#216)",
+        )
+        self.assertTrue(
+            os.path.isfile(os.path.join(ROOT, "tests/run_module_strict.py")),
+            "tests/run_module_strict.py is gone: the pin step names a runner that refuses a skip",
+        )
+        # Without this variable the two tests go back to skipping where node_modules is missing,
+        # which is the silent green #216 measured. With it, the step fails instead.
+        self.assertEqual(
+            pin["sections"].get("env"),
+            ['WAKE_REQUIRE_LINTERS: "1"'],
+            f"the inline pin step env is {pin['sections'].get('env')}: WAKE_REQUIRE_LINTERS turns "
+            "a missing linter into a failure, so this step cannot skip the control and pass",
+        )
+        # Order is load-bearing: the control needs the lockfile installed, and the step above it
+        # is what installs it. A step moved above Install skips for the reason #216 names.
+        self.assertLess(
+            named.index("Install"),
+            named.index("Inline suppressions bite"),
+            f"the api steps are {named}: the pin runs before bun install --frozen-lockfile, so "
+            "its control skips for the reason this test exists",
+        )
+        install = steps[named.index("Install")]
+        self.assertEqual(
+            install["values"].get("run"),
+            "bun install --frozen-lockfile",
+            f"the install step runs {install['values'].get('run')!r}: the pin's control reads "
+            "node_modules/eslint, so the lockfile install is what makes it runnable",
+        )
+        # The interpreter is the runner's default unless it is pinned, and a runner image bump
+        # would then change what the pin reads while every value here stays the same.
+        setups = [step for step in steps if (step["values"].get("uses") or "").startswith("actions/setup-python@")]
+        self.assertEqual(
+            len(setups),
+            1,
+            f"{len(setups)} setup-python steps: the pin needs exactly one pinned interpreter",
+        )
+        self.assertEqual(
+            setups[0]["values"].get("uses"),
+            "actions/setup-python@v6",
+            f"setup-python action is {setups[0]['values'].get('uses')!r}: pinned by value like "
+            "the runner, because `@v5` is a downgrade this pin would otherwise not notice",
+        )
+        self.assertEqual(
+            setups[0]["sections"].get("with"),
+            ['python-version: "3.13"'],
+            f"setup-python with is {setups[0]['sections'].get('with')}: the interpreter is what "
+            "runs the pin, so a different minor fails here instead of changing what it reads",
+        )
+
 
 class OpsBehaviourTestCase(unittest.TestCase):
     def test_wake_pg_prints_usage_for_an_unknown_command(self):
