@@ -11,8 +11,10 @@ module can see.
 
 So the step runs this instead of `python3 -m unittest`, and `tests/test_ops_scripts.py` pins the
 `run` body that names it. Exit codes: 0 every test ran and passed, 1 a failure, an error, a skip,
-an expected failure, or a module that loaded no test at all, 2 usage. The last one matters: a
-mistyped name loads an empty suite, which `unittest` reports as success.
+an expected failure, or a module that loaded no test at all, 2 usage, for a wrong argument count.
+The empty-suite case is not `unittest`'s verdict: a module that loads no test prints `OK`, and the
+`testsRun` check below refuses it. A mistyped name never reaches that branch - `loadTestsFromName`
+returns a `_FailedTest` that errors, rc 1.
 
 Two shapes it cannot catch, so the guarantee above is the one it keeps: a `load_tests()` that
 drops the arm which would fail, and a test that calls `os._exit(0)` before the verdict is

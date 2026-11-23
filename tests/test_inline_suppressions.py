@@ -1244,7 +1244,7 @@ class StrictRunnerTest(unittest.TestCase):
         self.assertIn("test_dimmed", finished.stderr)
 
     def test_usage_is_two(self):
-        """No module name is a usage error, so a mistyped name cannot read as success either."""
+        """A missing module name is a usage error, and the usage exit is 2."""
         finished = subprocess.run(
             [sys.executable, os.path.join(ROOT, "tests/run_module_strict.py")],
             cwd=ROOT,
