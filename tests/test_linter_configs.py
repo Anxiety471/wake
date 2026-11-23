@@ -15,7 +15,7 @@ Same shape as #181 one level out: the workflow can no longer be disarmed, its to
 could. These pins are static on purpose: the `test` job runs on Python 3.9 to 3.13 with no ruff
 and no shellcheck installed, so they read the config files rather than run the tools.
 
-Three things decide what the `lint` job sees, and all three are read here:
+Four things decide what CI's linters see, and all four are read here:
 
 1. `pyproject.toml` `[tool.ruff*]` - `select`, `ignore`, `extend-exclude`, `exclude`,
    `respect-gitignore`, `per-file-ignores` and a `[tool.ruff.format]` table all change the verdict.
@@ -27,10 +27,17 @@ Three things decide what the `lint` job sees, and all three are read here:
    `.ignore`, which it honours the same way: with either file naming `tests/`, `ruff check .` reads
    12 files instead of 27. Git never mentions `.ignore`, so it is refused by name below rather than
    left to `git check-ignore`.
+4. `eslint.config.js`, which the `api` job's `eslint apps packages` loads instead of a file list:
+   its imports, the entries handed to `tseslint.config(...)` and its `ignores` are pinned (#208).
+   Measured at `a8180bd` (eslint 10.15.0): one added entry,
+   `{ rules: { '@typescript-eslint/no-unused-vars': ['error', { args: 'none' }] } }`, left a planted
+   unused parameter unlinted - rc 0, no messages - with every pin in this repository green.
 
 Run with the rest: `python3 -m unittest discover -s tests`
 """
 
+import fnmatch
+import json
 import os
 import re
 import shutil
@@ -95,6 +102,32 @@ COMPETING_LINTER_FILES = (
 #: `.dockerignore`.
 
 ROOT_PYPROJECT = "pyproject.toml"
+
+#: The eslint config the `api` job's `bun run lint` loads. `eslint apps packages` runs from the
+#: root, and flat config does not cascade, so this one file supplies every rule the job applies.
+ROOT_ESLINT_CONFIG = "eslint.config.js"
+
+#: The only imports the pinned config may carry, as `(local name, specifier)`. A relative specifier
+#: is refused by the reader: it is a second config file wearing the root config's name.
+ESLINT_IMPORTS = (
+    ("eslint", "@eslint/js"),
+    ("eslintConfigPrettier", "eslint-config-prettier"),
+    ("tseslint", "typescript-eslint"),
+)
+
+#: The entries handed to `tseslint.config(...)`, in order, with the one object written as `ignores`.
+#: These presets are where every rule value comes from, so `strict` -> `recommended` is the same
+#: edit as writing the rule out by hand.
+ESLINT_ENTRIES = (
+    "ignores",
+    "eslint.configs.recommended",
+    "tseslint.configs.strict",
+    "eslintConfigPrettier",
+)
+
+#: The `ignores` patterns, exactly. `eslint apps packages` reads the tree rather than a file list,
+#: so an entry added here drops files from the job without touching a pinned value.
+ESLINT_IGNORES = ("**/dist/**", "**/.next/**", "**/node_modules/**", "**/coverage/**")
 
 
 def text(path):
@@ -248,6 +281,217 @@ def gitignored_tracked_paths(root=ROOT, paths=None):
     return [line for line in run.stdout.splitlines() if line.strip()]
 
 
+class EslintConfigError(Exception):
+    """The reader met a shape it does not pin, so the pin cannot vouch for the file (#208)."""
+
+
+def without_js_comments(source):
+    """The source with `//` and `/* */` comments removed and strings left alone.
+
+    A comment is only a comment outside a string: an import specifier or an ignore pattern may carry
+    a slash, and a stripped pattern would make the pin read something eslint does not.
+    """
+    kept, index, quoted = [], 0, None
+    while index < len(source):
+        char = source[index]
+        if quoted:
+            kept.append(char)
+            if char == "\\" and index + 1 < len(source):
+                kept.append(source[index + 1])
+                index += 2
+                continue
+            if char == quoted:
+                quoted = None
+            index += 1
+            continue
+        if char in "'\"`":
+            quoted = char
+            kept.append(char)
+            index += 1
+            continue
+        if source.startswith("//", index):
+            newline = source.find("\n", index)
+            index = len(source) if newline < 0 else newline
+            continue
+        if source.startswith("/*", index):
+            end = source.find("*/", index + 2)
+            if end < 0:
+                raise EslintConfigError("a `/*` comment is never closed: the reader cannot tell what runs")
+            kept.append("\n")
+            index = end + 2
+            continue
+        kept.append(char)
+        index += 1
+    if quoted:
+        raise EslintConfigError("a quoted string is never closed: the reader cannot tell an entry from text")
+    return "".join(kept)
+
+
+def split_arguments(body):
+    """The top-level comma-separated arguments of a call, brackets and strings respected."""
+    parts, depth, quoted, current, index = [], 0, None, [], 0
+    while index < len(body):
+        char = body[index]
+        if quoted:
+            current.append(char)
+            if char == "\\" and index + 1 < len(body):
+                current.append(body[index + 1])
+                index += 2
+                continue
+            if char == quoted:
+                quoted = None
+            index += 1
+            continue
+        if char in "'\"`":
+            quoted = char
+            current.append(char)
+            index += 1
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth < 0:
+                raise EslintConfigError("a closing bracket has no opening one: the reader cannot split the entries")
+        if char == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    if depth:
+        raise EslintConfigError("a bracket is left open: the reader cannot tell where an entry ends")
+    if quoted:
+        raise EslintConfigError("a string is left open: the reader cannot tell an entry from text")
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def read_eslint_config(source):
+    """`{"imports": [...], "entries": [...], "ignores": [...]}` read from `eslint.config.js`.
+
+    The reader understands exactly the shapes the pinned file uses and refuses everything else, so
+    an entry it cannot read fails the pin instead of passing unread (#208).
+    """
+    body = without_js_comments(source)
+    imports, rest = [], []
+    for number, line in enumerate(body.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("import "):
+            found = re.fullmatch(r"""import\s+([A-Za-z_$][\w$]*)\s+from\s+(['"])([^'"]+)\2\s*;?""", stripped)
+            if found is None:
+                raise EslintConfigError(
+                    f"line {number} is an import this reader does not read ({stripped[:60]}): "
+                    "pin the new shape here in the same commit (#208)"
+                )
+            if found.group(3).startswith("."):
+                raise EslintConfigError(
+                    f"line {number} imports {found.group(3)!r}: a relative import is a second config file "
+                    "under another name, and nothing here pins what it holds (#208)"
+                )
+            imports.append((found.group(1), found.group(3)))
+            continue
+        rest.append(stripped)
+    head = "".join(rest)
+    prefix = "export default tseslint.config("
+    if not head.startswith(prefix) or not head.endswith(");"):
+        raise EslintConfigError(
+            "the file no longer ends in `export default tseslint.config(...)`: the pin reads the entries "
+            "handed to that call, and anything else decides the rules without being read (#208)"
+        )
+    entries, ignores = [], []
+    for position, entry in enumerate(split_arguments(head[len(prefix) : -2]), start=1):
+        if entry.startswith("{"):
+            found = re.fullmatch(r"""\{\s*ignores\s*:\s*\[([^\]]*)\]\s*,?\s*\}""", entry)
+            if found is None:
+                key = re.match(r"""\{\s*['"]?([A-Za-z_$][\w$]*)""", entry)
+                named = f" with `{key.group(1)}`" if key else ""
+                raise EslintConfigError(
+                    f"entry {position} is an inline object{named}: every rule value comes from the pinned "
+                    "presets, and an object here carries a rule entry (`rules`), a file selection (`files`) or "
+                    "an option, any of which change the verdict for the whole tree (#208)"
+                )
+            for quoted, bare in re.findall("'([^']*)'|\"([^\"]*)\"", found.group(1)):
+                ignores.append(quoted or bare)
+            entries.append("ignores")
+            continue
+        if not re.fullmatch(r"[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*", entry):
+            raise EslintConfigError(
+                f"entry {position} is `{entry[:60]}`, not a config object or a preset name: a spread, a call "
+                "or a computed value can supply rules this pin never reads (#208)"
+            )
+        entries.append(entry)
+    return {"imports": imports, "entries": entries, "ignores": ignores}
+
+
+def ignores_path(pattern, path):
+    """True when eslint's `ignores` pattern drops `path`, for the shapes this config uses.
+
+    `fnmatch`'s `*` crosses `/`, so `**/dist/**` also has to be tried without its leading `**/`, and
+    a directory pattern drops the directory itself as well as what is under it.
+    """
+    candidates = [pattern]
+    if pattern.startswith("**/"):
+        candidates.append(pattern[3:])
+    for candidate in candidates:
+        if fnmatch.fnmatchcase(path, candidate):
+            return True
+        if candidate.endswith("/**") and path.startswith(candidate[: -len("/**")].rstrip("/") + "/"):
+            return True
+    return False
+
+
+def ignored_tracked_paths(patterns, paths=None):
+    """Tracked paths an `ignores` pattern drops, which is what eslint does to them."""
+    paths = tracked_paths() if paths is None else paths
+    return sorted(path for path in paths if any(ignores_path(pattern, path) for pattern in patterns))
+
+
+def eslint_config_problems(source, tracked=None):
+    """Every way `eslint.config.js` differs from what the `api` job was proved on. Empty is good.
+
+    Each message names the edit and why the `api` job stops meaning what it says (#208).
+    """
+    if source is None:
+        return [
+            f"{ROOT_ESLINT_CONFIG} is missing: the `api` job runs `eslint apps packages` from the root, and "
+            "flat config loads this file or no rules at all (#208)"
+        ]
+    try:
+        config = read_eslint_config(source)
+    except EslintConfigError as error:
+        return [f"{ROOT_ESLINT_CONFIG}: {error}"]
+    problems = []
+    if config["imports"] != list(ESLINT_IMPORTS):
+        problems.append(
+            f"{ROOT_ESLINT_CONFIG} imports {config['imports']}, pinned to {list(ESLINT_IMPORTS)}: the presets "
+            "these name are where every rule value comes from (#208)"
+        )
+    if config["entries"] != list(ESLINT_ENTRIES):
+        problems.append(
+            f"{ROOT_ESLINT_CONFIG} hands {config['entries']} to tseslint.config, pinned to "
+            f"{list(ESLINT_ENTRIES)}: a preset swapped or an entry dropped changes the rules the api job "
+            "reports while ci.yml still says the same thing (#208)"
+        )
+    if config["ignores"] != list(ESLINT_IGNORES):
+        problems.append(
+            f"{ROOT_ESLINT_CONFIG} ignores {config['ignores']}, pinned to {list(ESLINT_IGNORES)}: `eslint apps "
+            "packages` reads the tree, so an entry here drops files from the job with every pin green (#208)"
+        )
+    hidden = ignored_tracked_paths(config["ignores"], tracked)
+    if hidden:
+        problems.append(
+            f"{ROOT_ESLINT_CONFIG} ignores patterns that match {len(hidden)} tracked file(s), first "
+            f"{hidden[0]}: eslint drops what it ignores, so the api job never reads them (#208)"
+        )
+    return problems
+
+
 class LinterConfigTestCase(unittest.TestCase):
     """#185: what the linters read for themselves is pinned, so a one-line edit there fails here."""
 
@@ -394,5 +638,124 @@ class LinterConfigTestCase(unittest.TestCase):
             if add.returncode != 0:  # pragma: no cover - git is there in CI and in any checkout
                 self.skipTest(f"git add failed: {add.stderr.strip()}")
             self.assertEqual(gitignored_tracked_paths(root), ["tests/test_x.py"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+class EslintConfigTestCase(unittest.TestCase):
+    """#208: `eslint.config.js` is pinned by value, so one entry there fails here.
+
+    Measured at `a8180bd` (eslint 10.15.0, node_modules from `bun install --frozen-lockfile`): a
+    planted `export function f(unusedParam: number): void {}` in `apps/api/src/` made `eslint apps
+    packages` exit 1 on `@typescript-eslint/no-unused-vars`; one added config entry, `{ rules: {
+    '@typescript-eslint/no-unused-vars': ['error', { args: 'none' }] } }`, left it at rc 0 with no
+    messages while this module and `tests.test_inline_suppressions` stayed green.
+    """
+
+    def setUp(self):
+        path = os.path.join(ROOT, ROOT_ESLINT_CONFIG)
+        self.source = text(path) if os.path.exists(path) else None
+        self.tracked = tracked_paths()
+
+    def problems(self, source=None):
+        return eslint_config_problems(self.source if source is None else source, self.tracked)
+
+    def mutated(self, old, new):
+        changed = self.source.replace(old, new, 1)
+        self.assertNotEqual(changed, self.source, f"the fixture's anchor moved: {old!r}")
+        return changed
+
+    def test_eslint_reads_what_the_api_job_was_proved_on(self):
+        """The shipped config, read as eslint reads it, carries exactly the pinned rules."""
+        self.assertEqual(self.problems(), [], "the shipped eslint configuration is not the pinned one")
+
+    def test_the_shipped_config_is_actually_parsed(self):
+        """A reader that returned nothing would make every pin above pass silently."""
+        config = read_eslint_config(self.source)
+        self.assertEqual(config["imports"], list(ESLINT_IMPORTS))
+        self.assertEqual(config["entries"], list(ESLINT_ENTRIES))
+        self.assertEqual(config["ignores"], list(ESLINT_IGNORES))
+
+    def test_a_comment_does_not_trip_the_pin(self):
+        """The file may be documented; only what eslint reads is pinned."""
+        self.assertEqual(self.problems(self.source + "\n// a note about the presets\n/* and another */\n"), [])
+
+    def test_the_pin_refuses_an_options_carrying_rule_entry(self):
+        """The measured bypass: `args: 'none'` on the config left an unused parameter unlinted."""
+        changed = self.mutated(
+            "  eslintConfigPrettier,\n",
+            "  eslintConfigPrettier,\n"
+            "  { rules: { '@typescript-eslint/no-unused-vars': ['error', { args: 'none' }] } },\n",
+        )
+        self.assertIn("inline object with `rules`", " ".join(self.problems(changed)))
+
+    def test_the_pin_refuses_an_entry_it_cannot_read(self):
+        """A spread supplies rules the reader never sees, so it is refused rather than skipped."""
+        changed = self.mutated("  tseslint.configs.strict,\n", "  ...tseslint.configs.strict,\n")
+        self.assertIn("not a config object or a preset name", " ".join(self.problems(changed)))
+
+    def test_the_pin_refuses_a_weaker_preset(self):
+        """`strict` -> `recommended` is the same disarm as writing the rule out by hand."""
+        changed = self.mutated("tseslint.configs.strict,", "tseslint.configs.recommended,")
+        self.assertIn("pinned to", " ".join(self.problems(changed)))
+
+    def test_the_pin_refuses_a_relative_import(self):
+        """A relative import is a second config file, and nothing pins what it holds."""
+        changed = self.mutated(
+            "import tseslint from 'typescript-eslint';",
+            "import tseslint from 'typescript-eslint';\nimport local from './eslint.local.js';",
+        )
+        self.assertIn("a relative import is a second config file", " ".join(self.problems(changed)))
+
+    def test_the_pin_refuses_an_ignore_added_to_the_pinned_list(self):
+        """`eslint apps packages` reads the tree, so an ignore entry is whole directories gone."""
+        changed = self.mutated("      '**/coverage/**',\n", "      '**/coverage/**',\n      'apps/**',\n")
+        joined = " ".join(self.problems(changed))
+        self.assertIn("pinned to", joined)
+        self.assertIn("match", joined)
+
+    def test_an_ignore_pattern_that_matches_a_tracked_file_fails_on_its_own(self):
+        """The tree check bites even when the pin itself was edited to carry the pattern."""
+        problems = eslint_config_problems(
+            self.source.replace("      '**/coverage/**',\n", "      '**/coverage/**',\n      'tests/*.py',\n"),
+            ["tests/test_wake.py"],
+        )
+        self.assertIn("match 1 tracked file(s), first tests/test_wake.py", " ".join(problems))
+
+    def test_the_ignore_patterns_drop_what_eslint_drops(self):
+        """The matcher behind the tree check, on the shapes this config uses."""
+        self.assertTrue(ignores_path("**/dist/**", "apps/api/dist/index.js"))
+        self.assertTrue(ignores_path("**/dist/**", "dist/index.js"))
+        self.assertTrue(ignores_path("apps/**", "apps/api/src/main.ts"))
+        self.assertFalse(ignores_path("**/dist/**", "apps/api/src/distribution.ts"))
+        self.assertFalse(ignores_path("**/.next/**", "apps/api/src/next.ts"))
+
+    def test_the_shipped_config_still_reports_an_unused_parameter(self):
+        """The pin says the presets are intact; this proves it where eslint is installed.
+
+        The `test` job has neither node_modules nor eslint, so it skips there. The `api` job runs
+        eslint itself but no Python module, so it skips in every CI job as well: what CI enforces
+        is the pin above, and this assertion is a backstop a developer's checkout runs (measured
+        with eslint 10.15.0). Wiring it into a job that has both Python and node_modules is
+        tracked as TASK-315, so nothing here claims CI coverage this tree does not have.
+        """
+        eslint = os.path.join(ROOT, "node_modules", "eslint", "bin", "eslint.js")
+        node = shutil.which("node")
+        if not node or not os.path.exists(eslint):
+            self.skipTest("eslint is not installed here (run `bun install --frozen-lockfile`)")
+        root = tempfile.mkdtemp(prefix="eslint-probe-")
+        try:
+            with open(os.path.join(root, "zz-probe-args.ts"), "w", encoding="utf-8") as handle:
+                handle.write("export function f(unusedParam: number): void {}\n")
+            run = subprocess.run(
+                [node, eslint, "--config", os.path.join(ROOT, ROOT_ESLINT_CONFIG), "-f", "json", "zz-probe-args.ts"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(run.returncode, 1, f"eslint exited {run.returncode}: {run.stderr[-800:]}")
+            report = json.loads(run.stdout)
+            rules = [message.get("ruleId") for entry in report for message in entry.get("messages", [])]
+            self.assertEqual(rules, ["@typescript-eslint/no-unused-vars"], "the pinned presets no longer report it")
         finally:
             shutil.rmtree(root, ignore_errors=True)

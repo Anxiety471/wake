@@ -75,6 +75,22 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   ([#199](https://github.com/Anxiety471/wake/issues/199)). A heading is what a reflow of the file
   itself deletes, so a line that starts with `#` is listed with a leading backslash (`\### Fixed`),
   and an entry that matches no removed line is printed back with what it probably got wrong.
+
+- **`eslint.config.js` is pinned by value, so one line there no longer disarms the `api` job.** #185
+  pinned the files ruff and shellcheck load for themselves; the eslint config that `eslint apps
+  packages` loads in the `api` job was pinned by nothing, and that job reads the tree. Measured at
+  `a8180bd` (eslint 10.15.0): a planted `export function f(unusedParam: number): void {}` in
+  `apps/api/src/` made `eslint` exit 1 on `@typescript-eslint/no-unused-vars`, and one added entry,
+  `{ rules: { '@typescript-eslint/no-unused-vars': ['error', { args: 'none' }] } }`, left it at rc 0
+  with no messages while every pin stayed green. `tests/test_linter_configs.py` now reads the file
+  as data: the imports, the entries handed to `tseslint.config(...)` and the `ignores` list are
+  pinned, an inline object other than `ignores` is refused by name, a relative import is refused
+  because it is a second config file under another name, and an `ignores` pattern that matches a
+  tracked file fails. A deliberate rule change edits this pin in the same commit, and where eslint
+  is installed - a developer's checkout, not CI, which runs no Python module with `node_modules` -
+  the module also proves the presets still report a planted unused parameter
+  ([#208](https://github.com/Anxiety471/wake/issues/208)).
+
 - **Every command wake sends is pinned, so a shape that drifts fails CI instead of a host.**
   `rakazo-wake-gate` performs only the shapes it knows and refuses everything else, and a refusal
   is silent inside wake: the call fails and `--inbox` answers from the per-thread fallback.
