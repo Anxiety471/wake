@@ -376,6 +376,15 @@ class ChangelogGuardTestCase(unittest.TestCase):
         self.assertIn("1 of 1 removed line(s) listed", result.stdout)
         self.assertNotIn("inherited from", result.stdout)
 
+    def test_an_entry_committed_on_top_of_its_base_is_only_reported(self):
+        """#350: the committed-permission shape. The base has no entry, the head commits one: a NOTE, not a failure."""
+        self.write_allow(f"# new permission\n{UNRELEASED}\n")
+        head = self.commit("commit an entry on top of the base")
+        result = self.run_guard(self.base, head)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("match no line this base loses", result.stdout)
+        self.assertNotIn("inherited from", result.stdout)
+
     def test_a_base_that_predates_the_allowlist_has_no_inherited_entries(self):
         """Graceful skip: a base without scripts/changelog-allow.txt carries nothing to be dead."""
         self.git("rm", "-q", os.path.join("scripts", "changelog-allow.txt"))
@@ -389,8 +398,19 @@ class ChangelogGuardTestCase(unittest.TestCase):
 class LiveRepositoryTestCase(unittest.TestCase):
     """The guard against this repository's own files, so the rule is not only a fixture's."""
 
-    def test_this_changelog_is_clean_against_its_own_head(self):
-        result = subprocess.run([GUARD, "HEAD"], cwd=ROOT, env=clean_env(), text=True, capture_output=True)
+    def test_this_changelog_is_clean_against_its_parent(self):
+        """#350: HEAD against HEAD~1, not HEAD against HEAD. With base == head every committed allowlist
+        entry matches nothing and reads as inherited, so the first permission committed here went red."""
+        parent = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", "HEAD~1"],
+            cwd=ROOT,
+            env=clean_env(),
+            text=True,
+            capture_output=True,
+        )
+        if parent.returncode != 0:
+            self.skipTest("shallow checkout: no parent commit to compare against")
+        result = subprocess.run([GUARD, "HEAD~1", "HEAD"], cwd=ROOT, env=clean_env(), text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("changelog-guard: clean", result.stdout)
 
