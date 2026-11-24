@@ -25,6 +25,7 @@ import re
 import shutil
 import stat
 import sys
+import syslog
 import tempfile
 import types
 import unittest
@@ -328,6 +329,182 @@ class InboxIoShapeTests(WakeTestCase):
             self.assertTrue(os.path.exists(path), path)
             mode = stat.S_IMODE(os.stat(path).st_mode)
             self.assertEqual(mode, 0o660, f"{path} is {mode:o}, not 660")
+
+
+class GateAppendOwnershipTests(StagedGateCase):
+    """An append to an existing store file must not ask the kernel to create it.
+
+    The host sets `fs.protected_regular = 2` and the store is `3770 root:wake` (setgid + sticky),
+    so an `O_CREAT` open in that sticky, group-writable directory is refused with `EACCES` when
+    the file belongs to neither the caller nor the directory's owner. The gate runs as `wakeops`
+    and the store belongs to `root`, so a thread file a host-side client created as `hitori` -
+    `_host_run` runs the shell directly when there is no `WAKE_HOSTOPS` - was un-appendable:
+    reads answered normally, every append was refused as a bare `errno=13`, and nine appends
+    were refused between 2026-11-19 and 2026-11-23 (#221). The flags are what this test can hold on
+    any machine: the ownership that triggers the refusal cannot be set up by a single-user test,
+    and CI runs as one user, so the test asserts the open never asks to create an existing file.
+
+    The `ENOENT` retry on both writers is deliberately not pinned: it only shortens a race that
+    already existed (the file vanishing between `lstat` and `open`), and no single-user test can
+    lose that race on demand.
+    """
+
+    APPEND = (
+        "mkdir -p {T} 2>/dev/null || sudo mkdir -p {T}; "
+        "if [ -e {T}/{K}.jsonl ]; then dd of={T}/{K}.jsonl "
+        "oflag=append conv=notrunc,nocreat status=none; else cat >> {T}/{K}.jsonl; fi"
+    )
+
+    def store(self):
+        gate = self.load_gate()
+        for d in (gate.THREADS, gate.INBOX, gate.ACTIVE):
+            os.makedirs(d, exist_ok=True)
+        path = os.path.join(gate.THREADS, "11141808-0a61.jsonl")
+        cmd = self.APPEND.replace("{T}", gate.THREADS).replace("{K}", "11141808-0a61")
+        return gate, path, cmd
+
+    def open_flags(self, call):
+        """The file flags `call()` used, via a recording `os.open` the loaded gate also sees."""
+        seen = []
+        real_open = os.open
+
+        def record(path, flags, *args, **kwargs):
+            seen.append((path, flags))
+            return real_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(os, "open", record):
+            call()
+        return seen
+
+    def test_an_append_to_an_existing_file_does_not_pass_o_creat(self):
+        gate, path, cmd = self.store()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"kind":"ask"}\n')
+        seen = self.open_flags(lambda: gate.run(cmd, b'{"kind":"reply"}\n', io.BytesIO()))
+        written = [(p, fl) for p, fl in seen if p == path]
+        self.assertEqual(len(written), 1, f"expected one open of {path}: {seen}")
+        self.assertFalse(
+            written[0][1] & os.O_CREAT,
+            "the append asks the kernel to create a file that already exists, which a store file "
+            "owned by another user answers with EACCES (#221)",
+        )
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), '{"kind":"ask"}\n{"kind":"reply"}\n')
+
+    def test_a_missing_thread_file_is_still_created(self):
+        """The fix must not stop the gate from opening a new thread: no over-refusal."""
+        gate, path, cmd = self.store()
+        self.assertFalse(os.path.exists(path))
+        seen = self.open_flags(lambda: gate.run(cmd, b'{"kind":"ask"}\n', io.BytesIO()))
+        written = [(p, fl) for p, fl in seen if p == path]
+        self.assertEqual(len(written), 1, seen)
+        self.assertTrue(written[0][1] & os.O_CREAT, "a missing thread file is opened without O_CREAT")
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o660, "a new store file is not 0660")
+
+    def test_a_refused_append_names_the_key_and_the_target(self):
+        """A bare errno said a message was lost, never which thread (#301)."""
+        gate, path, cmd = self.store()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"kind":"ask"}\n')
+        real_open = os.open
+
+        def refuse(path_, flags, *args, **kwargs):
+            if path_ == path and flags & os.O_WRONLY:
+                raise PermissionError(13, "Permission denied", path_)
+            return real_open(path_, flags, *args, **kwargs)
+
+        err = io.StringIO()
+        with mock.patch.object(os, "open", refuse), contextlib.redirect_stderr(err):
+            rc = gate.run(cmd, b'{"kind":"reply"}\n', io.BytesIO())
+        message = err.getvalue()
+        self.assertEqual(rc, 1, message)
+        self.assertIn("errno=13", message)
+        self.assertIn("key=11141808-0a61", message)
+        self.assertIn("target=" + path, message)
+        self.assertNotIn("(None)", message)
+
+    def marker_store(self):
+        """The marker route's state: an existing `{A}/{K}.json` and the command that writes it."""
+        gate = self.load_gate()
+        for d in (gate.THREADS, gate.INBOX, gate.ACTIVE):
+            os.makedirs(d, exist_ok=True)
+        path = os.path.join(gate.ACTIVE, "11141808-0a61.json")
+        return gate, path, "cat > " + path
+
+    def test_a_marker_write_to_an_existing_file_does_not_pass_o_creat(self):
+        """The same open on the other route v12 changed (#313).
+
+        `inbox marker write` goes through `write_bytes`, not `append_bytes`, and the store's
+        `inbox/active` is 2770 without the sticky bit, so `fs.protected_regular` cannot fire there
+        today. Hardening that directory would bring back the silent loss, so the flag contract is
+        held on this route too rather than left to the one directory that happens to be sticky.
+        """
+        gate, path, cmd = self.marker_store()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"pid": 1}\n')
+        seen = self.open_flags(lambda: gate.run(cmd, b'{"pid": 2}', io.BytesIO()))
+        written = [(p, fl) for p, fl in seen if p == path]
+        self.assertEqual(len(written), 1, f"expected one open of {path}: {seen}")
+        self.assertFalse(
+            written[0][1] & os.O_CREAT,
+            "the marker write asks the kernel to create a file that already exists, which a "
+            "hardened `inbox/active` answers with EACCES (#313)",
+        )
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), '{"pid": 2}')
+
+    def test_a_missing_marker_file_is_still_created(self):
+        """No over-refusal: a first beat for a key must still create its marker at 0660."""
+        gate, path, cmd = self.marker_store()
+        self.assertFalse(os.path.exists(path))
+        seen = self.open_flags(lambda: gate.run(cmd, b'{"pid": 2}', io.BytesIO()))
+        written = [(p, fl) for p, fl in seen if p == path]
+        self.assertEqual(len(written), 1, seen)
+        self.assertTrue(written[0][1] & os.O_CREAT, "a missing marker is opened without O_CREAT")
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o660, "a new marker is not 0660")
+
+    def refuse_open(self, path, exc):
+        """An `os.open` that raises `exc` for the store file and passes every other open through."""
+        real_open = os.open
+
+        def refuse(path_, flags, *args, **kwargs):
+            if path_ == path and flags & os.O_WRONLY:
+                raise exc
+            return real_open(path_, flags, *args, **kwargs)
+
+        return refuse
+
+    def test_a_refusal_with_no_strerror_says_unknown_error(self):
+        """`e.strerror or "unknown error"` (#294): a bare `OSError(13)` carries `strerror is None`."""
+        gate, path, cmd = self.store()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"kind":"ask"}\n')
+        err = io.StringIO()
+        with mock.patch.object(os, "open", self.refuse_open(path, OSError(13))), contextlib.redirect_stderr(err):
+            rc = gate.run(cmd, b'{"kind":"reply"}\n', io.BytesIO())
+        message = err.getvalue()
+        self.assertEqual(rc, 1, message)
+        self.assertIn("unknown error", message, "a None strerror is not named as such")
+        self.assertNotIn("(None)", message)
+
+    def test_a_refusal_reaches_the_journal_with_the_same_three_fields(self):
+        """The CHANGELOG sells a journal line naming the thread; only stderr was pinned (#313)."""
+        gate, path, cmd = self.store()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"kind":"ask"}\n')
+        logged = []
+        with (
+            mock.patch.object(syslog, "syslog", lambda fn, msg: logged.append(msg)),
+            mock.patch.object(os, "open", self.refuse_open(path, PermissionError(13, "Permission denied", path))),
+        ):
+            rc = gate.run(cmd, b'{"kind":"reply"}\n', io.BytesIO())
+        self.assertEqual(rc, 1)
+        refusals = [m for m in logged if " refuse " in m]
+        self.assertTrue(refusals, f"the refusal was not audited at all: {logged}")
+        detail = refusals[-1]
+        self.assertIn("errno=13", detail)
+        self.assertIn("key=11141808-0a61", detail)
+        self.assertIn("target=" + path, detail)
 
 
 class StagedGatePickTests(unittest.TestCase):
