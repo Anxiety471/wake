@@ -22,3 +22,10 @@
   to `name`, `on`, `permissions` and `jobs`, because a workflow-level `defaults: {run: {shell:
   '/bin/true {0}'}}` swaps the shell for every run step in the file without touching the job
   (measured). A YAML merge key at the file, the job or the run step fails the same way, as `<<`
+
+# #334: this bullet claimed CI runs no Python module with `node_modules`, false since #217 gave
+# the `api` job `actions/setup-python` and `tests/run_module_strict.py test_inline_suppressions`.
+# The wording is rewritten in place and every measured fact survives; remove this entry once the
+# pull request that carries it has merged.
+  is installed - a developer's checkout, not CI, which runs no Python module with `node_modules` -
+  the module also proves the presets still report a planted unused parameter
