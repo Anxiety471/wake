@@ -59,6 +59,34 @@ def text(path):
         return f.read()
 
 
+def run_bodies(block):
+    """Every `run:` body in a job block, read off the raw lines, in order.
+
+    ci_steps() keeps a `key: value` line and drops the lines under a `run: |`, so a body that is
+    not one line is invisible to it. The lint and api pins both read bodies here: one reader, so
+    the two cannot drift into reading different shapes of the same workflow.
+    """
+    runs = []
+    i = 0
+    while i < len(block):
+        line = block[i]
+        i += 1
+        if not line.startswith("        run: "):
+            continue
+        payload = line[len("        run: ") :]
+        if payload != "|":
+            runs.append(payload)
+            continue
+        lines_of_block = []
+        while i < len(block) and (not block[i].strip() or block[i].startswith("         ")):
+            lines_of_block.append(block[i].strip())
+            i += 1
+        while lines_of_block and not lines_of_block[-1]:
+            lines_of_block.pop()
+        runs.append(lines_of_block)
+    return runs
+
+
 def read(name):
     return text(os.path.join(OPS, name))
 
@@ -629,24 +657,7 @@ class OpsFilesTestCase(unittest.TestCase):
         # into `ruff check` keeps every pin above green while lint checks nothing (measured at
         # 06c2c75), and so does a ruff version that is not the one the suite was proved on. A
         # `run: |` opens a block the step parser above does not keep, so its lines are read here.
-        runs = []
-        i = 0
-        while i < len(block):
-            line = block[i]
-            i += 1
-            if not line.startswith("        run: "):
-                continue
-            payload = line[len("        run: ") :]
-            if payload != "|":
-                runs.append(payload)
-                continue
-            lines_of_block = []
-            while i < len(block) and (not block[i].strip() or block[i].startswith("         ")):
-                lines_of_block.append(block[i].strip())
-                i += 1
-            while lines_of_block and not lines_of_block[-1]:
-                lines_of_block.pop()
-            runs.append(lines_of_block)
+        runs = run_bodies(block)
         self.assertEqual(
             runs,
             [
@@ -794,7 +805,11 @@ class OpsFilesTestCase(unittest.TestCase):
         # `python-version` is, so every one of them is pinned, and the step list is compared whole:
         # a step this job gains otherwise enters it unpinned and runs whatever it likes.
         allowed_keys = {
+            "actions/checkout@v7": ["uses"],
+            "oven-sh/setup-bun@v2": ["uses", "with"],
+            "actions/setup-node@v7": ["uses", "with"],
             "Install": ["name", "run"],
+            "actions/setup-python@v6": ["uses", "with"],
             "Inline suppressions bite": ["name", "env", "run"],
             "Typecheck": ["name", "run"],
             "Lint": ["name", "run"],
@@ -802,16 +817,20 @@ class OpsFilesTestCase(unittest.TestCase):
             "Build": ["name", "run"],
             "End-to-end threads over HTTP": ["name", "env", "run"],
         }
-        run_steps = [step for step in steps if "run" in step["keys"]]
+        # The step list is compared whole, `uses` steps included: reading only the run steps left
+        # every `uses` step outside the pin, so `- uses: actions/cache@v4` added after `Build` kept
+        # this module at 75 OK (measured at c39ecc9), and so did a swapped action version - the
+        # same gap the lint pin closed by listing its `uses` steps by name.
+        labels = [step["values"].get("name") or step["values"].get("uses") for step in steps]
         self.assertEqual(
-            [step["values"].get("name") for step in run_steps],
+            labels,
             list(allowed_keys),
-            f"the api job's run steps are {[step['values'].get('name') for step in run_steps]}, "
-            f"and this pin knows {list(allowed_keys)}: a step added here runs something no pin has "
-            "measured, and one renamed or dropped changes what the job proves",
+            f"the api job's steps are {labels}, and this pin knows {list(allowed_keys)}: a step "
+            "added here runs something no pin has measured, and one renamed, dropped or reordered "
+            "changes what the job proves",
         )
-        for step in run_steps:
-            label = step["values"].get("name")
+        for step in steps:
+            label = step["values"].get("name") or step["values"].get("uses")
             with self.subTest(step=label):
                 self.assertEqual(
                     step["keys"],
@@ -820,27 +839,31 @@ class OpsFilesTestCase(unittest.TestCase):
                     "`shell:`, a `working-directory:` or an added `env:` decides what the command "
                     "reads without changing a single value pinned below",
                 )
+        # What a `uses` step installs is a decision like a body is, and nothing above reads it:
+        # `bun-version: 1.4.4` -> `1.4.3`, `node-version: "24"` -> `"22"` and
+        # `python-version: "3.13"` -> `"3.12"` each kept this module green while changing the
+        # toolchain every pinned body below runs on (measured at c39ecc9) - bun runs the JS suite
+        # and `bun run lint`, node is in this job because eslint 10 needs `util.styleText`, and
+        # python3 runs the inline pin. Each `with:` is pinned by value, as the lint job's
+        # interpreter is.
+        for label, expected in (
+            ("oven-sh/setup-bun@v2", ["bun-version: 1.4.4"]),
+            ("actions/setup-node@v7", ['node-version: "24"']),
+            ("actions/setup-python@v6", ['python-version: "3.13"']),
+        ):
+            with self.subTest(step=label):
+                with_section = steps[labels.index(label)]["sections"].get("with")
+                self.assertEqual(
+                    with_section,
+                    expected,
+                    f"{label} with is {with_section}: the toolchain is what every pinned body "
+                    "runs on, so a different version fails here instead of quietly changing what "
+                    "the job proves",
+                )
         # What each step runs, read off the raw lines: ci_steps() keeps a `key: value` line and
         # drops the lines under a `run: |`, so the e2e block is read here, as the lint job's
         # bodies are read in test_ci_lint_job_keys_cannot_disarm_it.
-        runs = []
-        i = 0
-        while i < len(block):
-            line = block[i]
-            i += 1
-            if not line.startswith("        run: "):
-                continue
-            payload = line[len("        run: ") :]
-            if payload != "|":
-                runs.append(payload)
-                continue
-            lines_of_block = []
-            while i < len(block) and (not block[i].strip() or block[i].startswith("         ")):
-                lines_of_block.append(block[i].strip())
-                i += 1
-            while lines_of_block and not lines_of_block[-1]:
-                lines_of_block.pop()
-            runs.append(lines_of_block)
+        runs = run_bodies(block)
         self.assertEqual(
             runs,
             [
@@ -866,6 +889,35 @@ class OpsFilesTestCase(unittest.TestCase):
             f"the api job runs {runs}: a step whose body is not this one reports green without "
             'proving anything - `run: "true"` in `Test` and `Lint` left this module at 75 OK, and '
             "so did an e2e block with its last line removed (#231)",
+        )
+        # The e2e step proves two things at once: its block creates a database and its env is what
+        # the script connects to. The block was pinned and the env was not, so
+        # `DATABASE_URL: .../wake_test` kept this module at 75 OK while the script ran against the
+        # suite's own database - the one thing the comment on the step says it must not share
+        # (measured at c39ecc9). The env is pinned by value, and the name in it is compared with
+        # the name the block creates, so the halves cannot drift apart.
+        e2e = steps[labels.index("End-to-end threads over HTTP")]
+        self.assertEqual(
+            e2e["sections"].get("env"),
+            ["DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/wake_e2e_test"],
+            f"the e2e step env is {e2e['sections'].get('env')}: the script registers agents and "
+            "expects its own thread list, so it must not share wake_test with the suite above, and "
+            "it must be the database the step itself creates",
+        )
+        creates = [line for line in run_bodies(block)[-1] if "CREATE DATABASE" in line]
+        self.assertEqual(
+            len(creates),
+            1,
+            f"the e2e block creates {creates}: one database, named once, or the env above can "
+            "name a database nothing made",
+        )
+        created = re.search(r"CREATE DATABASE (\w+)", creates[0]).group(1)
+        url = e2e["sections"]["env"][0].split("DATABASE_URL: ", 1)[1]
+        self.assertEqual(
+            url.rsplit("/", 1)[-1],
+            created,
+            f"the e2e step connects to {url} but creates {created}: the script would run against "
+            "a database this step never made",
         )
         # The interpreter is the runner's default unless it is pinned, and a runner image bump
         # would then change what the pin reads while every value here stays the same.
