@@ -8,7 +8,9 @@
 # Comparison is line-level and content-level, not diff-level: a line counts as deleted when the base
 # holds more copies of it than the head does, so reordering and blank-line churn pass, and a reflow
 # of a released bullet fails until its old wording is listed. Every non-comment line of the allowlist
-# is a standing permission: remove the entry once the change that needed it has merged.
+# is a standing permission: remove the entry once the change that needed it has merged. An entry the
+# base revision already carries that matches no line the base loses is a merged permission nobody
+# removed, and fails the guard (#321); an entry this change adds is only reported.
 # The allowlist path can be overridden with WAKE_CHANGELOG_ALLOW (the tests use a temporary file).
 set -eu
 
@@ -62,7 +64,9 @@ lost=$(mktemp)
 listed=$(mktemp)
 released=$(mktemp)
 unused=$(mktemp)
-trap 'rm -f "$base_text" "$head_text" "$missing" "$lost" "$listed" "$released" "$unused"' EXIT
+baseallow=$(mktemp)
+inherited=$(mktemp)
+trap 'rm -f "$base_text" "$head_text" "$missing" "$lost" "$listed" "$released" "$unused" "$baseallow" "$inherited"' EXIT
 
 : > "$base_text"
 if git cat-file -e "$base:CHANGELOG.md" 2>/dev/null; then
@@ -75,6 +79,17 @@ if [ -n "$head" ]; then
     fi
 elif [ -f CHANGELOG.md ]; then
     cat CHANGELOG.md > "$head_text"
+fi
+
+# The base revision's own allowlist: an entry it already carries was merged before this change. A base
+# that predates the file has no entries, and that is not an error.
+: > "$baseallow"
+if git cat-file -e "$base:scripts/changelog-allow.txt" 2>/dev/null; then
+    git show "$base:scripts/changelog-allow.txt" | awk '
+        { sub(/\r$/, "") }
+        /^[ \t]*#/ || /^[ \t]*$/ { next }
+        { sub(/[ \t]+$/, ""); if (substr($0, 1, 2) == "\\#") $0 = substr($0, 2); print }
+    ' > "$baseallow"
 fi
 
 # A line the base carries more often than the head does is missing from the head. Trailing
@@ -145,6 +160,20 @@ awk -v allow="$allow" -v lost="$lost" -v listed="$listed" -v released="$released
     }
 ' "$base_text" "$missing"
 
+if [ -s "$unused" ]; then
+    while IFS= read -r entry; do
+        if grep -Fxq -- "$entry" "$baseallow"; then
+            printf '%s\n' "$entry" >> "$inherited"
+        fi
+    done < "$unused"
+fi
+if [ -s "$inherited" ]; then
+    echo "changelog-guard: $(wc -l < "$inherited" | tr -d ' ') allowlist entry/entries inherited from $base match no line this base loses:"
+    sed 's/^/  /' "$inherited"
+    echo "  -> the change that needed them has merged: remove each entry in its own commit (#321)"
+    echo "changelog-guard: FAILED" >&2
+    exit 1
+fi
 if [ -s "$unused" ]; then
     echo "changelog-guard: NOTE: $(wc -l < "$unused" | tr -d ' ') allowlist entry/entries match no line this base loses:"
     sed 's/^/  /' "$unused"

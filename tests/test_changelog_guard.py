@@ -342,6 +342,49 @@ class ChangelogGuardTestCase(unittest.TestCase):
         result = self.run_guard(base)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    # -- an allowlist entry that outlives its change (#321) ---------------------
+
+    def commit_base_with_allow(self, allow_body, message):
+        self.write_allow(allow_body)
+        return self.commit(message)
+
+    def test_an_entry_the_base_carries_and_no_line_needs_fails(self):
+        """The #212 case: the base lists the entry, the change that needed it has merged, nothing is lost."""
+        base = self.commit_base_with_allow(
+            f"# inherited permission\n{UNRELEASED}\n", "base carries an entry no line needs"
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("inherited from", result.stdout)
+        self.assertIn(UNRELEASED, result.stdout)
+        self.assertIn("FAILED", result.stderr)
+
+    def test_an_entry_this_change_adds_and_no_line_needs_is_only_reported(self):
+        """The entry is new in the pull request, so the base does not carry it yet: a NOTE, not a failure."""
+        self.write_allow(f"# new permission\n{UNRELEASED}\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("match no line this base loses", result.stdout)
+        self.assertNotIn("inherited from", result.stdout)
+
+    def test_an_inherited_entry_that_still_matches_a_deletion_passes(self):
+        """A base entry that does its job in this change is not dead: the deletion is listed and clean."""
+        base = self.commit_base_with_allow(f"# reflow permission\n{UNRELEASED}\n", "base carries a live entry")
+        self.write("CHANGELOG.md", BASE.replace(UNRELEASED, "- A reworded note (#900)."))
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("1 of 1 removed line(s) listed", result.stdout)
+        self.assertNotIn("inherited from", result.stdout)
+
+    def test_a_base_that_predates_the_allowlist_has_no_inherited_entries(self):
+        """Graceful skip: a base without scripts/changelog-allow.txt carries nothing to be dead."""
+        self.git("rm", "-q", os.path.join("scripts", "changelog-allow.txt"))
+        base = self.commit("base predates the allowlist")
+        self.write_allow(f"# new permission\n{UNRELEASED}\n")
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("inherited from", result.stdout)
+
 
 class LiveRepositoryTestCase(unittest.TestCase):
     """The guard against this repository's own files, so the rule is not only a fixture's."""
