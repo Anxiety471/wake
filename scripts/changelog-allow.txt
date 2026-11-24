@@ -14,18 +14,3 @@
 # matches no removed line is printed back. The guard is not
 # scoped to Unreleased - an entry for a released line is accepted, and printed back with the released
 # heading it came from, so a reviewer sees that a released note is going rather than a reflow.
-
-# PR #207: the workflow-pin bullet's scope sentence is rewritten in place, so these four lines
-# leave the file while the pin's measured facts survive; the reword now says what the pin reads
-# (ci.yml only) and what a workflow-level defaults.run.shell does and does not reach.
-  exits 0, the same disarm one indent deeper (measured). The file's own top-level keys are pinned
-  to `name`, `on`, `permissions` and `jobs`, because a workflow-level `defaults: {run: {shell:
-  '/bin/true {0}'}}` swaps the shell for every run step in the file without touching the job
-  (measured). A YAML merge key at the file, the job or the run step fails the same way, as `<<`
-
-# #334: this bullet claimed CI runs no Python module with `node_modules`, false since #217 gave
-# the `api` job `actions/setup-python` and `tests/run_module_strict.py test_inline_suppressions`.
-# The wording is rewritten in place and every measured fact survives; remove this entry once the
-# pull request that carries it has merged.
-  is installed - a developer's checkout, not CI, which runs no Python module with `node_modules` -
-  the module also proves the presets still report a planted unused parameter
