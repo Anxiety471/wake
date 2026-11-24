@@ -87,9 +87,21 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   pinned, an inline object other than `ignores` is refused by name, a relative import is refused
   because it is a second config file under another name, and an `ignores` pattern that matches a
   tracked file fails. A deliberate rule change edits this pin in the same commit, and where eslint
-  is installed - a developer's checkout, not CI, which runs no Python module with `node_modules` -
-  the module also proves the presets still report a planted unused parameter
+  is installed and the module runs - a developer's checkout, not CI, whose one Python step runs a
+  different module - the module also proves the presets still report a planted unused parameter
   ([#208](https://github.com/Anxiety471/wake/issues/208)).
+
+- **The command that loads that config, and a brace `ignores` pattern, are pinned too.** #208 pinned
+  `eslint.config.js` by value, and the `api` job's `Lint` step is `bun run lint`, whose script lives
+  in `package.json` - a file nothing in the tree read. Measured at `39c7d81` (eslint 10.15.0): on a
+  planted `export function f(unusedParam: number): void {}` in `apps/api/src/`, the shipped command
+  exits 1 with one message, `-c eslint.local.js` exits 0 with none (the second config is named on the
+  command line, so nothing imports it and the relative-import refusal cannot see it), and the shipped
+  command plus `|| true` exits 0. `tests/test_linter_configs.py` now pins the `lint` script string by
+  value, and refuses an `ignores` pattern containing `{`: `fnmatch` does not expand `{a,b}` while
+  eslint does, so `{dist,build}/**` dropped both directories while the tracked-file check reported no
+  match - dressing the second layer down to the exact-list pin alone
+  ([#224](https://github.com/Anxiety471/wake/issues/224)).
 
 - **Every command wake sends is pinned, so a shape that drifts fails CI instead of a host.**
   `rakazo-wake-gate` performs only the shapes it knows and refuses everything else, and a refusal

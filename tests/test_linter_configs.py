@@ -15,7 +15,7 @@ Same shape as #181 one level out: the workflow can no longer be disarmed, its to
 could. These pins are static on purpose: the `test` job runs on Python 3.9 to 3.13 with no ruff
 and no shellcheck installed, so they read the config files rather than run the tools.
 
-Four things decide what CI's linters see, and all four are read here:
+Five things decide what CI's linters see, and all five are read here:
 
 1. `pyproject.toml` `[tool.ruff*]` - `select`, `ignore`, `extend-exclude`, `exclude`,
    `respect-gitignore`, `per-file-ignores` and a `[tool.ruff.format]` table all change the verdict.
@@ -32,6 +32,11 @@ Four things decide what CI's linters see, and all four are read here:
    Measured at `a8180bd` (eslint 10.15.0): one added entry,
    `{ rules: { '@typescript-eslint/no-unused-vars': ['error', { args: 'none' }] } }`, left a planted
    unused parameter unlinted - rc 0, no messages - with every pin in this repository green.
+5. the `lint` script in `package.json`, which is the command that loads that config: the `api` job
+   runs `bun run lint`, so a second `-c` on that line points eslint at another file and a trailing
+   `|| true` eats its exit status, while every pin above stays green (#224). Measured at `39c7d81`
+   with eslint 10.15.0: on a planted unused parameter the shipped command exits 1 with one
+   message, `-c eslint.local.js` exits 0 with none, and the shipped command plus `|| true` exits 0.
 
 Run with the rest: `python3 -m unittest discover -s tests`
 """
@@ -128,6 +133,13 @@ ESLINT_ENTRIES = (
 #: The `ignores` patterns, exactly. `eslint apps packages` reads the tree rather than a file list,
 #: so an entry added here drops files from the job without touching a pinned value.
 ESLINT_IGNORES = ("**/dist/**", "**/.next/**", "**/node_modules/**", "**/coverage/**")
+
+#: The `api` job's `Lint` step is `bun run lint` (`ci.yml:111`), and this script is the only reason
+#: eslint loads the file above: a second `-c` here names another config - on the command line, so
+#: nothing imports it and the relative-import refusal never sees it - and a trailing `|| true` swallows
+#: the exit status. `prettier` is in the same string because the step is green only if both pass.
+ROOT_PACKAGE_JSON = "package.json"
+LINT_SCRIPT = "node ./node_modules/eslint/bin/eslint.js apps packages && prettier --check apps packages"
 
 
 def text(path):
@@ -446,6 +458,42 @@ def ignores_path(pattern, path):
     return False
 
 
+def brace_ignore_problems(patterns):
+    """Every `ignores` pattern this matcher cannot judge, because it contains a brace.
+
+    `ignores_path` is `fnmatch`, which does not expand `{a,b}`; eslint does. Measured with eslint
+    10.15.0: `ignores: ['{dist,build}/**']` drops both directories from `eslint .`, while
+    `fnmatch.fnmatchcase(path, '{dist,build}/**')` is False for every path under either one.
+
+    The judgement is made on the pattern rather than on the pinned list, so a brace pattern added
+    together with a matching edit to `ESLINT_IGNORES` still fails here (#224).
+    """
+    return [
+        f"{ROOT_ESLINT_CONFIG} ignores {pattern!r}, which contains a brace: eslint expands `{{a,b}}` and "
+        "the matcher behind the tracked-file check does not, so this pattern can drop directories from "
+        "the `api` job with both ignore layers green (#224)"
+        for pattern in patterns
+        if "{" in pattern
+    ]
+
+
+def lint_script_problems(scripts):
+    """Every way `package.json`'s `lint` stops being the invocation the `api` job was proved on.
+
+    Empty is good. The message names what the string decides, because the edit that moves it looks
+    like a harmless one-liner and leaves every pin on the config file green (#224).
+    """
+    script = scripts.get("lint")
+    if script == LINT_SCRIPT:
+        return []
+    return [
+        f"{ROOT_PACKAGE_JSON} `lint` is {script!r}, pinned to {LINT_SCRIPT!r}: the `api` job runs "
+        "`bun run lint`, and eslint loads `eslint.config.js` only because this command says so - a "
+        "second `-c` names another config on the command line, where no import check can see it, and a "
+        "trailing `|| true` eats the exit status the job reads (#224)"
+    ]
+
+
 def ignored_tracked_paths(patterns, paths=None):
     """Tracked paths an `ignores` pattern drops, which is what eslint does to them."""
     paths = tracked_paths() if paths is None else paths
@@ -483,6 +531,7 @@ def eslint_config_problems(source, tracked=None):
             f"{ROOT_ESLINT_CONFIG} ignores {config['ignores']}, pinned to {list(ESLINT_IGNORES)}: `eslint apps "
             "packages` reads the tree, so an entry here drops files from the job with every pin green (#208)"
         )
+    problems.extend(brace_ignore_problems(config["ignores"]))
     hidden = ignored_tracked_paths(config["ignores"], tracked)
     if hidden:
         problems.append(
@@ -730,11 +779,46 @@ class EslintConfigTestCase(unittest.TestCase):
         self.assertFalse(ignores_path("**/dist/**", "apps/api/src/distribution.ts"))
         self.assertFalse(ignores_path("**/.next/**", "apps/api/src/next.ts"))
 
+    def test_the_pin_reads_the_script_that_loads_the_config(self):
+        """#224: the config is one input; the `bun run lint` script that names it is the other."""
+        scripts = json.loads(text(os.path.join(ROOT, ROOT_PACKAGE_JSON)))["scripts"]
+        self.assertEqual(
+            lint_script_problems(scripts),
+            [],
+            "the shipped `lint` script is not the invocation the api job was proved on",
+        )
+
+    def test_the_lint_script_pin_refuses_a_second_config_or_a_swallowed_status(self):
+        """Both disarms keep `bun run lint` green: another `-c`, or `|| true` eating the status."""
+        shipped = text(os.path.join(ROOT, ROOT_PACKAGE_JSON))
+        for replacement in (
+            LINT_SCRIPT.replace("eslint.js apps", "eslint.js -c eslint.local.js apps"),
+            LINT_SCRIPT + " || true",
+        ):
+            self.assertNotEqual(replacement, LINT_SCRIPT, "the fixture's anchor moved")
+            changed = shipped.replace(LINT_SCRIPT, replacement, 1)
+            self.assertNotEqual(changed, shipped, "the fixture's anchor moved: the `lint` script")
+            problems = lint_script_problems(json.loads(changed)["scripts"])
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("package.json `lint` is", problems[0])
+
+    def test_the_pin_refuses_a_brace_pattern_the_matcher_cannot_read(self):
+        """`ignores_path` is `fnmatch`, which has no `{a,b}`; eslint expands it, so the drop is blind."""
+        self.assertFalse(ignores_path("{apps,packages}/**", "apps/api/src/main.ts"))
+        changed = self.mutated("      '**/coverage/**',\n", "      '**/coverage/**',\n      '{dist,build}/**',\n")
+        self.assertIn("contains a brace", " ".join(self.problems(changed)))
+
+    def test_the_brace_refusal_judges_the_pattern_not_the_pinned_list(self):
+        """A pattern added with a matching pin edit must still fail, so the check reads patterns."""
+        found = brace_ignore_problems(["**/dist/**", "{dist,build}/**"])
+        self.assertEqual(len(found), 1)
+        self.assertIn("'{dist,build}/**'", found[0])
+
     def test_the_shipped_config_still_reports_an_unused_parameter(self):
         """The pin says the presets are intact; this proves it where eslint is installed.
 
         The `test` job has neither node_modules nor eslint, so it skips there. The `api` job runs
-        eslint itself but no Python module, so it skips in every CI job as well: what CI enforces
+        a Python module, but not this one, so it skips in every CI job as well: what CI enforces
         is the pin above, and this assertion is a backstop a developer's checkout runs (measured
         with eslint 10.15.0). Wiring it into a job that has both Python and node_modules is
         tracked as TASK-315, so nothing here claims CI coverage this tree does not have.
