@@ -18,6 +18,9 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GUARD = os.path.join(ROOT, "scripts", "changelog-guard.sh")
 ALLOW = os.path.join(ROOT, "scripts", "changelog-allow.txt")
+ALLOW_LABEL = "scripts/changelog-allow.txt"
+#: The day the guard is told it is, so a planted expiry means the same thing on every run.
+TODAY = "2026-11-24"
 CHANGELOG = os.path.join(ROOT, "CHANGELOG.md")
 CI = os.path.join(ROOT, ".github", "workflows", "ci.yml")
 
@@ -144,8 +147,9 @@ class ChangelogGuardTestCase(unittest.TestCase):
         self.git("commit", "-q", "-m", message)
         return self.git("rev-parse", "HEAD").stdout.strip()
 
-    def run_guard(self, *args, allow=None):
+    def run_guard(self, *args, allow=None, today=TODAY):
         env = clean_env()
+        env["WAKE_CHANGELOG_TODAY"] = today
         if allow is not None:
             env["WAKE_CHANGELOG_ALLOW"] = allow
         return subprocess.run(
@@ -399,9 +403,7 @@ class ChangelogGuardTestCase(unittest.TestCase):
         This is the shape that was red: the entry is a permission for a deletion that has not happened
         yet, so it cannot be told apart from a live one and must not fail an unrelated change.
         """
-        base = self.commit_base_with_allow(
-            f"# pending permission\n{UNRELEASED}\n", "base carries a pending entry"
-        )
+        base = self.commit_base_with_allow(f"# pending permission\n{UNRELEASED}\n", "base carries a pending entry")
         result = self.run_guard(base)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("inherited from", result.stdout)
@@ -410,9 +412,7 @@ class ChangelogGuardTestCase(unittest.TestCase):
 
     def test_a_standing_permission_does_not_red_the_next_unrelated_change(self):
         """The measured #350 shape: commit the entry, then one unrelated commit on top of it."""
-        base = self.commit_base_with_allow(
-            f"# standing permission\n{UNRELEASED}\n", "commit the permission"
-        )
+        base = self.commit_base_with_allow(f"# standing permission\n{UNRELEASED}\n", "commit the permission")
         self.write("README.md", "an unrelated change\n")
         head = self.commit("an unrelated change on top")
         result = self.run_guard(base, head)
@@ -453,6 +453,129 @@ class ChangelogGuardTestCase(unittest.TestCase):
         result = self.run_guard(base)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("inherited from", result.stdout)
+
+    # -- staleness is decided offline, from a date (#350) ------------------------
+
+    def test_an_inherited_entry_past_its_expiry_fails_and_names_file_line_date_and_fix(self):
+        """#350: `# expires:` is the marker that makes staleness decidable without a network call."""
+        base = self.commit_base_with_allow(
+            f"# drop this note once its replacement ships (#900)\n# expires: 2026-11-01\n{UNRELEASED}\n",
+            "base carries an entry whose date has passed",
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"{ALLOW_LABEL}:3", result.stdout)
+        self.assertIn(UNRELEASED, result.stdout)
+        self.assertIn("expired on 2026-11-01", result.stdout)
+        self.assertIn("remove it in its own commit", result.stdout)
+        self.assertIn("FAILED", result.stderr)
+
+    def test_an_inherited_entry_before_its_expiry_is_only_reported(self):
+        """A live permission is not stale: the base still carries the line and the date is ahead."""
+        base = self.commit_base_with_allow(
+            f"# this note goes at the next tag (#900)\n# expires: 2026-12-31\n{UNRELEASED}\n",
+            "base carries an entry whose date is ahead",
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("inherited from", result.stdout)
+        self.assertNotIn("FAILED", result.stderr)
+
+    def test_the_expiry_day_itself_is_still_standing(self):
+        """The entry is valid through its date; the day after is when it fails."""
+        body = f"# goes at the tag (#900)\n# expires: {TODAY}\n{UNRELEASED}\n"
+        base = self.commit_base_with_allow(body, "base carries an entry expiring today")
+        same_day = self.run_guard(base, today=TODAY)
+        self.assertEqual(same_day.returncode, 0, same_day.stdout + same_day.stderr)
+        next_day = self.run_guard(base, today="2026-11-25")
+        self.assertEqual(next_day.returncode, 1, next_day.stdout + next_day.stderr)
+        self.assertIn("expired on 2026-11-24", next_day.stdout)
+
+    def test_an_expired_entry_removed_by_this_change_is_clean(self):
+        """The fix the failure asks for: delete the entry, and the guard is satisfied."""
+        base = self.commit_base_with_allow(
+            f"# drop this note (#900)\n# expires: 2026-11-01\n{UNRELEASED}\n",
+            "base carries an expired entry",
+        )
+        self.write_allow("# nothing listed yet\n")
+        head = self.commit("remove the expired entry")
+        result = self.run_guard(base, head)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_removing_the_marker_does_not_disarm_an_expired_entry(self):
+        """The marker the base carries governs: a change cannot turn an expired entry into a NOTE."""
+        body = f"# drop this note (#900)\n# expires: 2026-11-01\n{UNRELEASED}\n"
+        base = self.commit_base_with_allow(body, "base carries an expired entry")
+        self.write_allow(f"# drop this note (#900)\n{UNRELEASED}\n")
+        head = self.commit("delete the marker, keep the entry")
+        result = self.run_guard(base, head)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("expired on 2026-11-01", result.stdout)
+
+    def test_this_change_may_add_its_own_expiry_to_an_inherited_entry(self):
+        """A marker this change adds applies when the base has none, so it is not ignored."""
+        base = self.commit_base_with_allow(f"# no marker yet (#900)\n{UNRELEASED}\n", "base carries an entry")
+        self.write_allow(f"# no marker yet (#900)\n# expires: 2026-11-01\n{UNRELEASED}\n")
+        head = self.commit("give the inherited entry a date")
+        result = self.run_guard(base, head)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("expired on 2026-11-01", result.stdout)
+
+    def test_an_expiry_that_is_not_a_date_cannot_be_verified(self):
+        """A marker nobody can read must not read as a standing permission."""
+        base = self.commit_base_with_allow(
+            f"# drop this note (#900)\n# expires: soon\n{UNRELEASED}\n", "base carries an unreadable expiry"
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cannot verify", result.stderr)
+        self.assertIn(f"{ALLOW_LABEL}:3", result.stderr)
+
+    def test_a_day_the_calendar_does_not_have_cannot_be_verified(self):
+        """2026-02-30 would compare as a date if it were only pattern-matched."""
+        base = self.commit_base_with_allow(
+            f"# drop this note (#900)\n# expires: 2026-02-30\n{UNRELEASED}\n", "base carries an impossible date"
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cannot verify", result.stderr)
+
+    def test_a_stale_when_marker_is_refused_because_it_needs_github(self):
+        """An issue lookup cannot be decided in an offline test job, so it fails closed, not open."""
+        base = self.commit_base_with_allow(
+            f"# drop this note\n# stale-when: 900\n{UNRELEASED}\n", "base carries an issue marker"
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cannot verify", result.stderr)
+        self.assertIn("decided offline", result.stderr)
+
+    def test_the_same_revision_on_both_sides_does_not_fail_a_standing_entry(self):
+        """The original #350 shape: base == HEAD, one standing entry, nothing removed."""
+        body = f"# standing permission (#900)\n# expires: 2026-12-31\n{UNRELEASED}\n"
+        head = self.commit_base_with_allow(body, "commit the standing permission")
+        result = self.run_guard(head, head)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("changelog-guard: clean", result.stdout)
+
+    def test_the_same_revision_on_both_sides_still_fails_an_expired_entry(self):
+        """base == HEAD is not a way out of the date: an expired entry fails with nothing removed."""
+        body = f"# standing permission (#900)\n# expires: 2026-11-01\n{UNRELEASED}\n"
+        head = self.commit_base_with_allow(body, "commit an already expired permission")
+        result = self.run_guard(head, head)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("expired on 2026-11-01", result.stdout)
+
+    def test_the_reason_that_fired_is_printed(self):
+        """An expired entry whose line is also gone reports the date, not the spent rule."""
+        self.write("CHANGELOG.md", BASE.replace(UNRELEASED + "\n\n", ""))
+        base = self.commit_base_with_allow(
+            f"# drop this note (#900)\n# expires: 2026-11-01\n{UNRELEASED}\n", "base spent and expired"
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("expired on 2026-11-01", result.stdout)
+        self.assertNotIn("reason: spent", result.stdout)
 
 
 class LiveRepositoryTestCase(unittest.TestCase):

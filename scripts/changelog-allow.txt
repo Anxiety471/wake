@@ -9,7 +9,10 @@
 # An entry is a standing permission, not a one-PR note: once the change that needed it has merged,
 # remove the entry in its own commit, so the next deletion of that line is caught again.
 # An entry that the base revision already carries and that matches no line the base loses fails the
-# guard (#321): a merged permission someone forgot to remove.
+# guard (#321) only when that base no longer carries the line the entry permits to delete: a merged
+# permission someone forgot to remove. While the base still carries the line, the entry is a pending
+# permission - the guard prints it and does not fail, because a deletion that has not happened yet
+# cannot be told apart from one that never will, and failing both reds every change in between (#350).
 #
 # A line that starts with # is written with a leading backslash (\### Fixed), because a bare # line
 # is a comment here. Indentation is part of the entry: copy the line as it stands, and an entry that
