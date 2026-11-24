@@ -292,12 +292,26 @@ class OpsFilesTestCase(unittest.TestCase):
             for line in lines
             if line and not line.startswith((" ", "\t", "#", "-")) and ":" in line
         ]
-        self.assertEqual(
-            top,
-            ["name", "on", "permissions", "jobs"],
-            f"workflow keys {top}: only name, on, permissions and jobs are allowed - a top-level "
-            "defaults block swaps the shell for the backgrounded job's run step",
-        )
+        # Sorted: swapping two of the four keys changes nothing about the workflow, so a reorder
+        # must not read as a fifth key. The injury is the added top-level block, and the message has
+        # to name which key is the stranger instead of listing the whole file back.
+        allowed = ["jobs", "name", "on", "permissions"]
+        if sorted(top) != allowed:
+            unexpected = [key for key in top if key not in allowed]
+            missing = [key for key in allowed if key not in top]
+            repeated = sorted({key for key in top if top.count(key) > 1})
+            parts = []
+            if unexpected:
+                parts.append("unexpected " + ", ".join(unexpected))
+            if missing:
+                parts.append("missing " + ", ".join(missing))
+            if repeated:
+                parts.append("repeated " + ", ".join(repeated))
+            self.fail(
+                f"workflow keys {top}: {'; '.join(parts)} - only name, on, permissions and jobs are "
+                "allowed, because a top-level defaults block swaps the shell for the backgrounded "
+                "job's run step"
+            )
         start = lines.index("  backgrounded:")
         block = []
         for line in lines[start + 1 :]:
