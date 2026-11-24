@@ -66,6 +66,35 @@ def text(path):
         return handle.read()
 
 
+def git_out(*args):
+    """Run git in this checkout and return the finished process, never raising on a non-zero exit."""
+    return subprocess.run(
+        ["git"] + list(args),
+        cwd=ROOT,
+        env=clean_env(),
+        text=True,
+        capture_output=True,
+    )
+
+
+def live_base():
+    """The base a pull request's guard run compares: `git merge-base origin/main HEAD`, or None.
+
+    None means this checkout cannot answer - a shallow clone without origin/main, or a repository with
+    no such branch - and the caller skips rather than comparing something else.
+    """
+    main = git_out("rev-parse", "--verify", "--quiet", "origin/main^{commit}")
+    if main.returncode != 0:
+        return None
+    head = git_out("rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+    if head.returncode != 0:
+        return None
+    merge = git_out("merge-base", main.stdout.strip(), head.stdout.strip())
+    if merge.returncode != 0:
+        return None
+    return merge.stdout.strip()
+
+
 def unreleased_bullet(document):
     """The first bullet under `## [Unreleased]`, the note a stale branch is most likely to drop."""
     inside = False
@@ -348,8 +377,13 @@ class ChangelogGuardTestCase(unittest.TestCase):
         self.write_allow(allow_body)
         return self.commit(message)
 
-    def test_an_entry_the_base_carries_and_no_line_needs_fails(self):
-        """The #212 case: the base lists the entry, the change that needed it has merged, nothing is lost."""
+    def test_an_entry_the_base_carries_whose_line_it_already_lost_fails(self):
+        """The #212/#321 case: the base lists the entry and no longer carries the line it allowed to go.
+
+        The fixture has to delete the line in the base, because that is what a merged permission looks
+        like. An entry whose line the base still carries is a different thing - see the next test (#350).
+        """
+        self.write("CHANGELOG.md", BASE.replace(UNRELEASED + "\n\n", ""))
         base = self.commit_base_with_allow(
             f"# inherited permission\n{UNRELEASED}\n", "base carries an entry no line needs"
         )
@@ -358,6 +392,32 @@ class ChangelogGuardTestCase(unittest.TestCase):
         self.assertIn("inherited from", result.stdout)
         self.assertIn(UNRELEASED, result.stdout)
         self.assertIn("FAILED", result.stderr)
+
+    def test_an_inherited_permission_whose_line_the_base_still_carries_is_only_reported(self):
+        """#350: the base carries the entry and still carries the line, and the change touches nothing.
+
+        This is the shape that was red: the entry is a permission for a deletion that has not happened
+        yet, so it cannot be told apart from a live one and must not fail an unrelated change.
+        """
+        base = self.commit_base_with_allow(
+            f"# pending permission\n{UNRELEASED}\n", "base carries a pending entry"
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("inherited from", result.stdout)
+        self.assertIn("has not made yet", result.stdout)
+        self.assertNotIn("FAILED", result.stderr)
+
+    def test_a_standing_permission_does_not_red_the_next_unrelated_change(self):
+        """The measured #350 shape: commit the entry, then one unrelated commit on top of it."""
+        base = self.commit_base_with_allow(
+            f"# standing permission\n{UNRELEASED}\n", "commit the permission"
+        )
+        self.write("README.md", "an unrelated change\n")
+        head = self.commit("an unrelated change on top")
+        result = self.run_guard(base, head)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("FAILED", result.stderr)
 
     def test_an_entry_this_change_adds_and_no_line_needs_is_only_reported(self):
         """The entry is new in the pull request, so the base does not carry it yet: a NOTE, not a failure."""
@@ -398,19 +458,26 @@ class ChangelogGuardTestCase(unittest.TestCase):
 class LiveRepositoryTestCase(unittest.TestCase):
     """The guard against this repository's own files, so the rule is not only a fixture's."""
 
-    def test_this_changelog_is_clean_against_its_parent(self):
-        """#350: HEAD against HEAD~1, not HEAD against HEAD. With base == head every committed allowlist
-        entry matches nothing and reads as inherited, so the first permission committed here went red."""
-        parent = subprocess.run(
-            ["git", "rev-parse", "--verify", "--quiet", "HEAD~1"],
-            cwd=ROOT,
-            env=clean_env(),
-            text=True,
-            capture_output=True,
-        )
-        if parent.returncode != 0:
-            self.skipTest("shallow checkout: no parent commit to compare against")
-        result = subprocess.run([GUARD, "HEAD~1", "HEAD"], cwd=ROOT, env=clean_env(), text=True, capture_output=True)
+    def test_this_changelog_is_clean_against_the_base_a_pull_request_uses(self):
+        """#350: the base the CI step compares, not this head and not its parent.
+
+        CI runs the guard with `${{ github.event.pull_request.base.sha }}`, and a local run has to mirror
+        that or it measures a different question. `HEAD~1` was wrong in both directions: in the
+        pull_request shape HEAD is the merge commit of the base tip and the branch, so HEAD~1 is the base
+        tip only for a one-commit branch, and a base that carries a standing permission reds a change
+        that touches nothing.
+        """
+        base = live_base()
+        if base is None:
+            self.skipTest("no origin/main to compare against")
+        main = git_out("rev-parse", "origin/main").stdout.strip()
+        head = git_out("rev-parse", "HEAD").stdout.strip()
+        # The base choice is asserted here, where it is made: a revert to HEAD leaves the module green
+        # while main's allowlist is empty, so nothing else would notice.
+        self.assertEqual(base, git_out("merge-base", main, head).stdout.strip())
+        if head != main:
+            self.assertNotEqual(base, head, "the live guard compares this head with itself again (#350)")
+        result = subprocess.run([GUARD, base, "HEAD"], cwd=ROOT, env=clean_env(), text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("changelog-guard: clean", result.stdout)
 

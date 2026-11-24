@@ -9,8 +9,11 @@
 # holds more copies of it than the head does, so reordering and blank-line churn pass, and a reflow
 # of a released bullet fails until its old wording is listed. Every non-comment line of the allowlist
 # is a standing permission: remove the entry once the change that needed it has merged. An entry the
-# base revision already carries that matches no line the base loses is a merged permission nobody
-# removed, and fails the guard (#321); an entry this change adds is only reported.
+# base revision already carries is spent only when the line it permits to delete is already gone from
+# that base - the change merged and the entry stayed - and then it fails the guard (#321). While the
+# base still carries that line the entry is a permission for a deletion that has not happened yet: it
+# is reported, not failed, so a change that touches nothing stays green (#350). An entry this change
+# adds is only reported.
 # The allowlist path can be overridden with WAKE_CHANGELOG_ALLOW (the tests use a temporary file).
 set -eu
 
@@ -66,7 +69,10 @@ released=$(mktemp)
 unused=$(mktemp)
 baseallow=$(mktemp)
 inherited=$(mktemp)
-trap 'rm -f "$base_text" "$head_text" "$missing" "$lost" "$listed" "$released" "$unused" "$baseallow" "$inherited"' EXIT
+pending=$(mktemp)
+fresh=$(mktemp)
+basenorm=$(mktemp)
+trap 'rm -f "$base_text" "$head_text" "$missing" "$lost" "$listed" "$released" "$unused" "$baseallow" "$inherited" "$pending" "$fresh" "$basenorm"' EXIT
 
 : > "$base_text"
 if git cat-file -e "$base:CHANGELOG.md" 2>/dev/null; then
@@ -90,6 +96,13 @@ if git cat-file -e "$base:scripts/changelog-allow.txt" 2>/dev/null; then
         /^[ \t]*#/ || /^[ \t]*$/ { next }
         { sub(/[ \t]+$/, ""); if (substr($0, 1, 2) == "\\#") $0 = substr($0, 2); print }
     ' > "$baseallow"
+fi
+
+# The base's own lines, normalized the way the comparison does it, so an entry can be matched against
+# the text its base still carries.
+: > "$basenorm"
+if [ -s "$base_text" ]; then
+    awk '{ sub(/[ \t\r]+$/, ""); if ($0 != "") print }' "$base_text" > "$basenorm"
 fi
 
 # A line the base carries more often than the head does is missing from the head. Trailing
@@ -162,21 +175,36 @@ awk -v allow="$allow" -v lost="$lost" -v listed="$listed" -v released="$released
 
 if [ -s "$unused" ]; then
     while IFS= read -r entry; do
-        if grep -Fxq -- "$entry" "$baseallow"; then
+        if ! grep -Fxq -- "$entry" "$baseallow"; then
+            printf '%s\n' "$entry" >> "$fresh"
+            continue
+        fi
+        # The base carries this entry. It is spent when the line it permits to delete is already gone
+        # from the base: the change merged and only the entry stayed, so the guard fails. While the base
+        # still carries that line the permission is for a deletion that has not happened yet, and
+        # failing it would red every change between adding the entry and making the deletion (#350).
+        if grep -Fxq -- "$entry" "$basenorm"; then
+            printf '%s\n' "$entry" >> "$pending"
+        else
             printf '%s\n' "$entry" >> "$inherited"
         fi
     done < "$unused"
 fi
 if [ -s "$inherited" ]; then
-    echo "changelog-guard: $(wc -l < "$inherited" | tr -d ' ') allowlist entry/entries inherited from $base match no line this base loses:"
+    echo "changelog-guard: $(wc -l < "$inherited" | tr -d ' ') allowlist entry/entries inherited from $base match no line this base loses and no longer appear in its CHANGELOG.md:"
     sed 's/^/  /' "$inherited"
     echo "  -> the change that needed them has merged: remove each entry in its own commit (#321)"
     echo "changelog-guard: FAILED" >&2
     exit 1
 fi
-if [ -s "$unused" ]; then
-    echo "changelog-guard: NOTE: $(wc -l < "$unused" | tr -d ' ') allowlist entry/entries match no line this base loses:"
-    sed 's/^/  /' "$unused"
+if [ -s "$pending" ]; then
+    echo "changelog-guard: NOTE: $(wc -l < "$pending" | tr -d ' ') allowlist entry/entries inherited from $base match no line this base loses:"
+    sed 's/^/  /' "$pending"
+    printf '%s\n' '  -> each is a permission for a deletion this base has not made yet; it fails the guard once that deletion is in the base'
+fi
+if [ -s "$fresh" ]; then
+    echo "changelog-guard: NOTE: $(wc -l < "$fresh" | tr -d ' ') allowlist entry/entries match no line this base loses:"
+    sed 's/^/  /' "$fresh"
     printf '%s\n' '  -> an entry that is not removed now is a standing permission; a typo or a missing indent is why this prints'
 fi
 if [ -s "$lost" ]; then
