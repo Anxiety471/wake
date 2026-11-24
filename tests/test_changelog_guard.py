@@ -550,6 +550,49 @@ class ChangelogGuardTestCase(unittest.TestCase):
         self.assertIn("cannot verify", result.stderr)
         self.assertIn("decided offline", result.stderr)
 
+    def test_a_capitalised_expiry_marker_is_refused_rather_than_ignored(self):
+        """L3: `# Expires:` was not a marker, so it read as a reason and the entry stood forever."""
+        self.write_allow(f"# standing permission (#900)\n# Expires: 2026-12-31\n{UNRELEASED}\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cannot read the marker", result.stderr)
+        self.assertIn("Expires: 2026-12-31", result.stderr)
+        self.assertIn("expires: YYYY-MM-DD", result.stderr)
+
+    def test_an_expiry_marker_without_a_colon_is_refused(self):
+        """L3: `# expires 2026-11-01` has no colon, and the date it carries was silently dropped."""
+        self.write_allow(f"# standing permission (#900)\n# expires 2026-11-01\n{UNRELEASED}\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cannot read the marker", result.stderr)
+        self.assertIn("expires 2026-11-01", result.stderr)
+
+    def test_a_capitalised_stale_when_marker_is_refused_rather_than_ignored(self):
+        """The same gap in the other marker: the casing hid it from the unverifiable refusal."""
+        self.write_allow(f"# standing permission (#900)\n# Stale-when: 900\n{UNRELEASED}\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cannot read the marker", result.stderr)
+
+    def test_a_reason_that_only_mentions_expiry_mid_sentence_is_still_a_reason(self):
+        """The refusal is for a marker attempt at the start of a comment, not for the word."""
+        self.write_allow(f"# this note expires when #900 merges, so it is reflowed\n{UNRELEASED}\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("changelog-guard: clean", result.stdout)
+
+    def test_the_guard_prints_the_two_revisions_it_compares(self):
+        """A run has to say which base it took, or a caller cannot be held to the choice."""
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"changelog-guard: comparing base {self.base} with the working tree", result.stdout)
+
+    def test_the_guard_prints_the_head_revision_it_compares(self):
+        """The head side is printed too, so passing the base as the head is visible in the run."""
+        result = self.run_guard(self.base, "HEAD")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"changelog-guard: comparing base {self.base} with head HEAD", result.stdout)
+
     def test_the_same_revision_on_both_sides_does_not_fail_a_standing_entry(self):
         """The original #350 shape: base == HEAD, one standing entry, nothing removed."""
         body = f"# standing permission (#900)\n# expires: 2026-12-31\n{UNRELEASED}\n"
@@ -595,14 +638,17 @@ class LiveRepositoryTestCase(unittest.TestCase):
             self.skipTest("no origin/main to compare against")
         main = git_out("rev-parse", "origin/main").stdout.strip()
         head = git_out("rev-parse", "HEAD").stdout.strip()
-        # The base choice is asserted here, where it is made: a revert to HEAD leaves the module green
-        # while main's allowlist is empty, so nothing else would notice.
+        # The base choice is asserted at the call site, not only on live_base(): the guard prints the
+        # two revisions it compared and this reads that line back. An assertion on live_base() alone
+        # left the call site free - dropping the base argument there, or passing the head as the base,
+        # kept this module at 48 OK while the live run compared the head with itself (#350).
         self.assertEqual(base, git_out("merge-base", main, head).stdout.strip())
         if head != main:
             self.assertNotEqual(base, head, "the live guard compares this head with itself again (#350)")
         result = subprocess.run([GUARD, base, "HEAD"], cwd=ROOT, env=clean_env(), text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("changelog-guard: clean", result.stdout)
+        self.assertIn(f"changelog-guard: comparing base {base} with head HEAD", result.stdout)
 
     def test_this_changelogs_unreleased_notes_are_protected(self):
         live = text(CHANGELOG)
@@ -637,6 +683,37 @@ class LiveRepositoryTestCase(unittest.TestCase):
         result = subprocess.run([GUARD, "HEAD"], cwd=ROOT, env=clean_env(), text=True, capture_output=True)
         self.assertNotIn("no reason comment above it", result.stderr)
         self.assertTrue(os.path.isfile(ALLOW))
+
+
+class DocumentedRuleTestCase(unittest.TestCase):
+    """The rule a contributor reads is the rule the guard enforces (#350, L2).
+
+    #321's sentence - a merged entry left behind fails the next pull request - is false for a pending
+    permission, and the only lever that ends one, `# expires:`, was documented nowhere a contributor
+    looks. These read the two documents instead of the source.
+    """
+
+    @staticmethod
+    def flat(path):
+        """The document with its comment markers and line wrapping removed, so a phrase can be read."""
+        return " ".join(text(path).replace("#", " ").split())
+
+    def test_contributing_states_the_pending_rule_and_the_expiry_marker(self):
+        body = text(os.path.join(ROOT, "CONTRIBUTING.md"))
+        flat = self.flat(os.path.join(ROOT, "CONTRIBUTING.md"))
+        self.assertIn("# expires: YYYY-MM-DD", body)
+        self.assertIn("prints it as a NOTE and passes", flat)
+        self.assertNotIn("a merged entry left behind fails the next pull request", flat)
+        # The base's marker governs: bumping the date in a pull request is not a way to keep the entry.
+        self.assertIn("bumping the date in a pull request does not postpone an expiry", flat)
+
+    def test_the_allowlist_header_states_the_pending_rule_and_the_expiry_marker(self):
+        body = text(ALLOW)
+        flat = self.flat(ALLOW)
+        self.assertIn("# expires: YYYY-MM-DD", body)
+        self.assertIn("marker the base revision carries governs", flat.lower())
+        self.assertIn("refused as unreadable", flat)
+        self.assertIn("a deletion that has not happened yet", flat)
 
 
 class CiWiringTestCase(unittest.TestCase):

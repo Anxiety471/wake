@@ -242,9 +242,15 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   longer carries the line it permits to delete, so the change it allowed has merged - and while the base
   still carries that line it is printed as a NOTE, so it is still named in every run and removed when
   its deletion merges. `LiveRepositoryTestCase` compares `git merge-base origin/main HEAD` with `HEAD`,
-  the base the CI step compares, instead of `HEAD~1`, skips where `origin/main` is absent, and asserts
-  the base choice, because reverting it to `HEAD` stays green while the allowlist is empty
-  ([#240](https://github.com/Anxiety471/wake/issues/240)).
+  the base the CI step compares, instead of `HEAD~1`, and skips where `origin/main` is absent. The guard
+  now prints the two revisions it compares, and the test asserts that line against the merge base and
+  `HEAD`, so the choice is pinned where it is made: dropping the base argument at the call site, or
+  passing the head as the base, used to leave the module at 48 OK
+  ([#240](https://github.com/Anxiety471/wake/issues/240)). A date is the one staleness marker that needs
+  no network: `# expires: YYYY-MM-DD` in an entry's reason fails the guard once the day is past, and a
+  marker written any other way (`# Expires:`, or no colon) is now refused as unreadable rather than
+  read as a reason comment - an unread marker used to leave the entry standing forever. `CONTRIBUTING.md`
+  and this allowlist header state the rule that replaced #321 and document the marker.
 
 - **A suppression inside a linted file is pinned, so one comment cannot silence a whole check.** #185 closed the
   config files a linter loads on its own; a suppression comment is the same trust boundary one level

@@ -43,9 +43,18 @@ CI tests Python 3.9 to 3.13 on Ubuntu and pins ruff in `.github/workflows/ci.yml
   wrapped bullet's continuation lines start with two spaces - and an entry that matches no removed
   line is printed back. Remove the
   entry once the change has merged: an entry is a standing permission, not a note about one pull
-  request. The guard fails when the base branch's own allowlist carries an entry that matches no
-  line the base loses (#321), so a merged entry left behind fails the next pull request that does
-  not need it; an entry this pull request adds is only reported. The guard is not scoped to Unreleased - it accepts an entry for a released line too and
+  request. An entry the base branch already carries that matches no line the base loses is a
+  permission whose deletion has not happened yet: the guard prints it as a NOTE and passes. It fails
+  only when it is provably spent - the base no longer carries the line it permits to delete, so its
+  change has merged (#321) - or when its reason carries `# expires: YYYY-MM-DD` and that date has
+  passed (#350). Write the marker on its own comment line directly above the entry, in that exact
+  form: a marker the guard cannot read (`# Expires:`, `# expires` without the colon) is refused
+  rather than ignored, because an unread marker would make the entry a permission that never ends.
+  A deletion that has to wait for something outside the repository gets a date, not a `# stale-when:`
+  issue: staleness here is decided offline, so that marker is refused as unverifiable. The marker
+  the base branch carries governs, so bumping the date in a pull request does not postpone an expiry
+  that has already passed - the entry has to be removed in its own commit instead. An entry this
+  pull request adds is only reported. The guard is not scoped to Unreleased - it accepts an entry for a released line too and
   prints the released heading it came from, because dropping a released note is the owner's decision
   in the pull request, not a reflow.
 - One logical change per commit, with a message that says what and why.

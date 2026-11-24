@@ -41,6 +41,16 @@ if [ ! -f "$allow" ]; then
     exit 2
 fi
 
+# The revisions under comparison are printed, not just used: the test that guards the base choice can
+# only assert it if the guard says WHICH base it took, and a caller that passes the head as the base
+# (so the guard compares this head with itself) is then visible in the run, not only in the source
+# (#350, #240).
+if [ -n "$head" ]; then
+    echo "changelog-guard: comparing base $base with head $head"
+else
+    echo "changelog-guard: comparing base $base with the working tree"
+fi
+
 # An entry without a reason comment above it is refused: the entry is a permission someone will read
 # in review, so it has to say why. A reason covers the entry lines that follow it until a blank line,
 # because a reflowed bullet is several lines and they share one reason.
@@ -48,11 +58,30 @@ fi
 # that itself starts with # is written with a leading backslash (\### Fixed); a bare heading is a
 # comment. Indentation is part of the line - a wrapped bullet's continuation lines start with spaces -
 # so an entry that matches no removed line is reported back instead of being guessed at.
-if ! awk '
+if ! awk -v allow="$allow" '
     BEGIN { bad = 0 }
     { sub(/\r$/, "") }
     /^[ \t]*$/ { have = 0; next }
-    /^[ \t]*#/ { have = 1; next }
+    /^[ \t]*#/ {
+        have = 1
+        body = $0
+        sub(/^[ \t]*#[ \t]*/, "", body)
+        low = tolower(body)
+        # A marker nobody can read must not read as a standing permission. Any comment that opens
+        # with `expir` or `stale-when` in any casing is a marker attempt, and only the exact form is
+        # accepted: `# Expires: 2026-11-01` and `# expires 2026-11-01` are refused here, not read as
+        # a reason comment that leaves the entry standing forever (#350).
+        if (low ~ /^expir/ && body !~ /^expires:/) {
+            printf "changelog-guard: cannot read the marker at %s:%d: %s\n", allow, FNR, body > "/dev/stderr"
+            printf "  -> write it as # expires: YYYY-MM-DD, the only form this guard reads\n" > "/dev/stderr"
+            bad = 1
+        } else if (low ~ /^stale-when/ && body !~ /^stale-when:/) {
+            printf "changelog-guard: cannot read the marker at %s:%d: %s\n", allow, FNR, body > "/dev/stderr"
+            printf "  -> the only recognised form is # stale-when: <issue>, refused as unverifiable\n" > "/dev/stderr"
+            bad = 1
+        }
+        next
+    }
     {
         if (!have) {
             printf "changelog-guard: allowlist entry with no reason comment above it: %s\n", $0 > "/dev/stderr"
