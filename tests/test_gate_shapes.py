@@ -231,12 +231,15 @@ class GateStoreListingTests(StagedGateCase):
     prints as `io error: Permission denied` with no path, and the routes that do not touch the
     broken dir answer normally - so the guarantee sits in three handlers, not in the check, and one
     `except FileNotFoundError: return []` around the same call would drop it. A gate from v11 on
-    proves listability in `_check_store()` before any handler runs and names the dir it cannot read;
-    v9 and v10 do not carry it, and v10 is what that check has to be added to (v10 is newer than v9
-    and also carries the `ls -F` route #186 needs, so v11 = v10 + this check is the one that ships).
+    proves listability in `_check_store()` before any handler runs and names the dir it cannot read.
+    v9 carries that check and these tests pass against it, but v9 predates the `ls -F` route #186
+    needs, so installing it would put #186 back on the host; v10 is newer than v9, has that route
+    and lost the check, so v11 = v10 + this check is the one that ships (#195).
 
-    Against a v8 or v10 gate these tests fail. That is the point: the gate is installed before the client
-    that relies on it, so the staging directory shows the order the two artifacts ship in.
+    Against a v8 or v10 gate these tests fail. A pass against v9 says nothing about #186: this class
+    holds one of the two properties a gate has to have, not both. That is the point: the gate is
+    installed before the client that relies on it, so the staging directory shows the order the two
+    artifacts ship in.
     """
 
     ROUTES = ("thread list", "thread store read", "inbox active list")

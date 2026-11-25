@@ -194,6 +194,14 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Changed
 
+- **The gate tests say what v9 actually carries.** `GateStoreListingTests` claimed v9 and v10 both
+  lack the store-listability check, so a reader who ran the class against v9 got a pass with no
+  explanation. The v9 artifact (`e616c10e...`, 19,752 B) carries the check and the class passes
+  against it - 4 tests OK - while v8 (`fa5d3d28...`) and v10 (`50471d9f...`) fail it with
+  `io error: Permission denied`; what v9 lacks is the `ls -F` route #186 needs, and the whole
+  module fails 7 tests against it. The docstring now says that instead of a v9 verdict, and v11
+  stays the gate that ships ([#195](https://github.com/Anxiety471/wake/issues/195)).
+
 - **A host sets its store once in `/etc/wake/config.env`.** A deployment that kept the store
   somewhere other than the default patched the installed `bin/*` scripts, and every deploy put the
   patch back to `/var/lib/wake`, a directory the host does not have - so an installed
