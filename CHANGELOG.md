@@ -7,6 +7,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **A wake is silent by default, and the silence travels with it.** Joshua's rule (2026-11-26) is
+  that a bot-to-bot wake shows him that a message arrived, not the answer to it; a per-bot routine
+  clause made that a habit rather than a property of the message. `wake` now sends `silent: true` in
+  the payload and a one-line instruction at the end of `detail`, so a receiver needs no edit of its
+  own to stay quiet, `WAKE_SILENT=0` or `--chatty` turns it off for a machine or for one send, and
+  `--ask` records the flag on the thread so the answer inherits the tone of the question instead of
+  each bot deciding for itself. The one leg a flag cannot hide is the run a ring starts: a bot's
+  answer is rendered in its chat, so `--reply --no-ring` writes the answer to the thread store and
+  sends nothing, leaving the asker to read it with `wake --thread <id>` or `--inbox` - no run, so
+  nothing to render. A live session inbox is still pushed, because that is not a run.
+
 - **The webhook payload names its sender.** `wake` now sends `message` (the message before the
   host/user/cwd context is appended; for `--ask` and `--reply` the thread hint the CLI adds rides along,
   because the receiving API renders `message` as the chat text), `fromBotId` when the sender is a bot in
