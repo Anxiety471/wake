@@ -441,6 +441,35 @@ def threads_mine(sender):
     return sorted(mine, key=lambda x: x[1][0].get("ts", ""), reverse=True)
 
 
+def threads_addressed(sender):
+    """Threads another bot opened for `sender` that nobody has answered yet, newest first (#242).
+
+    `--inbox` lists what I asked; this lists what is waiting on me, which is how a silently
+    queued message is found: it started no run, so the next turn has to look.
+    """
+    alias = sender.split(":", 1)[1] if ":" in sender else sender
+    threads = threads_all()
+    if threads is None:
+        threads = threads_all_one_by_one()
+    if threads is None:
+        return None
+    if not threads and store_dir_unreadable():
+        # Same line as threads_mine: a store that could not be entered must never answer as an
+        # empty one, or a silently queued message reads as "nothing is waiting" (#168, #177).
+        return None
+    waiting = []
+    for tid, recs in threads:
+        if not recs:
+            continue
+        head = recs[0]
+        if head.get("to") != alias:
+            continue
+        if any(r.get("kind") == "reply" for r in recs):
+            continue
+        waiting.append((tid, recs))
+    return sorted(waiting, key=lambda x: x[1][0].get("ts", ""), reverse=True)
+
+
 # ---------- session inboxes: a live agent session reads these as its next message ----------
 INBOX = STATE + "/inbox"
 ACTIVE = INBOX + "/active"
@@ -669,7 +698,44 @@ def send(b, source, event, level, detail, ref, force=False, quiet=False):
         sys.exit(f"cannot reach {BASE}: {e.reason}")
 
 
-def ask(b, text, wait, level, source, force, no_send=False):
+def queue_silent(b, text, source, kind="note"):
+    """Record a message for a bot and ring nothing, so no run starts and no chat line can appear.
+
+    A wake is a Rakazo run, and a run's final answer is posted into the recipient's chat: the
+    platform decides that, not the payload, and a model always produces a final message, so
+    "answer without posting" is only ever a prompt (#242). The one structural answer is to start
+    no run. The record still lands in the shared store and the recipient finds it with
+    `wake --pending`; the cost is latency, paid in exchange for a guarantee.
+    """
+    tid = tid_new()
+    thread_append(
+        tid,
+        {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "from": source,
+            "owner": source,
+            "reply_to": "bot:" + b["alias"],
+            "kind": kind,
+            "text": text,
+            "to": b["alias"],
+            "inbox": inbox_of_session(),
+            "silent": True,
+        },
+    )
+    audit("silent", source, text, tid, b["alias"], 0)
+    print(
+        f"queued silently: thread {tid} for {b['alias']} - no run started, so nothing posts to its chat;"
+        " it finds it with wake --pending"
+    )
+    return tid
+
+
+def ask(b, text, wait, level, source, force, no_send=False, silent=False):
+    if silent:
+        # A silent ask is the same record a loud one writes, minus the doorbell: it waits for the
+        # recipient's next turn instead of starting one (#242).
+        queue_silent(b, text, source, kind="ask")
+        return 0
     tid = tid_new()
     thread_append(
         tid,
@@ -896,6 +962,12 @@ p.add_argument("--thread", metavar="ID", help="show one thread")
 p.add_argument("--inbox", action="store_true", help="my threads and their answers")
 p.add_argument("--notify", action="store_true", help="wake the asker bot when replying (default for bot askers)")
 p.add_argument("--no-send", action="store_true", help="record the thread without sending (tests)")
+p.add_argument(
+    "--silent",
+    action="store_true",
+    help="record the message and start no run: nothing can post to the recipient's chat, it reads it with --pending",
+)
+p.add_argument("--pending", action="store_true", help="threads waiting on me: addressed to me, no reply yet")
 p.add_argument("--setup", metavar="BOT", help="create (or with --rotate, replace) the webhook key for a bot")
 p.add_argument("--rotate", action="store_true")
 p.add_argument("--level", default="info", choices=["ok", "error", "info"])
@@ -922,6 +994,12 @@ a = p.parse_args()
 bots = load()
 if a.source is None:
     a.source = default_source()
+
+if a.silent and (a.all or a.ping or a.update or not (a.target or a.ask)):
+    sys.exit("--silent takes one target bot: it writes one thread and rings nothing")
+
+if a.silent and a.wait:
+    sys.exit("--silent starts no run, so --wait would wait on a bot that was never woken")
 
 if a.add or a.sync:
     if a.add:
@@ -999,6 +1077,22 @@ if a.me:
         )
     sys.exit(0)
 
+if a.pending:
+    waiting = threads_addressed(a.source)
+    if waiting is None:
+        sys.exit(
+            f"cannot read the thread store at {THREADS}: check WAKE_HOSTOPS (guest) and that the directory is readable."
+        )
+    if not waiting:
+        print(f"nothing is waiting on {a.source}")
+        sys.exit(0)
+    for tid, recs in waiting:
+        head = recs[0]
+        print(f"{tid}  from {head.get('from', '?')}  ({head.get('kind', 'ask')})  | {head.get('text', '')[:70]}")
+        for r in recs[1:]:
+            print(f"    [{r.get('from')}] {r.get('text', '')}"[:300])
+    sys.exit(0)
+
 if a.thread:
     recs = thread_read(a.thread)
     if recs is None:
@@ -1039,7 +1133,7 @@ if a.ask:
     words = ([a.target] if a.target else []) + a.message
     if not words:
         sys.exit('usage: wake --ask <bot> "<question>" [--wait 180]')
-    sys.exit(ask(b, " ".join(words), a.wait, a.level, a.source, a.force, a.no_send))
+    sys.exit(ask(b, " ".join(words), a.wait, a.level, a.source, a.force, a.no_send, a.silent))
 
 if a.setup:
     b = resolve(a.setup, bots) or sys.exit("unknown bot; see wake --list")
@@ -1075,6 +1169,9 @@ b = resolve(a.target, bots)
 if b and a.message:
     if b["kind"] == "private" and not a.allow_private:
         sys.exit(f"{b['name']} is private; add --allow-private to override")
+    if a.silent:
+        queue_silent(b, " ".join(a.message), a.source)
+        sys.exit(0)
     send(b, a.source, a.event, a.level, " ".join(a.message), a.ref, a.force)
     sys.exit(0)
 if not a.message:

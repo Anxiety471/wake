@@ -1205,6 +1205,93 @@ class ApiThreadReplyTests(WakeTestCase):
         self.assertIn("the asker cannot answer its own ask", r.stderr)
 
 
+class SilentDeliveryTests(WakeTestCase):
+    """#242: a wake is a run, and a run's final answer is posted into the recipient's chat, so
+    "answer without posting" can only ever be a prompt. Silence has to be structural: record the
+    message, ring nothing, and give the recipient a way to find what is waiting on it.
+    """
+
+    def thread(self, tid):
+        with open(os.path.join(self.state, "threads", tid + ".jsonl")) as f:
+            return [json.loads(x) for x in f]
+
+    def test_silent_send_records_a_thread_and_starts_no_run(self):
+        r = self.wake("engineer", "heads up, CI is red", "--silent")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("queued silently", r.stdout)
+        self.assertEqual(self.hook.requests, [], "a silent send rang the doorbell, so a run started")
+        tid = re.search(r"thread (\S+)", r.stdout).group(1)
+        [head] = self.thread(tid)
+        self.assertEqual((head["from"], head["to"], head["kind"]), ("human:tester", "engineer", "note"))
+        self.assertIs(head["silent"], True)
+
+    def test_silent_send_needs_no_webhook_key(self):
+        """The doorbell path needs a key; silence must not, or the mode is unusable on a bot whose
+        key was never minted."""
+        r = self.wake("engineer", "note", "--silent")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.hook.requests, [])
+
+    def test_silent_ask_is_found_by_pending_and_only_by_its_recipient(self):
+        r = self.wake("--ask", "engineer", "is the deploy done?", "--silent", env={"WAKE_SOURCE": "bot:coordinator"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.hook.requests, [], "a silent ask rang the doorbell, so a run started")
+        tid = re.search(r"thread (\S+)", r.stdout).group(1)
+        self.assertEqual(self.thread(tid)[0]["kind"], "ask")
+
+        r = self.wake("--pending", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(tid, r.stdout)
+        self.assertIn("from bot:coordinator", r.stdout)
+
+        r = self.wake("--pending", env={"WAKE_SOURCE": "bot:potato"})
+        self.assertNotIn(tid, r.stdout)
+        self.assertIn("nothing is waiting on bot:potato", r.stdout)
+
+    def test_pending_drops_a_thread_once_it_is_answered(self):
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("--ask", "engineer", "q", "--silent", env={"WAKE_SOURCE": "bot:coordinator"})
+        tid = re.search(r"thread (\S+)", r.stdout).group(1)
+        self.assertIn(tid, self.wake("--pending", env={"WAKE_SOURCE": "bot:engineer"}).stdout)
+        r = self.wake("--reply", tid, "done", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn(tid, self.wake("--pending", env={"WAKE_SOURCE": "bot:engineer"}).stdout)
+
+    @unittest.skipIf(IS_ROOT, ROOT_SKIP)
+    def test_pending_never_answers_an_unreadable_store_as_nothing_waiting(self):
+        """Same contract as --inbox (#168, #177): a store that cannot be entered is not an empty
+        one, or a silently queued message reads as "nothing is waiting on me"."""
+        # A store that holds a thread but cannot be searched: readable, not enterable, so the
+        # one-call read returns nothing and an empty answer would hide the message.
+        r = self.wake("engineer", "note", "--silent")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        os.chmod(os.path.join(self.state, "threads"), 0o644)
+        r = self.wake("--pending", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("cannot read the thread store", r.stderr)
+        self.assertNotIn("nothing is waiting", r.stdout)
+
+    def test_silent_refuses_a_bulk_target(self):
+        r = self.wake("--all", "hi", "--silent")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--silent takes one target bot", r.stderr)
+        self.assertEqual(self.hook.requests, [])
+
+    def test_silent_refuses_a_wait(self):
+        r = self.wake("--ask", "engineer", "q", "--silent", "--wait", "60")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--silent starts no run", r.stderr)
+        self.assertEqual(self.hook.requests, [])
+
+    def test_a_loud_wake_still_rings(self):
+        self.put_key("bot-engineer-0002")
+        r = self.wake("engineer", "heads up")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.hook.requests), 1)
+        self.assertEqual(self.hook.requests[0]["json"]["event"], "message")
+
+
 class DirectoryTests(WakeTestCase):
     def test_list_who_info_me(self):
         r = self.wake("--list")
