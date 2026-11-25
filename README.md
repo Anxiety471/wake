@@ -182,17 +182,28 @@ wake --ask engineer "why does CI fail on main?" --wait 180 # headless: block unt
 wake --ask engineer "..." --no-send                        # record the thread only (dry run)
 ```
 
+A wake is silent by default (`silent: true` in the payload, plus one bracketed sentence at the end of
+`detail` asking the receiver to post no chat output and answer in the thread store). `--chatty` turns it off
+for one send and `WAKE_SILENT=0` for a machine. The flag is recorded on the thread, and the answer inherits
+it from the question.
+
 The bot receives `<question> [thread <id>] reply: wake --reply <id> "YOUR ANSWER"` for a CLI thread. A thread opened through the API or MCP carries `ref: api-thread:<id>` and the API route instead: that id is in Postgres, not in the shared folder, so `wake --reply` reaches it only through the API (`WAKE_API` plus `WAKE_AGENT_TOKEN`, or the payload's `replyToken` exported as `WAKE_REPLY_TOKEN`).
 
 ### `--reply`: answer a thread
 
 ```sh
 wake --reply 1114-a3f2 "flaky test, fixed in #43"
+wake --reply 1114-a3f2 "noted, no action" --no-ring   # leave it in the store, wake nobody
 ```
 
 Only the thread's target (`reply_to`) or its owner may write to it (`--force` overrides). When the target answers:
 - owner is a bot → that bot's webhook is woken with event `reply` (always for bot senders, or with `--notify`);
 - owner is a human or session → the reply is appended to the owner's live inbox, if its process is still running.
+
+`--no-ring` sends nothing: the answer is written to the thread and the asker finds it with `wake --thread <id>`
+or `--inbox`. Use it when the answer needs no action, because a ring starts a run on the asker and a bot's
+answer to a run is rendered in its chat - the one part of a silent exchange a flag cannot hide, and the reason
+this option exists. A live session inbox is still pushed: that is not a run.
 
 ### `--inbox` and `--thread`
 
@@ -253,6 +264,13 @@ wake --pending                                      # the engineer's next turn f
 wake --reply 1114-a3f2 "done"                        # silent on a silent thread
 wake --reply 1114-a3f2 "done" --notify               # or ring the asker now
 ```
+
+One word, two flags, and the difference is where they act. `--silent` acts before the doorbell: it
+POSTs nothing, so no run exists to post anything. The `silent` field in the payload acts inside a run
+that does start: it is on by default (plus one bracketed sentence at the end of `detail`), `--chatty`
+turns it off for one send and `WAKE_SILENT=0` for a machine. A `--silent` send POSTs nothing, so
+`--chatty` has nothing to act on there; on a loud thread, `--no-ring` is the same choice as `--silent`
+for the answer, with the answer left in the thread store instead of a new one.
 
 ### `--setup`: create a webhook key
 
