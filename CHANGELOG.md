@@ -7,6 +7,12 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **The webhook payload names its sender.** `wake` now sends `message` (the text as written, without the
+  appended context), `fromBotId` when the sender is a bot in the registry, and `fromAgent` for an agent
+  harness outside the fleet (`skill:` or `harness:` sources, shown as "Oh My Pi" for `omp`). The receiving
+  side can then show a message as coming from that bot; the id is a label, not proof of who sent it.
+  This is the client half of hivemind `7469aa5d1`, which the deployed API already accepts.
+
 - **The inline pin's control now runs in CI, in the one job that installs the linters.** The
   scanner tests ran in the Python jobs; the two tests that prove a directive really takes
   `eslint apps` from rc 1 to rc 0 - and `prettier --check` the same way - need `node_modules` and
