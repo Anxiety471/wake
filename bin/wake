@@ -906,9 +906,9 @@ def reply(tid, text, source, notify, force, silent=False, notify_explicit=False)
             f"thread {tid} already has its answer from {answers[0].get('from', '?')}: one round only, so A to B to A cannot ping-pong. "
             f"Ask again with wake --ask ... if you need more (--force to override)"
         )
-    # An answer is information, not a task: a reply rings nobody unless --notify is given, so it
-    # lands in the asker's --pending list instead of starting a run that posts a chat line. A
-    # thread opened silently keeps that channel too, and only an explicit --notify breaks it (#242).
+    # A thread opened silently was opened on the silent channel, so its answer rides the same one
+    # unless the replier asks for a ring: otherwise the answer starts a run and posts a chat line,
+    # which is the whole cost --silent was chosen to avoid (#242).
     if head.get("silent") is True and not notify_explicit:
         silent = True
     mine_inbox = os.environ.get("WAKE_INBOX", "")
@@ -929,8 +929,8 @@ def reply(tid, text, source, notify, force, silent=False, notify_explicit=False)
     if is_target:
         if owner.startswith("bot:") and owner[4:] not in ("container", source[4:]):
             tgt = resolve(owner[4:], load())
-            if tgt:
-                if silent or not notify:
+            if tgt and notify:
+                if silent:
                     queue_silent(tgt, f"reply on thread {tid}: {text}", source, kind="reply", what="reply")
                 else:
                     send(
@@ -951,7 +951,7 @@ def reply(tid, text, source, notify, force, silent=False, notify_explicit=False)
     else:
         tgt = resolve(reply_to[4:], load()) if reply_to.startswith("bot:") else None
         if tgt:
-            if silent or not notify:
+            if silent:
                 queue_silent(
                     tgt,
                     f"answer on thread {tid} from {source} (no reply needed): {text}",
@@ -1155,7 +1155,7 @@ if a.reply:
             a.reply[0],
             " ".join(a.reply[1:]),
             a.source,
-            a.notify,
+            a.notify or a.source.startswith("bot:"),
             a.force,
             a.silent,
             a.notify,
