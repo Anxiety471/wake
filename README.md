@@ -241,8 +241,18 @@ and it takes one target bot: `--all`, `--update` and `--ping` are refused with i
 bulk silent send is a queue nobody reads.
 
 Use a loud wake when the bot must act now, and accept that its run may post a line in its chat.
-Use `--reply` for answers: it is already silent by construction - a store write, plus an
-optional notify.
+The answer leg matters as much as the ask. `--reply` writes the store, then notifies the asker,
+and a bot's notify is a wake - a run, and a chat line in the asker's chat. So a thread opened
+with `--silent` is answered on the same channel: the reply's notify is queued instead of rung,
+and the asker finds it with `wake --pending`. `--notify` still rings on a silent thread when
+the answer is urgent, and a loud ask keeps its loud answer.
+
+```sh
+wake --ask engineer "is the deploy done?" --silent   # nothing rings, no run starts
+wake --pending                                      # the engineer's next turn finds it
+wake --reply 1114-a3f2 "done"                        # silent on a silent thread
+wake --reply 1114-a3f2 "done" --notify               # or ring the asker now
+```
 
 ### `--setup`: create a webhook key
 

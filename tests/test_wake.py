@@ -1272,6 +1272,51 @@ class SilentDeliveryTests(WakeTestCase):
         self.assertIn("cannot read the thread store", r.stderr)
         self.assertNotIn("nothing is waiting", r.stdout)
 
+    def test_a_silent_ask_keeps_its_answer_silent(self):
+        """The reply leg is where silence used to leak: a bot replier notifies the asker by
+        default, that notify is a wake, and a wake posts a chat line in the asker's chat. A thread
+        opened silently is answered on the same channel, so nothing rings (#242)."""
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("--ask", "engineer", "is the deploy done?", "--silent", env={"WAKE_SOURCE": "bot:coordinator"})
+        tid = re.search(r"thread (\S+)", r.stdout).group(1)
+        self.assertEqual(self.hook.requests, [])
+        r = self.wake("--reply", tid, "done at 03:40", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("queued silently", r.stdout)
+        self.assertEqual(self.hook.requests, [], "the answer rang the asker, so its run posts a chat line")
+        recs = self.thread(tid)
+        self.assertEqual([x["kind"] for x in recs], ["ask", "reply"])
+        self.assertEqual(recs[-1]["text"], "done at 03:40")
+        self.assertNotIn(tid, self.wake("--pending", env={"WAKE_SOURCE": "bot:engineer"}).stdout)
+
+    def test_an_explicit_notify_still_rings_on_a_silent_thread(self):
+        """Silence is the default on a silent thread, not a gag: a replier that needs the asker to
+        act now passes --notify and gets the ordinary wake."""
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("--ask", "engineer", "q", "--silent", env={"WAKE_SOURCE": "bot:coordinator"})
+        tid = re.search(r"thread (\S+)", r.stdout).group(1)
+        r = self.wake("--reply", tid, "done", "--notify", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.hook.requests), 1, "--notify did not ring the asker")
+
+    def test_a_loud_thread_still_rings_its_answer(self):
+        """The auto-silent rule is scoped to silent threads: a loud ask keeps a loud answer."""
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("--ask", "engineer", "q", env={"WAKE_SOURCE": "bot:coordinator"})
+        tid = re.search(r"thread (\S+)", r.stdout).group(1)
+        r = self.wake("--reply", tid, "done", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.hook.requests), 2, "the answer to a loud ask stopped ringing")
+
+    def test_pending_names_the_reply_command(self):
+        r = self.wake("--ask", "engineer", "q", "--silent", env={"WAKE_SOURCE": "bot:coordinator"})
+        tid = re.search(r"thread (\S+)", r.stdout).group(1)
+        r = self.wake("--pending", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertIn("wake --reply " + tid, r.stdout)
+
     def test_silent_refuses_a_bulk_target(self):
         r = self.wake("--all", "hi", "--silent")
         self.assertEqual(r.returncode, 1)
