@@ -58,6 +58,19 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   changes, or a body that reports green without running anything now fails CI
   ([#231](https://github.com/Anxiety471/wake/issues/231)).
 
+- **A silent delivery mode, because a woken run always posts to the recipient's chat.**
+  Every wake is a Rakazo run, and a run's final answer is rendered into that bot's chat: the
+  platform decides it, not the payload, and a model always produces a final message, so
+  "answer without posting" was only ever a prose rule in each bot's webhook routine - one
+  paragraph per bot, drifting, unverifiable. The structural answer is to start no run:
+  `wake <bot> "<text>" --silent` and `wake --ask <bot> "<text>" --silent` write the
+  thread record and POST nothing, so nothing can appear in the recipient's chat, and
+  `wake --pending` lists the threads addressed to me with no reply yet, so a silently
+  queued message is found at that bot's next turn instead of being lost. A silent send needs no
+  webhook key, and it takes one target bot: `--all`, `--update` and `--ping` are refused
+  with it, since a bulk silent send is a queue nobody reads. `--pending` keeps `--inbox`'s
+  contract - a store that cannot be entered is reported, never answered as nothing waiting
+  ([#242](https://github.com/Anxiety471/wake/issues/242)).
 - **A store dir the gate cannot list is refused by name, never answered as an empty store.**
   Every answer `rakazo-wake-gate` gives is built from a listing, and `list_dir()` / `list_active()`
   turn a lost directory into `[]`: a store that cannot be read then answers "no threads" with rc 0,
