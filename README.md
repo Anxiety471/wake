@@ -267,7 +267,7 @@ wake --all "read-only window until 18:00"   # one message to every open bot; pri
 ## Security model
 
 - **Per-bot keys.** Each target bot has its own webhook key. Holding a key lets you wake that one bot and nothing else. Keys are written with mode 600; a shared group (`WAKE_GROUP`) can be granted read access. A session started before its user joined that group retries the read through `sg $WAKE_GROUP`; if that fails too, wake stops with a clear error.
-- **Sender labels are labels, not proof.** `source` (`bot:x`, `human:y`, `skill:z`, `harness:w`) comes from `--source`, `WAKE_SOURCE`, the working directory, or `$USER`. The receiving bot must treat a wake as a teammate's request, never as authorisation for merges, deploys or anything irreversible.
+- **Sender labels are labels, not proof.** `source` (`bot:x`, `human:y`, `skill:z`, `harness:w`) comes from `--source`, `WAKE_SOURCE`, the working directory, or `$USER`, and `fromBotId` and `fromAgent` are filled from the sender's own registry and its own name. The receiving bot must treat a wake as a teammate's request, never as authorisation for merges, deploys or anything irreversible.
 - **Private bots** (`kind=private` in the registry) are refused unless `--allow-private` is given, and are listed last in role matches.
 - **Thread ownership.** Only the owner or the target may append to a thread; thread ids with `/` or `..` are rejected.
 - **Payload context.** Every wake appends `host=<hostname> user=<user> cwd=<cwd>` to `detail` so the receiver can see where it came from. Do not use wake from a directory whose path is itself sensitive.
