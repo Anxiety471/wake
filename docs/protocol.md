@@ -17,11 +17,19 @@ User-Agent: wake-cli/2.1
   "message":   "<the text before the host context is appended>",  // omitted when the body would pass 60,000 bytes
   "event":     "message",              // message | request (ask) | reply | command_end | hook event name
   "level":     "info",                 // ok | info | error
+  "silent":    true,                   // the receiver posts no chat output; WAKE_SILENT=0 or --chatty sends false
   "detail":    "<text> | host=<hostname> user=<user> cwd=<cwd>",
   "ref":       "thread:<id>",          // or "api-thread:<id>" / "" / --ref
   "time":      "2026-01-31T12:00:00+0000"
 }
 ```
+
+`silent` is the rule as data, so a receiver does not have to infer it from prose: a wake is a message
+between bots and the human should see that one arrived, not the answer to it. The CLI also appends the
+same rule as one bracketed sentence at the end of `detail`, because a receiver that renders `detail`
+still needs to be told; `WAKE_SILENT=0` or `--chatty` sends `false` and appends nothing. A thread opened
+silent keeps it in its first record and every answer inherits it, so the notice that wakes the asker
+carries it too.
 
 `message` is the text before the sender appends `host=`, `user=` and `cwd=`. It is not always the bare
 sentence: `--ask` appends `[thread <id>] reply: wake --reply <id> "YOUR ANSWER"` to the text it sends, and

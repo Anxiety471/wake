@@ -2345,3 +2345,105 @@ class WebhookSenderTests(WakeTestCase):
             "time",
         ):
             self.assertIn(f'"{field}":', block, f"docs/protocol.md does not list the {field!r} field")
+
+
+class SilenceTests(WakeTestCase):
+    """A wake is a message between bots: the human should see that one arrived, not the answer.
+
+    The flag has to survive the whole chain, or the receiver has to guess from prose: the payload
+    says it, the thread record keeps it, and a reply inherits it from the ask it answers.
+    """
+
+    TAIL = "post no chat output to the human"
+
+    def test_a_wake_is_silent_by_default(self):
+        self.put_key("bot-engineer-0002")
+        r = self.wake("engineer", "hello")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        self.assertIs(req["json"]["silent"], True)
+        self.assertIn(self.TAIL, req["json"]["detail"])
+
+    def test_chatty_turns_it_off_for_one_send(self):
+        self.put_key("bot-engineer-0002")
+        r = self.wake("engineer", "hello", "--chatty")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        self.assertIs(req["json"]["silent"], False)
+        self.assertNotIn(self.TAIL, req["json"]["detail"])
+
+    def test_the_config_turns_it_off_for_every_send(self):
+        self.put_key("bot-engineer-0002")
+        r = self.wake("engineer", "hello", env={"WAKE_SILENT": "0"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        self.assertIs(req["json"]["silent"], False)
+        self.assertNotIn(self.TAIL, req["json"]["detail"])
+
+    def test_the_ask_record_keeps_the_silence_and_the_reply_inherits_it(self):
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("--ask", "engineer", "why", env={"WAKE_SOURCE": "bot:coordinator"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        tid = re.search(r"thread (\S+) opened", r.stdout).group(1)
+        path = os.path.join(self.state, "threads", tid + ".jsonl")
+        with open(path) as f:
+            head = json.loads(f.readline())
+        self.assertIs(head["silent"], True)
+
+        r = self.wake("--reply", tid, "because", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(path) as f:
+            reply = [json.loads(x) for x in f][1]
+        self.assertIs(reply["silent"], True)
+        # the notice that wakes the asker carries it too, or the asker's run turns chatty
+        notice = self.hook.requests[1]["json"]
+        self.assertIs(notice["silent"], True)
+        self.assertIn(self.TAIL, notice["detail"])
+
+    def test_a_chatty_ask_makes_its_reply_chatty(self):
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("--ask", "engineer", "why", "--chatty", env={"WAKE_SOURCE": "bot:coordinator"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        tid = re.search(r"thread (\S+) opened", r.stdout).group(1)
+        r = self.wake("--reply", tid, "because", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIs(self.hook.requests[1]["json"]["silent"], False)
+
+    def test_no_ring_leaves_the_answer_in_the_store_and_starts_no_run(self):
+        """The one leg a flag cannot hide is the run a ring starts: a bot's answer is rendered in
+        its chat. Unrung, there is no run, so there is nothing to render.
+        """
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("--ask", "engineer", "why", env={"WAKE_SOURCE": "bot:coordinator"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        tid = re.search(r"thread (\S+) opened", r.stdout).group(1)
+        self.assertEqual(len(self.hook.requests), 1)
+
+        r = self.wake("--reply", tid, "because", "--no-ring", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("no ring (--no-ring)", r.stdout)
+        self.assertEqual(len(self.hook.requests), 1)  # the ask only: no run was started
+        with open(os.path.join(self.state, "threads", tid + ".jsonl")) as f:
+            self.assertEqual([json.loads(x)["kind"] for x in f], ["ask", "reply"])
+
+        # and the asker still finds it, in the store rather than in its chat
+        r = self.wake("--thread", tid)
+        self.assertIn("bot:engineer (reply): because", r.stdout)
+
+    def test_no_ring_does_not_suppress_the_session_inbox(self):
+        """A session inbox is not a run: pushing there is how a human's own thread gets answered."""
+        self.put_key("bot-engineer-0002")
+        inbox = os.path.join(self.state, "inbox", "s1.jsonl")
+        os.makedirs(os.path.join(self.state, "inbox", "active"))
+        with open(os.path.join(self.state, "inbox", "active", "s1.json"), "w") as f:
+            json.dump({"inbox": inbox, "pid": os.getpid()}, f)
+        r = self.wake("--ask", "engineer", "why", env={"WAKE_SOURCE": "skill:agent", "WAKE_INBOX": inbox})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        tid = re.search(r"thread (\S+) opened", r.stdout).group(1)
+        r = self.wake("--reply", tid, "done", "--no-ring", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("delivered into the owner's session", r.stdout)
+        self.assertEqual(len(slurp(inbox).splitlines()), 1)

@@ -29,6 +29,14 @@ THREADS = STATE + "/threads"  # on the host: shared by every bot and session tha
 KEY_HELPER = CFG["WAKE_KEY_HELPER"]
 GROUP = CFG["WAKE_GROUP"]
 DEFAULT_BOT = CFG["WAKE_BOT"]
+# A wake is a message between bots; the human should see that one arrived, not the answer to it.
+# The flag rides in the payload (silent) and as a tail on detail, so a receiver needs no per-bot
+# routine edit to stay quiet. WAKE_SILENT=0 or --chatty turns it off for one send.
+SILENT = str(CFG["WAKE_SILENT"]).strip().lower() not in ("0", "false", "no", "off")
+SILENT_TAIL = (
+    "[silent wake: post no chat output to the human; answer in the thread store (wake --reply) "
+    "or message_bot, then end the turn with no chat message]"
+)
 q = shlex.quote
 AGENT_NAMES = {"omp": "Oh My Pi"}  # display names for agent harnesses; others show their label as is
 # The API accepts a 64 KiB body (413 above it). `message` repeats most of `detail`, so a long wake
@@ -613,13 +621,17 @@ def read_key(path):
         return r.stdout.strip()
 
 
-def send(b, source, event, level, detail, ref, force=False, quiet=False):
+def send(b, source, event, level, detail, ref, force=False, quiet=False, silent=None):
+    if silent is None:
+        silent = SILENT
     if not BASE:
         sys.exit("WAKE_API_BASE is not set (env or config.env), e.g. https://bots.example.com/api/v1/bots")
     depth = guard(b, force)
     key = read_key(ensure_key(b))
     message = detail
     detail = (detail + " | " + context()).strip(" |")
+    if silent:
+        detail = detail + " | " + SILENT_TAIL
     # The sending bot's id lets the chats show the message as one bot to another. A label, not proof.
     sender = next((x for x in load() if "bot:" + x["alias"] == source), None) if os.path.exists(REGISTRY) else None
     # An agent outside the bot fleet (skill:omp, harness:x) shows under its own name, never as a bot.
@@ -633,6 +645,7 @@ def send(b, source, event, level, detail, ref, force=False, quiet=False):
         "message": message,
         "event": event,
         "level": level,
+        "silent": bool(silent),
         "detail": detail,
         "ref": ref,
         "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -669,7 +682,9 @@ def send(b, source, event, level, detail, ref, force=False, quiet=False):
         sys.exit(f"cannot reach {BASE}: {e.reason}")
 
 
-def ask(b, text, wait, level, source, force, no_send=False):
+def ask(b, text, wait, level, source, force, no_send=False, silent=None):
+    if silent is None:
+        silent = SILENT
     tid = tid_new()
     thread_append(
         tid,
@@ -682,11 +697,12 @@ def ask(b, text, wait, level, source, force, no_send=False):
             "text": text,
             "to": b["alias"],
             "inbox": inbox_of_session(),
+            "silent": bool(silent),
         },
     )
     detail = f'{text} [thread {tid}] reply: wake --reply {tid} "YOUR ANSWER"'
     if not no_send:
-        send(b, source, "request", level, detail, "thread:" + tid, force)
+        send(b, source, "request", level, detail, "thread:" + tid, force, silent=silent)
     else:
         print(f"[dry-run] would ask {b['alias']}: {detail}")
     audit("ask", source, text, tid, b["alias"], 99 if no_send else 0)
@@ -793,7 +809,7 @@ def api_reply(tid, text):
         sys.exit(f"cannot reach the wake API at {base} to answer {tid}: {e.reason}")
 
 
-def reply(tid, text, source, notify, force):
+def reply(tid, text, source, notify, force, silent=None, no_ring=False):
     recs = thread_read(tid)
     if recs is None:
         sys.exit(
@@ -851,15 +867,40 @@ def reply(tid, text, source, notify, force):
         sys.exit(
             f"thread {tid} is owned by {owner} and replies go to {reply_to}; {source} is neither, so it cannot answer. Use --force to override."
         )
-    thread_append(tid, {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "from": source, "kind": "reply", "text": text})
+    if silent is None:
+        # The asker set the tone of the exchange; the answer inherits it unless --chatty says otherwise.
+        silent = bool(head.get("silent", SILENT))
+    thread_append(
+        tid,
+        {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "from": source,
+            "kind": "reply",
+            "text": text,
+            "silent": bool(silent),
+        },
+    )
     audit("reply", source, text, tid, reply_to, 0)
     print(f"replied on thread {tid} (owner {owner}, reply_to {reply_to}): {text}")
     ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     if is_target:
         if owner.startswith("bot:") and owner[4:] not in ("container", source[4:]):
             tgt = resolve(owner[4:], load())
-            if tgt and notify:
-                send(tgt, source, "reply", "info", f"reply on thread {tid}: {text}", "thread:" + tid, force)
+            if tgt and notify and no_ring:
+                # A ring starts a run on the asker, and a run's answer is the one thing this flag
+                # cannot hide. Unrung, the reply waits in the store: no run, so nothing to leak.
+                print(f"  no ring (--no-ring): {owner} reads it with: wake --thread {tid}  (or --inbox)")
+            elif tgt and notify:
+                send(
+                    tgt,
+                    source,
+                    "reply",
+                    "info",
+                    f"reply on thread {tid}: {text}",
+                    "thread:" + tid,
+                    force,
+                    silent=silent,
+                )
         else:
             box = inbox_active(head.get("inbox") or "")
             if inbox_push(box, {"from": source, "kind": "reply", "thread": tid, "text": text, "ts": ts}):
@@ -868,7 +909,9 @@ def reply(tid, text, source, notify, force):
                 print("  no live session inbox found; the owner reads the thread with: wake --thread " + tid)
     else:
         tgt = resolve(reply_to[4:], load()) if reply_to.startswith("bot:") else None
-        if tgt:
+        if tgt and no_ring:
+            print(f"  no ring (--no-ring): {reply_to} reads it with: wake --thread {tid}  (or --inbox)")
+        elif tgt:
             send(
                 tgt,
                 source,
@@ -877,6 +920,7 @@ def reply(tid, text, source, notify, force):
                 f"answer on thread {tid} from {source} (no reply needed): {text}",
                 "",
                 force,
+                silent=silent,
             )
             print(f"  woke {reply_to} with the reply")
     return 0
@@ -896,6 +940,12 @@ p.add_argument("--thread", metavar="ID", help="show one thread")
 p.add_argument("--inbox", action="store_true", help="my threads and their answers")
 p.add_argument("--notify", action="store_true", help="wake the asker bot when replying (default for bot askers)")
 p.add_argument("--no-send", action="store_true", help="record the thread without sending (tests)")
+p.add_argument(
+    "--no-ring",
+    dest="no_ring",
+    action="store_true",
+    help="reply without waking the asker: the answer waits in the thread store, so no run starts",
+)
 p.add_argument("--setup", metavar="BOT", help="create (or with --rotate, replace) the webhook key for a bot")
 p.add_argument("--rotate", action="store_true")
 p.add_argument("--level", default="info", choices=["ok", "error", "info"])
@@ -904,6 +954,14 @@ p.add_argument("--ref", default="")
 p.add_argument("--source", default=None, help="sender label kind:name (default: WAKE_SOURCE, own bot, or human:$USER)")
 p.add_argument("--allow-private", action="store_true")
 p.add_argument("--force", action="store_true", help="skip loop guard")
+p.add_argument(
+    "--silent",
+    dest="silent",
+    action="store_true",
+    default=None,
+    help="the receiver posts no chat output (default: WAKE_SILENT, normally on)",
+)
+p.add_argument("--chatty", dest="silent", action="store_false", help="let the receiver's answer show in its chat")
 p.add_argument("--sync", action="store_true", help="push the bot list to the host copy")
 p.add_argument("--who", nargs="+", metavar="WORD", help="list bots whose role matches these words")
 p.add_argument(
@@ -919,6 +977,8 @@ p.add_argument(
 )
 p.add_argument("--all", metavar="MESSAGE", help="send one message to every open bot (private bots are skipped)")
 a = p.parse_args()
+if a.silent is not None:
+    SILENT = a.silent
 bots = load()
 if a.source is None:
     a.source = default_source()
@@ -1030,7 +1090,17 @@ if a.inbox:
 if a.reply:
     if len(a.reply) < 2:
         sys.exit('usage: wake --reply <thread-id> "YOUR ANSWER"')
-    sys.exit(reply(a.reply[0], " ".join(a.reply[1:]), a.source, a.notify or a.source.startswith("bot:"), a.force))
+    sys.exit(
+        reply(
+            a.reply[0],
+            " ".join(a.reply[1:]),
+            a.source,
+            a.notify or a.source.startswith("bot:"),
+            a.force,
+            a.silent,
+            a.no_ring,
+        )
+    )
 
 if a.ask:
     b = resolve(a.ask, bots) or sys.exit("unknown bot; see wake --list")
@@ -1039,7 +1109,7 @@ if a.ask:
     words = ([a.target] if a.target else []) + a.message
     if not words:
         sys.exit('usage: wake --ask <bot> "<question>" [--wait 180]')
-    sys.exit(ask(b, " ".join(words), a.wait, a.level, a.source, a.force, a.no_send))
+    sys.exit(ask(b, " ".join(words), a.wait, a.level, a.source, a.force, a.no_send, a.silent))
 
 if a.setup:
     b = resolve(a.setup, bots) or sys.exit("unknown bot; see wake --list")
