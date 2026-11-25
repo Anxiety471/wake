@@ -2251,3 +2251,38 @@ class SuiteLeavesNoBytecodeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WebhookSenderTests(WakeTestCase):
+    """The webhook payload names the sender: a registered bot by id, an agent harness by its
+    display name, and carries the raw message apart from the appended context."""
+
+    def test_registered_bot_sender_gets_from_bot_id(self):
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("engineer", "PR", "#42", "is", "ready", env={"WAKE_SOURCE": "bot:coordinator"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        body = req["json"]
+        self.assertEqual(body["fromBotId"], "bot-coordinator-0001")
+        self.assertNotIn("fromAgent", body)
+        self.assertEqual(body["message"], "PR #42 is ready")
+        self.assertTrue(body["detail"].startswith("PR #42 is ready"))
+
+    def test_agent_harness_sender_gets_display_name(self):
+        self.put_key("bot-engineer-0002")
+        r = self.wake("engineer", "PR", "#42", env={"WAKE_SOURCE": "skill:omp"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        body = req["json"]
+        self.assertEqual(body["fromAgent"], "Oh My Pi")
+        self.assertNotIn("fromBotId", body)
+        self.assertEqual(body["message"], "PR #42")
+
+    def test_unknown_source_gets_neither_field(self):
+        self.put_key("bot-engineer-0002")
+        r = self.wake("engineer", "PR", "#42", env={"WAKE_SOURCE": "human:tester"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        self.assertNotIn("fromBotId", req["json"])
+        self.assertNotIn("fromAgent", req["json"])
