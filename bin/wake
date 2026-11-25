@@ -30,6 +30,10 @@ KEY_HELPER = CFG["WAKE_KEY_HELPER"]
 GROUP = CFG["WAKE_GROUP"]
 DEFAULT_BOT = CFG["WAKE_BOT"]
 q = shlex.quote
+AGENT_NAMES = {"omp": "Oh My Pi"}  # display names for agent harnesses; others show their label as is
+# The API accepts a 64 KiB body (413 above it). `message` repeats most of `detail`, so a long wake
+# would double past that and be lost; drop the duplicate once the encoded payload passes this.
+PAYLOAD_MAX = 60000
 
 
 def load():
@@ -614,16 +618,28 @@ def send(b, source, event, level, detail, ref, force=False, quiet=False):
         sys.exit("WAKE_API_BASE is not set (env or config.env), e.g. https://bots.example.com/api/v1/bots")
     depth = guard(b, force)
     key = read_key(ensure_key(b))
+    message = detail
     detail = (detail + " | " + context()).strip(" |")
+    # The sending bot's id lets the chats show the message as one bot to another. A label, not proof.
+    sender = next((x for x in load() if "bot:" + x["alias"] == source), None) if os.path.exists(REGISTRY) else None
+    # An agent outside the bot fleet (skill:omp, harness:x) shows under its own name, never as a bot.
+    kind, _, label = source.partition(":")
+    agent = AGENT_NAMES.get(label, label) if kind in ("skill", "harness") and label else ""
     payload = {
         "depth": depth,
         "source": source,
+        **({"fromBotId": sender["id"]} if sender else {}),
+        **({"fromAgent": agent} if agent and not sender else {}),
+        "message": message,
         "event": event,
         "level": level,
         "detail": detail,
         "ref": ref,
         "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
+    if len(json.dumps(payload).encode()) > PAYLOAD_MAX:
+        # The chip is display text and the receiver falls back to `detail`; a lost wake is worse.
+        payload.pop("message", None)
     idem = hashlib.sha256(f"{b['id']}|{source}|{event}|{detail}|{int(time.time() // 600)}".encode()).hexdigest()[:32]
     req = urllib.request.Request(
         f"{BASE}/{b['id']}/webhook",

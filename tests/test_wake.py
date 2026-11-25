@@ -2251,3 +2251,97 @@ class SuiteLeavesNoBytecodeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WebhookSenderTests(WakeTestCase):
+    """The webhook payload names the sender: a registered bot by id, an agent harness by its
+    display name, and carries the message apart from the appended context. The message is the
+    duplicate the sender drops first when a wake would otherwise pass the API's body limit."""
+
+    def test_registered_bot_sender_gets_from_bot_id(self):
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("engineer", "PR", "#42", "is", "ready", env={"WAKE_SOURCE": "bot:coordinator"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        body = req["json"]
+        self.assertEqual(body["fromBotId"], "bot-coordinator-0001")
+        self.assertNotIn("fromAgent", body)
+        self.assertEqual(body["message"], "PR #42 is ready")
+        self.assertTrue(body["detail"].startswith("PR #42 is ready"))
+
+    def test_agent_harness_sender_gets_display_name(self):
+        self.put_key("bot-engineer-0002")
+        r = self.wake("engineer", "PR", "#42", env={"WAKE_SOURCE": "skill:omp"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        body = req["json"]
+        self.assertEqual(body["fromAgent"], "Oh My Pi")
+        self.assertNotIn("fromBotId", body)
+        self.assertEqual(body["message"], "PR #42")
+
+    def test_unknown_source_gets_neither_field(self):
+        self.put_key("bot-engineer-0002")
+        r = self.wake("engineer", "PR", "#42", env={"WAKE_SOURCE": "human:tester"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        self.assertNotIn("fromBotId", req["json"])
+        self.assertNotIn("fromAgent", req["json"])
+
+    def test_ask_and_reply_carry_the_thread_hint_in_message(self):
+        """message is the text before the context, not the bare sentence: ask and reply have already
+        had the routing hint added by the time send() copies it, and CHANGELOG.md says so."""
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("--ask", "engineer", "why is CI red", env={"WAKE_SOURCE": "bot:coordinator"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        tid = re.search(r"thread (\S+) opened", r.stdout).group(1)
+        self.assertEqual(
+            self.hook.requests[0]["json"]["message"],
+            f'why is CI red [thread {tid}] reply: wake --reply {tid} "YOUR ANSWER"',
+        )
+        r = self.wake("--reply", tid, "flaky", "test", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.hook.requests[1]["json"]["message"], f"reply on thread {tid}: flaky test")
+
+    def test_long_detail_drops_the_duplicate_message(self):
+        """message repeats detail, so a wake near the API 64 KiB body limit would be refused
+        (413) and lost. Past 60,000 bytes the duplicate goes and the receiver falls back to detail."""
+        self.put_key("bot-engineer-0002")
+        short = "x" * 20000
+        r = self.wake("engineer", short)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        body = self.hook.requests[0]["json"]
+        self.assertEqual(body["message"], short)
+        self.assertLessEqual(len(json.dumps(body).encode()), 65536)
+
+        long = "y" * 40000
+        r = self.wake("engineer", long)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        body = self.hook.requests[1]["json"]
+        self.assertFalse(
+            "message" in body, f"the duplicate message must go; the body was {len(json.dumps(body).encode())} bytes"
+        )
+        self.assertTrue(body["detail"].startswith(long))
+        self.assertLessEqual(len(json.dumps(body).encode()), 65536, "the body the API would refuse")
+
+    def test_protocol_doc_lists_every_payload_field(self):
+        """docs/protocol.md is how a receiver is built; a field send() emits but the doc omits is
+        invisible to every implementer, so name each one there."""
+        with open(os.path.join(ROOT, "docs", "protocol.md"), encoding="utf-8") as f:
+            text = f.read()
+        fence = chr(96) * 3
+        block = re.search("## Webhook request\n\n" + fence + "\n(.*?)" + fence, text, re.S).group(1)
+        for field in (
+            "depth",
+            "source",
+            "fromBotId",
+            "fromAgent",
+            "message",
+            "event",
+            "level",
+            "detail",
+            "ref",
+            "time",
+        ):
+            self.assertIn(f'"{field}":', block, f"docs/protocol.md does not list the {field!r} field")

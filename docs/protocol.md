@@ -10,15 +10,23 @@ Idempotency-Key: <32 hex chars: sha256(bot-id|source|event|detail|unix_time//600
 User-Agent: wake-cli/2.1
 
 {
-  "depth":  0,                         // WAKE_DEPTH of the sender
-  "source": "bot:coordinator",         // sender label kind:name
-  "event":  "message",                 // message | request (ask) | reply | command_end | hook event name
-  "level":  "info",                    // ok | info | error
-  "detail": "<text> | host=<hostname> user=<user> cwd=<cwd>",
-  "ref":    "thread:<id>",             // or "api-thread:<id>" / "" / --ref
-  "time":   "2026-01-31T12:00:00+0000"
+  "depth":     0,                      // WAKE_DEPTH of the sender
+  "source":    "bot:coordinator",      // sender label kind:name
+  "fromBotId": "bot-...",              // only when source is a bot in the registry; a label, not proof
+  "fromAgent": "Oh My Pi",             // only for skill:/harness: sources; also a label, not proof
+  "message":   "<the text before the host context is appended>",  // omitted when the body would pass 60,000 bytes
+  "event":     "message",              // message | request (ask) | reply | command_end | hook event name
+  "level":     "info",                 // ok | info | error
+  "detail":    "<text> | host=<hostname> user=<user> cwd=<cwd>",
+  "ref":       "thread:<id>",          // or "api-thread:<id>" / "" / --ref
+  "time":      "2026-01-31T12:00:00+0000"
 }
 ```
+
+`message` is the text before the sender appends `host=`, `user=` and `cwd=`. It is not always the bare
+sentence: `--ask` appends `[thread <id>] reply: wake --reply <id> "YOUR ANSWER"` to the text it sends, and
+`--reply` prefixes `reply on thread <id>: `, so those events carry the routing hint in `message` as well as
+in `detail`. The receiving side renders `message` as the chat text and `detail` as the full record.
 
 Responses: any 2xx is success and the first 200 bytes of the body are printed. `401` → key rejected (rotate). `404` → the bot has no enabled webhook routine.
 
