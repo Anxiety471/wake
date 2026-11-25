@@ -71,6 +71,11 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   with it, since a bulk silent send is a queue nobody reads. `--pending` keeps `--inbox`'s
   contract - a store that cannot be entered is reported, never answered as nothing waiting
   ([#242](https://github.com/Anxiety471/wake/issues/242)).
+  The answer leg matters as much as the
+  ask: `--reply` notifies the asker, and a bot's notify is a wake, so a thread opened silently is
+  answered on the same channel - that notify is queued instead of rung, and the asker finds the
+  answer with `wake --pending`. `--notify` still rings on a silent thread when the answer is
+  urgent, and a loud ask keeps its loud answer.
 - **A store dir the gate cannot list is refused by name, never answered as an empty store.**
   Every answer `rakazo-wake-gate` gives is built from a listing, and `list_dir()` / `list_active()`
   turn a lost directory into `[]`: a store that cannot be read then answers "no threads" with rc 0,

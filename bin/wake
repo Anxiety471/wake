@@ -698,7 +698,7 @@ def send(b, source, event, level, detail, ref, force=False, quiet=False):
         sys.exit(f"cannot reach {BASE}: {e.reason}")
 
 
-def queue_silent(b, text, source, kind="note"):
+def queue_silent(b, text, source, kind="note", what="message"):
     """Record a message for a bot and ring nothing, so no run starts and no chat line can appear.
 
     A wake is a Rakazo run, and a run's final answer is posted into the recipient's chat: the
@@ -724,8 +724,8 @@ def queue_silent(b, text, source, kind="note"):
     )
     audit("silent", source, text, tid, b["alias"], 0)
     print(
-        f"queued silently: thread {tid} for {b['alias']} - no run started, so nothing posts to its chat;"
-        " it finds it with wake --pending"
+        f"queued silently: {what} in thread {tid} for {b['alias']} - no run started, so nothing posts to"
+        " its chat; it finds it with wake --pending"
     )
     return tid
 
@@ -859,7 +859,7 @@ def api_reply(tid, text):
         sys.exit(f"cannot reach the wake API at {base} to answer {tid}: {e.reason}")
 
 
-def reply(tid, text, source, notify, force):
+def reply(tid, text, source, notify, force, silent=False, notify_explicit=False):
     recs = thread_read(tid)
     if recs is None:
         sys.exit(
@@ -906,6 +906,11 @@ def reply(tid, text, source, notify, force):
             f"thread {tid} already has its answer from {answers[0].get('from', '?')}: one round only, so A to B to A cannot ping-pong. "
             f"Ask again with wake --ask ... if you need more (--force to override)"
         )
+    # A thread opened silently was opened on the silent channel, so its answer rides the same one
+    # unless the replier asks for a ring: otherwise the answer starts a run and posts a chat line,
+    # which is the whole cost --silent was chosen to avoid (#242).
+    if head.get("silent") is True and not notify_explicit:
+        silent = True
     mine_inbox = os.environ.get("WAKE_INBOX", "")
     is_target = bool(reply_to) and source == reply_to
     is_owner = (
@@ -925,7 +930,18 @@ def reply(tid, text, source, notify, force):
         if owner.startswith("bot:") and owner[4:] not in ("container", source[4:]):
             tgt = resolve(owner[4:], load())
             if tgt and notify:
-                send(tgt, source, "reply", "info", f"reply on thread {tid}: {text}", "thread:" + tid, force)
+                if silent:
+                    queue_silent(tgt, f"reply on thread {tid}: {text}", source, kind="reply", what="reply")
+                else:
+                    send(
+                        tgt,
+                        source,
+                        "reply",
+                        "info",
+                        f"reply on thread {tid}: {text}",
+                        "thread:" + tid,
+                        force,
+                    )
         else:
             box = inbox_active(head.get("inbox") or "")
             if inbox_push(box, {"from": source, "kind": "reply", "thread": tid, "text": text, "ts": ts}):
@@ -935,16 +951,25 @@ def reply(tid, text, source, notify, force):
     else:
         tgt = resolve(reply_to[4:], load()) if reply_to.startswith("bot:") else None
         if tgt:
-            send(
-                tgt,
-                source,
-                "reply",
-                "info",
-                f"answer on thread {tid} from {source} (no reply needed): {text}",
-                "",
-                force,
-            )
-            print(f"  woke {reply_to} with the reply")
+            if silent:
+                queue_silent(
+                    tgt,
+                    f"answer on thread {tid} from {source} (no reply needed): {text}",
+                    source,
+                    kind="reply",
+                    what="reply",
+                )
+            else:
+                send(
+                    tgt,
+                    source,
+                    "reply",
+                    "info",
+                    f"answer on thread {tid} from {source} (no reply needed): {text}",
+                    "",
+                    force,
+                )
+                print(f"  woke {reply_to} with the reply")
     return 0
 
 
@@ -965,7 +990,7 @@ p.add_argument("--no-send", action="store_true", help="record the thread without
 p.add_argument(
     "--silent",
     action="store_true",
-    help="record the message and start no run: nothing can post to the recipient's chat, it reads it with --pending",
+    help="record the message (or --reply) and start no run: nothing can post to the recipient's chat, it reads it with --pending",
 )
 p.add_argument("--pending", action="store_true", help="threads waiting on me: addressed to me, no reply yet")
 p.add_argument("--setup", metavar="BOT", help="create (or with --rotate, replace) the webhook key for a bot")
@@ -995,8 +1020,8 @@ bots = load()
 if a.source is None:
     a.source = default_source()
 
-if a.silent and (a.all or a.ping or a.update or not (a.target or a.ask)):
-    sys.exit("--silent takes one target bot: it writes one thread and rings nothing")
+if a.silent and (a.all or a.ping or a.update or not (a.target or a.ask or a.reply)):
+    sys.exit("--silent takes one target bot (or one --reply): it writes one thread and rings nothing")
 
 if a.silent and a.wait:
     sys.exit("--silent starts no run, so --wait would wait on a bot that was never woken")
@@ -1091,6 +1116,7 @@ if a.pending:
         print(f"{tid}  from {head.get('from', '?')}  ({head.get('kind', 'ask')})  | {head.get('text', '')[:70]}")
         for r in recs[1:]:
             print(f"    [{r.get('from')}] {r.get('text', '')}"[:300])
+        print("    answer with: wake --reply " + tid + ' "<answer>"')
     sys.exit(0)
 
 if a.thread:
@@ -1124,7 +1150,17 @@ if a.inbox:
 if a.reply:
     if len(a.reply) < 2:
         sys.exit('usage: wake --reply <thread-id> "YOUR ANSWER"')
-    sys.exit(reply(a.reply[0], " ".join(a.reply[1:]), a.source, a.notify or a.source.startswith("bot:"), a.force))
+    sys.exit(
+        reply(
+            a.reply[0],
+            " ".join(a.reply[1:]),
+            a.source,
+            a.notify or a.source.startswith("bot:"),
+            a.force,
+            a.silent,
+            a.notify,
+        )
+    )
 
 if a.ask:
     b = resolve(a.ask, bots) or sys.exit("unknown bot; see wake --list")
