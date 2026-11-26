@@ -10,8 +10,11 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 - **A wake is silent by default, and the silence travels with it.** Joshua's rule (2026-11-26) is
   that a bot-to-bot wake shows him that a message arrived, not the answer to it; a per-bot routine
   clause made that a habit rather than a property of the message. `wake` now sends `silent: true` in
-  the payload and a one-line instruction at the end of `detail`, so a receiver needs no edit of its
-  own to stay quiet, `WAKE_SILENT=0` or `--chatty` turns it off for a machine or for one send, and
+  the payload and a one-line instruction at the end of `detail`, so the rule travels with the message
+  as data as well as prose. Neither is enforced by the receiving platform yet: the silence holds today
+  because each receiver's own routine says so, and the prose sentence arrives inside the fenced
+  untrusted block a receiver is told not to obey. `WAKE_SILENT=0` or `--chatty` turns it off for a
+  machine or for one send, and
   `--ask` records the flag on the thread so the answer inherits the tone of the question instead of
   each bot deciding for itself. The one leg a flag cannot hide is the run a ring starts: a bot's
   answer is rendered in its chat, so `--reply --no-ring` writes the answer to the thread store and

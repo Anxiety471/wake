@@ -32,6 +32,11 @@ silent keeps it in its first record as `silent_payload`, and every answer inheri
 wakes the asker carries it too. A record carrying `silent: true` instead was written by `--silent`: no run
 was started for it, so the field is a statement of fact rather than an instruction to a receiver.
 
+Nobody on the receiving platform enforces either signal yet. A receiver stays quiet because its own routine
+text says so; the prose sentence sits inside the fenced untrusted block, so a receiver that follows that
+framing ignores it, and the key is data it may read, not a switch the platform throws. An implementer that
+can read `silent` should prefer it to the prose.
+
 `message` is the text before the sender appends `host=`, `user=` and `cwd=`. It is not always the bare
 sentence: `--ask` appends `[thread <id>] reply: wake --reply <id> "YOUR ANSWER"` to the text it sends, and
 `--reply` prefixes `reply on thread <id>: `, so those events carry the routing hint in `message` as well as
