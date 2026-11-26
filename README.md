@@ -205,6 +205,15 @@ or `--inbox`. Use it when the answer needs no action, because a ring starts a ru
 answer to a run is rendered in its chat - the one part of a silent exchange a flag cannot hide, and the reason
 this option exists. A live session inbox is still pushed: that is not a run.
 
+`--notify` and `--no-ring` are one decision, so passing both is refused instead of letting `--no-ring` win
+silently, and `--no-ring` without `--reply` is refused too: it describes where an answer waits.
+
+An id the API minted (`ref: api-thread:<id>`, a UUID) is not answered through this store: `--reply` posts it to
+`POST /threads/<id>/reply`, and that route always rings the asker - its doorbell payload carries no `silent`
+field. `--no-ring` and `--silent` are therefore refused on such a thread, before anything is posted, rather than
+accepted and dropped after the asker was rung. `--chatty` is accepted and changes nothing there: the reply is
+loud already.
+
 ### `--inbox` and `--thread`
 
 ```sh

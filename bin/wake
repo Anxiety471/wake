@@ -884,12 +884,29 @@ def reply(tid, text, source, notify, force, silent=False, notify_explicit=False,
         # An id the API minted belongs to the API's store, not this folder: answer it there when
         # this bot holds its own token, and name the setting that is missing when it does not.
         if API_THREAD_ID.match(tid):
+            # The API's reply route has no tone: it rings the asker whatever the caller wanted, and
+            # its doorbell payload carries no `silent` key (apps/api/src/doorbell.ts). A flag that
+            # promises no run, no ring or a quiet payload cannot be honoured here, so it is refused
+            # before anything is posted rather than dropped after the asker was already rung (#382).
+            if silent or no_ring:
+                flag = "--silent" if silent else "--no-ring"
+                audit("reply-refused", source, text, tid, "api", 8)
+                sys.exit(
+                    f"thread {tid} lives on the wake API, whose reply route always rings the asker: "
+                    f"{flag} cannot be honoured there, so nothing was sent. Answer it without {flag}, "
+                    f"or have the API grow a quiet reply."
+                )
             status, answer = api_reply(tid, text)
             if status is not None:
                 if status == 201:
                     seq = answer.get("seq", "?") if isinstance(answer, dict) else "?"
                     audit("reply", source, text, tid, "api", 0)
                     print(f"replied on thread {tid} through the wake API (seq {seq}): {text}")
+                    if chatty:
+                        print(
+                            "  --chatty: the API reply is loud already (its payload carries no silent "
+                            "field), so the flag changes nothing here"
+                        )
                     return 0
                 audit("reply-refused", source, text, tid, "api", 7)
                 sys.exit(f"the wake API refused the reply to {tid}: {status} {answer}")
@@ -1072,6 +1089,18 @@ if a.silent and (a.all or a.ping or a.update or not (a.target or a.ask or a.repl
 
 if a.silent and a.wait:
     sys.exit("--silent starts no run, so --wait would wait on a bot that was never woken")
+
+# --notify and --no-ring are the two halves of one decision about the same ring, so a caller that
+# passes both has said nothing: the reply either wakes the asker or waits in the store. --no-ring
+# used to win silently (#382).
+if a.notify and a.no_ring:
+    sys.exit(
+        "--notify and --no-ring contradict each other: --notify rings the asker, --no-ring leaves the "
+        "answer in the thread store and rings nobody. Pass one of them."
+    )
+
+if a.no_ring and not a.reply:
+    sys.exit("--no-ring only applies to --reply: it leaves the answer in the thread store instead of waking the asker")
 
 if a.add or a.sync:
     if a.add:
