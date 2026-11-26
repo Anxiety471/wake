@@ -2472,6 +2472,7 @@ class WebhookSenderTests(WakeTestCase):
             "message",
             "event",
             "level",
+            "silent",
             "detail",
             "ref",
             "time",
