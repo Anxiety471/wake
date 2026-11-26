@@ -2545,6 +2545,24 @@ class SilenceTests(WakeTestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIs(self.hook.requests[1]["json"]["silent"], False)
 
+    def test_chatty_on_a_reply_overrides_the_silent_ask(self):
+        """The tone is inherited, not welded shut: a bot may answer loudly a question that was asked
+        quietly, and the notice that wakes the asker has to carry the new tone or it stays quiet."""
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("--ask", "engineer", "why", env={"WAKE_SOURCE": "bot:coordinator"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        tid = re.search(r"thread (\S+) opened", r.stdout).group(1)
+        r = self.wake("--reply", tid, "because", "--chatty", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        notice = self.hook.requests[1]["json"]
+        self.assertIs(notice["silent"], False)
+        self.assertNotIn(self.TAIL, notice["detail"])
+        path = os.path.join(self.state, "threads", tid + ".jsonl")
+        with open(path) as f:
+            reply = [json.loads(x) for x in f][1]
+        self.assertIs(reply["silent_payload"], False)
+
     def test_the_no_ring_flag_and_the_tone_are_different_flags(self):
         """--silent starts no run, so there is nothing to be chatty about: --chatty cannot undo it.
         The two live in one namespace because both mean "do not show this to the human", and the
