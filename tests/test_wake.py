@@ -1195,6 +1195,33 @@ class ApiThreadReplyTests(WakeTestCase):
         [row] = self.audit()
         self.assertEqual((row["cmd"], row["bot"], row["rc"]), ("reply-refused", "api", 7))
 
+    def test_no_ring_is_refused_on_an_api_thread(self):
+        """The API's reply route always rings the asker, so --no-ring there used to be accepted and
+        dropped: the asker was rung by a reply that promised nobody would be (#382)."""
+        r = self.wake("--reply", self.UUID, "the answer", "--no-ring", env=self.api_env())
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--no-ring cannot be honoured", r.stderr)
+        self.assertIn("always rings the asker", r.stderr)
+        self.assertEqual(self.api.requests, [], "a refused flag still posted the answer")
+        [row] = self.audit()
+        self.assertEqual((row["cmd"], row["bot"], row["rc"]), ("reply-refused", "api", 8))
+
+    def test_silent_is_refused_on_an_api_thread(self):
+        """--silent promises no run; the API's reply rings the asker and its payload carries no
+        silent field, so the promise cannot be kept there (#382)."""
+        r = self.wake("--reply", self.UUID, "the answer", "--silent", env=self.api_env())
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--silent cannot be honoured", r.stderr)
+        self.assertEqual(self.api.requests, [])
+
+    def test_chatty_on_an_api_thread_says_the_reply_is_loud_already(self):
+        """--chatty asks for a loud payload, which the API reply always is: the flag is redundant
+        there, and saying so beats looking like it did something (#382)."""
+        r = self.wake("--reply", self.UUID, "the answer", "--chatty", env=self.api_env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("--chatty: the API reply is loud already", r.stdout)
+        self.assertEqual(len(self.api.requests), 1, "the answer was not posted")
+
     def test_reply_surfaces_the_api_refusal(self):
         """The route refuses the asker of an ask; the CLI repeats that instead of inventing a store error."""
         self.api.status[self.UUID] = 409
@@ -1327,6 +1354,21 @@ class SilentDeliveryTests(WakeTestCase):
         r = self.wake("--ask", "engineer", "q", "--silent", "--wait", "60")
         self.assertEqual(r.returncode, 1)
         self.assertIn("--silent starts no run", r.stderr)
+        self.assertEqual(self.hook.requests, [])
+
+    def test_notify_and_no_ring_are_refused_together(self):
+        """--no-ring used to win silently, so a caller that asked for a ring and no ring got no
+        ring and no warning (#382). One decision, so name the contradiction."""
+        r = self.wake("--reply", "1114-a3f2", "done", "--notify", "--no-ring", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--notify and --no-ring contradict each other", r.stderr)
+        self.assertEqual(self.hook.requests, [])
+
+    def test_no_ring_without_a_reply_is_refused(self):
+        """--no-ring describes where an answer waits; without --reply there is no answer to place."""
+        r = self.wake("engineer", "hello", "--no-ring")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--no-ring only applies to --reply", r.stderr)
         self.assertEqual(self.hook.requests, [])
 
     def test_a_loud_wake_still_rings(self):
