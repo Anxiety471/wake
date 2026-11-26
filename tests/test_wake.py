@@ -1196,12 +1196,12 @@ class ApiThreadReplyTests(WakeTestCase):
         self.assertEqual((row["cmd"], row["bot"], row["rc"]), ("reply-refused", "api", 7))
 
     def test_no_ring_is_refused_on_an_api_thread(self):
-        """The API's reply route always rings the asker, so --no-ring there used to be accepted and
+        """The API's reply route rings the asker, so --no-ring there used to be accepted and
         dropped: the asker was rung by a reply that promised nobody would be (#382)."""
         r = self.wake("--reply", self.UUID, "the answer", "--no-ring", env=self.api_env())
         self.assertEqual(r.returncode, 1)
         self.assertIn("--no-ring cannot be honoured", r.stderr)
-        self.assertIn("always rings the asker", r.stderr)
+        self.assertIn("rings the asker whenever a doorbell is configured", r.stderr)
         self.assertEqual(self.api.requests, [], "a refused flag still posted the answer")
         [row] = self.audit()
         self.assertEqual((row["cmd"], row["bot"], row["rc"]), ("reply-refused", "api", 8))
@@ -1212,7 +1212,10 @@ class ApiThreadReplyTests(WakeTestCase):
         r = self.wake("--reply", self.UUID, "the answer", "--silent", env=self.api_env())
         self.assertEqual(r.returncode, 1)
         self.assertIn("--silent cannot be honoured", r.stderr)
-        self.assertEqual(self.api.requests, [])
+        self.assertIn("rings the asker whenever a doorbell is configured", r.stderr)
+        self.assertEqual(self.api.requests, [], "a refused flag still posted the answer")
+        [row] = self.audit()
+        self.assertEqual((row["cmd"], row["bot"], row["rc"]), ("reply-refused", "api", 8))
 
     def test_chatty_on_an_api_thread_says_the_reply_is_loud_already(self):
         """--chatty asks for a loud payload, which the API reply always is: the flag is redundant

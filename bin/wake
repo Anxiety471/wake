@@ -892,7 +892,8 @@ def reply(tid, text, source, notify, force, silent=False, notify_explicit=False,
                 flag = "--silent" if silent else "--no-ring"
                 audit("reply-refused", source, text, tid, "api", 8)
                 sys.exit(
-                    f"thread {tid} lives on the wake API, whose reply route always rings the asker: "
+                    f"thread {tid} lives on the wake API, whose reply route rings the asker whenever a "
+                    f"doorbell is configured: "
                     f"{flag} cannot be honoured there, so nothing was sent. Answer it without {flag}, "
                     f"or have the API grow a quiet reply."
                 )

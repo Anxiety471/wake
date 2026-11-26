@@ -241,14 +241,16 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
-- **A reply flag the route cannot honour is refused, not dropped.** `wake --reply --no-ring` promised no
-  ring and `--silent` promised no run, but an id the API minted (`ref: api-thread:<id>`) is answered by
-  `POST /threads/<id>/reply`, which always rings the asker: its doorbell payload carries no `silent` field
-  (`apps/api/src/doorbell.ts`), so both flags were accepted and silently ignored, and the asker was rung by a
-  reply that said nobody would be. Both are now refused before anything is posted, audited `reply-refused` rc 8,
-  and `--chatty` there says the reply is loud already. `--notify` with `--no-ring` is refused as a
-  contradiction instead of letting `--no-ring` win, and `--no-ring` without `--reply` is refused too.
-  `ApiThreadReplyTests` and `SilentDeliveryTests` pin each refusal, including that a refused flag posts nothing
+- **A reply flag the route cannot honour is refused, not dropped.** `wake --reply --no-ring`
+  promised no ring and `--silent` promised no run, but an id the API minted (`ref: api-thread:<id>`)
+  is answered by `POST /threads/<id>/reply`, which rings the asker whenever a doorbell is configured
+  (with none it sends nothing) and whose doorbell payload carries no `silent` field
+  (`apps/api/src/doorbell.ts`), so both flags were accepted and silently ignored, and the asker was
+  rung by a reply that said nobody would be. Both are now refused before anything is posted, audited
+  `reply-refused` rc 8, and `--chatty` there says the reply is loud already. `--notify` with
+  `--no-ring` is refused as a contradiction instead of letting `--no-ring` win, and `--no-ring`
+  without `--reply` is refused too. `ApiThreadReplyTests` and `SilentDeliveryTests` pin each
+  refusal, including that a refused flag posts nothing
   ([#382](https://github.com/Anxiety471/wake/issues/382)).
 
 - **A thread append into a store file owned by another user is no longer refused, and a refusal names the thread and the path.** The host sets `fs.protected_regular = 2`, and `rakazo-wake-gate` passed `O_CREAT` on every append, including when the file already existed. The store is `3770 root:wake` (setgid + sticky) and the gate runs as `wakeops`, so an `O_CREAT` open of a file owned by neither the caller nor the directory's owner is refused with `EACCES`: eleven store files belong to `hitori`, because a host-side `wake` writes as the user who runs it, and every append into one of them failed. `journalctl -t wake-gate` names eight refused appends in a burst on 2026-11-22 05:29-05:36 and one at 00:18:37, twelve seconds after a host-side client created `11230018-4953.jsonl` as `hitori` (its birth time is 00:18:25) (four more are on 2026-11-16, before the window these numbers cover); each line is a bare `wake-gate refuse thread append errno=13`, with no thread id and no path. In that burst the gate accepted 173 operations and not one of them was an append - 168 `thread read`, 4 `thread store read`, 1 `thread list` - so the eight refusals were the only writes attempted; appends into files owned by `root` (the directory's owner) or by `wakeops` were not affected. A scratch store of the same shape reproduced it by name (v11 refused, the same open without `O_CREAT` appended the line and kept the owner). Gate **v12** opens an existing file without `O_CREAT`, retries once with it when the file vanished between `lstat` and `open`, and keeps creating a new thread at 0660; a refusal now reads `wake-gate: io error: Permission denied (errno=13, key=<thread>, target=<path>)` and the journal line carries the same three fields, so the next loss names its thread. A `None` `strerror` no longer prints as `(None)`. `GateAppendOwnershipTests` in `tests/test_gate_shapes.py` holds the flag contract - the append route and the marker write, the refusal's stderr and its journal line - against a staged gate and fails on v11 ([#221](https://github.com/Anxiety471/wake/issues/221)). It skips wherever no gate is staged, which is every CI job while the gate still lives outside the repository, so CI green is not evidence for this contract yet.
