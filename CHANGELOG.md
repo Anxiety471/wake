@@ -277,6 +277,31 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   `no-unused-vars` behind it
   ([#205](https://github.com/Anxiety471/wake/issues/205)).
 
+- **The JavaScript directive reader is the parser eslint itself uses, and the scanner is the
+  fallback it always was.** The note above that says the reader reads one character at a time is
+  the scanner's description now, not the reader's. The pin used to decide whether `/` opens a
+  regular expression from the previous character alone, and JavaScript does not decide it there: a
+  property named after a keyword then a division (`record.in / 2`), a regex holding a quote after
+  `)`, and a regex holding `/*` after `}` each hid a real `/* eslint-disable */` from it, measured at
+  `7f739c51` with eslint 10.15.0 from the repo's own lockfile: rc 1 with one real
+  `@typescript-eslint/no-unused-vars` behind the directive, rc 0 with it
+  ([#205](https://github.com/Anxiety471/wake/issues/205)). `scripts/js-comments.mjs`
+  asks `@typescript-eslint/parser` - through the `typescript-eslint` devDependency the tree already
+  installs, so no new dependency - for a file's comments, `parseForESLint` with the file's own path
+  so its extension decides how it parses, and the pin reads all 39 tracked JS/TS files in one node
+  process. The character scanner stays where `node_modules` is missing - the Python test matrix has
+  none - and as the reader for a single file the parser cannot parse, and the module docstring now
+  names both readers' limits instead of one: the parser needs `node` and `node_modules`, and the
+  scanner still misses those three shapes and can over-report a `//` in JSX text.
+  `CommentReaderParityTest` reads every tracked JS/TS file with both readers and fails on any
+  comment they disagree about - 272 comments, identical line, text and block on the tree today -
+  and on a tracked file the parser cannot parse, so the per-file fallback cannot narrow the pin
+  quietly. Each of the three shapes, and the own-line block directive shape 3 hides past the end of
+  its code line, has a fixture with a real `no-unused-vars` behind it and a control without the
+  directive, measured against the real eslint in `api (bun)`, while the scanner's own test asserts
+  the gap rather than dropping the fixture, so a boundary that moves has to move the docstring with
+  it.
+
 - **A `*.jsonl` directory or a dangling `*.jsonl` symlink no longer turns a quiet inbox into a
   store error.** The empty answer's confirmation asked only whether a listed name ends in
   `.jsonl`, so `mkdir stray.jsonl` in a store holding no records answered `cannot read the thread

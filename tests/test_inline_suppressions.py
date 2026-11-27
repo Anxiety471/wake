@@ -64,10 +64,18 @@ already refuses a trailing one, so nothing can hide a disable at the end of a co
 with eslint 10.15.0 from the repo's own lockfile, a `.ts` file whose only defect is a real
 `@typescript-eslint/no-unused-vars` takes `eslint apps` to rc 1, and one `/* eslint-disable */` line
 on top takes it to rc 0 with `suppressedMessages: 1` - the same shape one linter over, while this
-file read no `.ts` file at all (#196). `javascript_comments` reads one character at a time and skips
-strings, template literals and regular expressions, because a directive quoted in any of the three
-is not a directive and a `//` in a URL is not a comment, and it reports the text after the `//` or
-`/*` the way eslint matches it: anchored at the comment's start, case-sensitively. Refused there:
+file read no `.ts` file at all (#196). The pin has two readers. `javascript_comments` asks
+`@typescript-eslint/parser`, through the `typescript-eslint` devDependency the tree already
+installs, for the comments of a file - one `node scripts/js-comments.mjs` process for the whole
+tree, because a process per file is not affordable - and a comment is then where eslint sees one
+whatever the source around it looks like: a `/` that opens a regular expression, a quote inside
+that regex or a keyword used as a property name cannot be read as a comment (#205). That reader
+needs `node` on PATH and `node_modules` installed. The Python test matrix has neither, and a file
+the parser cannot parse is that file's own fallback: both are read by `scanner_comments`, a
+character scan that skips strings, template literals and regular expressions, because a directive
+quoted in any of the three is not a directive and a `//` in a URL is not a comment. Both report the
+text after the `//` or `/*` the way eslint matches it: anchored at the comment's start,
+case-sensitively. Refused there:
 the block `/* eslint-disable */`, which exempts everything below it - measured mid-file as well as
 at line 1 - a `-line` / `-next-line` form that names no rule (and `//eslint-disable-next-line` with
 no space after the `//` is honoured, so the marker cannot need one), an inline
@@ -83,15 +91,18 @@ in the tree. Kept: a rule-scoped `// eslint-disable-next-line <rule>[, <rule>] [
 spelling, the same shape as `# noqa: E402`. Measured as no hole: eslint reads its directives in
 lower case only, so `/* ESLINT-DISABLE */` does nothing; `// eslint-disable` with no `-line` suffix
 does nothing; a directive after other text (`// see eslint-disable-next-line`) does nothing; and
-`@ts-nocheck` needs no pin, because `tseslint.configs.strict` reports it itself (rc 1). JSX text is
-the one place this reader can over-report - the tree has no `.tsx` file today, and over-reporting a
-directive is the direction a pin should fail in. It also under-reports three shapes, because it
-decides whether `/` opens a regular expression from the previous character alone: a property named
-after a keyword then a division (`record.in / 2`), a regex holding a quote after `)`, and a regex
-holding `/*` after `}`. Each was measured with a real `no-unused-vars` behind the directive at rc 0
-(#205). The durable fix is to read comments from `@typescript-eslint/parser` where `node_modules`
-exists and keep this scanner as the fallback; until then the list above is what it does, not a claim
-that it misses nothing.
+`@ts-nocheck` needs no pin, because `tseslint.configs.strict` reports it itself (rc 1). The two
+readers stop in different places, and neither limit is glossed. The parser needs `node_modules`:
+without it the scanner reads, and the `test` matrix runs that way on purpose, so the fallback is
+tested rather than kept for a claim. The scanner decides whether `/` opens a regular expression
+from the previous character alone, which JavaScript does not decide there, so it under-reports
+three shapes - a property named after a keyword then a division (`record.in / 2`), a regex holding
+a quote after `)`, and a regex holding `/*` after `}` - each measured with a real `no-unused-vars`
+behind the directive at rc 0 (#205), and it can over-report a `//` in JSX text, which is the
+direction a pin should fail in (the tree has no `.tsx` file today). A file the parser cannot parse
+is read by the scanner for that file alone, which is the pin's one silent narrowing;
+`CommentReaderParityTest` refuses it, failing on a tracked file the parser could not parse as well
+as on a comment the two readers disagree about.
 
 Run with the rest: `python3 -m unittest discover -s tests`
 """
@@ -123,6 +134,24 @@ def linters_unusable(which=None, isdir=None, root=None):
         return "no node on PATH"
     if not isdir(os.path.join(root, "node_modules", "eslint")):
         return "eslint is not installed here: run bun install --frozen-lockfile"
+    return None
+
+
+def javascript_parser_unusable(which=None, isdir=None, root=None):
+    """Why the parser-backed comment reader cannot run here, or None when it can.
+
+    The same two ways `linters_unusable` has, with the package this reader needs: `node` is not on
+    PATH, or `bun install --frozen-lockfile` has not been run. The lookups are arguments so the
+    decision is testable on a machine with no node, and `root` is the repo in every call: the parser
+    is resolved out of the repo's `node_modules` even when the files it reads sit in a fixture.
+    """
+    which = shutil.which if which is None else which
+    isdir = os.path.isdir if isdir is None else isdir
+    root = ROOT if root is None else root
+    if which("node") is None:
+        return "no node on PATH"
+    if not isdir(os.path.join(root, "node_modules", "typescript-eslint")):
+        return "typescript-eslint is not installed here: run bun install --frozen-lockfile"
     return None
 
 
@@ -167,6 +196,10 @@ RULE_SWITCH = re.compile(r"#\s*ruff\s*:\s*(?:disable|enable|ignore)\s*\[", re.IG
 
 #: The suffixes eslint reads a comment out of. `prettier --check` reads the same files.
 JAVASCRIPT_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts")
+
+#: The parser-backed reader, as the repo's own script: it is run from ROOT whatever root the files
+#: come from, so `typescript-eslint` resolves out of the repo's `node_modules` and not a fixture's.
+JAVASCRIPT_COMMENTS_SCRIPT = os.path.join("scripts", "js-comments.mjs")
 
 #: The block form. Everything below it, to the end of the file, is exempt, so it names no line and
 #: is refused whatever rules it lists. Read against the comment's text without its markers, as
@@ -218,14 +251,16 @@ PINNED_SHELL_FILES = (
     "tests/run.sh",
 )
 
-#: Files the javascript scan must read: two the api job lints, the config file eslint loads, and the
-#: one `.ts` the lint script's paths leave out - a directive in a file lint does not read yet is
-#: still this class.
+#: Files the javascript scan must read: two the api job lints, the config file eslint loads, the
+#: one `.ts` the lint script's paths leave out, and the reader the scan itself runs - a directive in a
+#: file lint does not read yet is still this class, and a directive in the reader would be one the
+#: reader refuses while reading itself.
 PINNED_JAVASCRIPT_FILES = (
     "apps/api/src/app.ts",
     "eslint.config.js",
     "packages/shared/src/index.ts",
     "scripts/e2e-threads.ts",
+    "scripts/js-comments.mjs",
 )
 
 
@@ -496,15 +531,83 @@ def scan_javascript(source, index, in_interpolation, found):
     return index
 
 
-def javascript_comments(source):
-    """`(line, text, block)` for every real comment in a JS or TS source.
+def parser_comments(paths, node=None, script=None):
+    """One `{path, comments, error}` record per path, from one `node scripts/js-comments.mjs` run.
 
-    A `//` inside a string, a template literal or a regular expression is not a comment, and the
-    same text inside one cannot pass for a directive.
+    `paths` are handed over absolute, so the parser knows each file's extension from its own path,
+    and the script is always the repo's, so the import resolves out of the repo's `node_modules`
+    even when the files being read sit in a fixture directory.
+
+    A failure of the reader itself - a non-zero exit, output that is not one JSON object per path,
+    or fewer records than paths - raises `RuntimeError` instead of letting the caller scan: the
+    scanner misses a directive in three shapes (#205), so a reader that crashed would turn a real
+    directive into a green check. A file the parser cannot parse is not that failure: it comes back
+    with `error` set, and the caller decides what to do with that file.
+    """
+    node = shutil.which("node") if node is None else node
+    script = os.path.join(ROOT, JAVASCRIPT_COMMENTS_SCRIPT) if script is None else script
+    finished = subprocess.run([node, script, *paths], capture_output=True, text=True)
+    if finished.returncode != 0:
+        raise RuntimeError(
+            f"the JS/TS comment reader failed: node {script} exited {finished.returncode} and the "
+            f"scanner is not a safe fallback for it: {finished.stderr.strip()[-400:]}"
+        )
+    records = []
+    for line in finished.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except ValueError as error:
+            raise RuntimeError(f"the JS/TS comment reader wrote no JSON object: {line.strip()[:200]}") from error
+    if len(records) != len(paths):
+        raise RuntimeError(
+            f"the JS/TS comment reader answered {len(records)} of {len(paths)} files, and a missing "
+            "verdict would turn into a scanner read"
+        )
+    return records
+
+
+def record_comments(record):
+    """`(line, text, block)` from one reader record, in the order the reader reported them."""
+    return [(comment["line"], comment["text"], bool(comment["block"])) for comment in record["comments"]]
+
+
+def scanner_comments(source):
+    """`(line, text, block)` for every comment a character scan finds in a JS or TS source.
+
+    The fallback reader: it runs where `node_modules` is missing - the Python test matrix - and on
+    a file the parser cannot parse. It reads one character at a time and decides whether `/` opens
+    a regular expression from the previous character alone, which JavaScript does not decide there,
+    so it under-reports the three shapes #205 measured, and it can over-report a `//` in JSX text.
+    Kept, tested and pinned rather than removed: it is the only reader a checkout without
+    `node_modules` has.
     """
     found = []
     scan_javascript(source, 0, False, found)
     return [(source.count("\n", 0, offset) + 1, text, block) for offset, text, block in found]
+
+
+def javascript_comments(source, path=None):
+    """`(line, text, block)` for every real comment in a JS or TS source.
+
+    With `path` - the file `source` was read from, absolute or repo-relative - and the parser
+    installed under ROOT, the comments are the parser's, so a `/` inside a regular expression or a
+    quote inside one is not read as anything but the literal it is. Without a path, or without
+    `node_modules`, `scanner_comments` reads them; the two limit lists are the module docstring's.
+
+    A file the parser cannot parse is read by the scanner here, for that file alone. That is the
+    one place this switch narrows the pin, so it is not left quiet: `CommentReaderParityTest` fails
+    on a tracked file the parser cannot parse, as well as on a comment the two readers disagree
+    about.
+    """
+    if path is None or javascript_parser_unusable() is not None:
+        return scanner_comments(source)
+    where = path if os.path.isabs(path) else os.path.join(ROOT, path)
+    record = parser_comments([where])[0]
+    if record["error"] is not None:
+        return scanner_comments(source)
+    return record_comments(record)
 
 
 def eslint_rules(rest):
@@ -590,11 +693,33 @@ def inline_config_fault(value):
     return "below"
 
 
-def javascript_suppression_problems(root, paths):
-    """Every eslint or prettier directive in a JS/TS file that exempts more than it names."""
-    problems = []
+def javascript_comment_map(root, paths):
+    """`{rel: [(line, text, block)]}` for every path, parser first and the scanner per file.
+
+    One node process reads every file when the parser is usable: the directive list does not depend
+    on which file carries it, and 38 tracked JS/TS files make a process per file unaffordable. A
+    file the parser could not parse, and every file when `node_modules` is missing, is scanned.
+    """
+    parsed = {}
+    if paths and javascript_parser_unusable() is None:
+        records = parser_comments([os.path.join(root, rel) for rel in paths])
+        parsed = {rel: record_comments(record) for rel, record in zip(paths, records) if record["error"] is None}
+    comments = {}
     for rel in paths:
-        for line, comment, block in javascript_comments(text(os.path.join(root, rel))):
+        found = parsed.get(rel)
+        comments[rel] = scanner_comments(text(os.path.join(root, rel))) if found is None else found
+    return comments
+
+
+def javascript_suppression_problems(root, paths):
+    """Every eslint or prettier directive in a JS/TS file that exempts more than it names.
+
+    The comments come from `javascript_comment_map`, so the verdict is the parser's where it is
+    installed and the scanner's where it is not, or for a file the parser cannot parse.
+    """
+    problems = []
+    for rel, comments in javascript_comment_map(root, list(paths)).items():
+        for line, comment, block in comments:
             where = f"{rel}:{line}: '{comment.strip()}'"
             if PRETTIER_IGNORE.match(comment):
                 problems.append(
@@ -711,7 +836,7 @@ class InlineSuppressionTestCase(unittest.TestCase):
         self.assertGreaterEqual(len(javascript), 30, f"the javascript scan read only {len(javascript)} files")
         for rel in PINNED_JAVASCRIPT_FILES:
             self.assertIn(rel, javascript, f"eslint reads {rel}, and the javascript scan does not read it")
-        js_comments = sum(len(javascript_comments(text(os.path.join(ROOT, rel)))) for rel in javascript)
+        js_comments = sum(len(found) for found in javascript_comment_map(ROOT, javascript).values())
         self.assertGreater(js_comments, 150, f"the javascript comment scan found only {js_comments} comments")
 
     def test_a_file_level_noqa_is_refused(self):
@@ -1097,6 +1222,158 @@ class InlineSuppressionTestCase(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
 
+#: #205's shapes, one row per line the issue measured: the code line, whether the directive sits on
+#: that line, and whether `scanner_comments` reads the directive today. Every body carries a real
+#: `@typescript-eslint/no-unused-vars` behind the directive - the line `comment_shape_source` adds -
+#: so `LinterBitesTest` measures both readers against the real eslint on the same fixture, and a
+#: scanner that starts reading one of these moves the boundary the module docstring writes down.
+COMMENT_SHAPE_CASES = (
+    ("a property named after a keyword, then a division", "export const half = record.in / 2;", True, True),
+    ("the same, with the directive on its own line", "export const half = record.in / 2;", False, False),
+    ("a regex holding a quote, after `)`", 'if (s.length > 0) /"/.test(s);', True, True),
+    ("the same, with the directive on its own line", 'if (s.length > 0) /"/.test(s);', False, False),
+    ("a regex holding `/*`, after `}`", "for (const c of s) { void c; } /\\/*/.test(s);", True, True),
+    (
+        "the same, with the directive on its own line",
+        "for (const c of s) { void c; } /\\/*/.test(s);",
+        False,
+        True,
+    ),
+)
+
+
+def comment_shape_source(code, same_line=True):
+    """The shape's code line, its block directive, and the unused variable the directive hides."""
+    directive = "/* eslint-disable */"
+    joiner = " " if same_line else "\n"
+    return f"{code}{joiner}{directive}\nconst neverUsed = 2;\n"
+
+
+def block_directives(comments):
+    """The block-level `eslint-disable` each `(line, text, block)` carries, stripped of its markers."""
+    return [comment.strip() for _line, comment, _block in comments if ESLINT_BLOCK_DISABLE.match(comment)]
+
+
+class CommentReaderLimitTest(unittest.TestCase):
+    """#205: the parser reads the directives the scanner cannot, and the scanner's gap stays pinned.
+
+    The pin read one character at a time and decided a regex from the previous character alone, so
+    three shapes hid a real `/* eslint-disable */` from it; `scripts/js-comments.mjs` reads the
+    same files through `@typescript-eslint/parser` now, and the scanner is the fallback for a
+    checkout without `node_modules`. Both are asserted here: the parser on every shape, and the
+    scanner on the shapes it reads today as well as the ones it does not, so neither the limit nor
+    its boundary can move without this file saying so.
+    """
+
+    def root(self, prefix="shape-"):
+        """A fixture directory, removed with the test."""
+        root = tempfile.mkdtemp(prefix=prefix)
+        self.addCleanup(shutil.rmtree, root, True)
+        return root
+
+    def write(self, source, name="planted.ts"):
+        """`(root, path)` of a fixture file holding `source`."""
+        root = self.root()
+        path = os.path.join(root, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(source)
+        return root, path
+
+    def test_the_parser_reads_every_shape(self):
+        """One node process reads all of them, and the pin names the directive in each file."""
+        reason = javascript_parser_unusable()
+        if reason is not None:
+            self.skipTest(reason)
+        root = self.root("shapes-")
+        paths = []
+        for index, (_name, code, same_line, _hidden) in enumerate(COMMENT_SHAPE_CASES):
+            path = os.path.join(root, f"planted-{index}.ts")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(comment_shape_source(code, same_line))
+            paths.append(f"planted-{index}.ts")
+        problems = javascript_suppression_problems(root, paths)
+        self.assertEqual(len(problems), len(paths), problems)
+        for index, (name, code, same_line, _hidden) in enumerate(COMMENT_SHAPE_CASES):
+            with self.subTest(shape=name):
+                rel = f"planted-{index}.ts"
+                found = javascript_comments(comment_shape_source(code, same_line), os.path.join(root, rel))
+                self.assertEqual(
+                    block_directives(found),
+                    ["eslint-disable"],
+                    f"the parser read no directive out of the {name} shape (#205)",
+                )
+                line = 1 if same_line else 2
+                where = f"{rel}:{line}: 'eslint-disable'"
+                named = [problem for problem in problems if problem.startswith(where)]
+                self.assertEqual(len(named), 1, problems)
+                self.assertIn("block form", named[0])
+
+    def test_the_scanner_reads_only_the_shapes_outside_its_limit(self):
+        """The gap #205 measured, asserted rather than deleted: this is the fallback's own limit."""
+        for name, code, same_line, hidden in COMMENT_SHAPE_CASES:
+            with self.subTest(shape=name):
+                found = block_directives(scanner_comments(comment_shape_source(code, same_line)))
+                if hidden:
+                    self.assertEqual(
+                        found,
+                        [],
+                        f"the scanner now reads the {name} shape (#205): the limit the module "
+                        "docstring and CHANGELOG.md record moved, so they move with it",
+                    )
+                else:
+                    self.assertEqual(found, ["eslint-disable"], f"the scanner lost the {name} shape")
+
+    def test_a_file_the_parser_cannot_parse_is_scanned(self):
+        """Per-file fallback, and the reason the parity test refuses an unparsable tracked file."""
+        reason = javascript_parser_unusable()
+        if reason is not None:
+            self.skipTest(reason)
+        source = "export const broken = ;\n/* eslint-disable */\n"
+        _root, path = self.write(source)
+        self.assertEqual(
+            block_directives(javascript_comments(source, path)),
+            ["eslint-disable"],
+            "a file the parser cannot parse was neither parsed nor scanned, so its directives are read by nobody",
+        )
+
+    def test_a_reader_that_crashes_is_loud_rather_than_scanned(self):
+        """A crashed reader must not become a scanner read: that is how a directive goes silent."""
+        with self.assertRaises(RuntimeError):
+            parser_comments([os.path.join(ROOT, "apps", "api", "src", "app.ts")], node="/bin/false")
+
+
+class CommentReaderParityTest(unittest.TestCase):
+    """#205: on the tracked tree the two readers must agree, or the switch loses a directive.
+
+    Skipped where the parser is not installed - the Python test matrix has no `node_modules` - and
+    run by `api (bun)`, which installs it and refuses a skip, so the parity is measured in the job
+    that reads the tree with the parser.
+    """
+
+    def test_the_two_readers_agree_on_every_tracked_javascript_file(self):
+        """One node process reads the tree; the scanner must say the same thing about every file."""
+        reason = javascript_parser_unusable()
+        if reason is not None:
+            self.skipTest(reason)
+        paths = eslint_files()
+        records = parser_comments([os.path.join(ROOT, rel) for rel in paths])
+        self.assertEqual(len(records), len(paths), "the reader answered for a different set of files")
+        for rel, record in zip(paths, records):
+            with self.subTest(path=rel):
+                self.assertIsNone(
+                    record["error"],
+                    f"the parser cannot parse {rel}, so the pin reads it with the scanner whose three "
+                    "limits #205 lists - fix the file, not this test",
+                )
+                self.assertEqual(
+                    record_comments(record),
+                    scanner_comments(text(os.path.join(ROOT, rel))),
+                    f"the two readers disagree about the comments in {rel}: the pin's verdict would "
+                    "depend on whether node_modules is installed, and that disagreement is a finding "
+                    "to trace back to the scanner limit in the module docstring, not to smooth over",
+                )
+
+
 class LinterRequirementTest(unittest.TestCase):
     """#216: the run/skip/fail decision, tested without a node or a lockfile installed."""
 
@@ -1116,6 +1393,20 @@ class LinterRequirementTest(unittest.TestCase):
 
     def test_node_with_eslint_installed_is_no_reason(self):
         self.assertIsNone(linters_unusable(which=lambda name: "/usr/bin/node", isdir=lambda path: True))
+
+    def test_the_parser_reader_needs_its_own_package(self):
+        """#205: the same two ways, with `typescript-eslint` as the package that has to be installed."""
+        self.assertEqual(javascript_parser_unusable(which=lambda name: None), "no node on PATH")
+        seen = []
+
+        def isdir(path):
+            seen.append(path)
+            return False
+
+        reason = javascript_parser_unusable(which=lambda name: "/usr/bin/node", isdir=isdir)
+        self.assertIn("bun install --frozen-lockfile", reason)
+        self.assertTrue(seen[0].endswith(os.path.join("node_modules", "typescript-eslint")), seen)
+        self.assertIsNone(javascript_parser_unusable(which=lambda name: "/usr/bin/node", isdir=lambda path: True))
 
     def test_without_the_variable_an_unusable_linter_skips(self):
         self.assertEqual(linter_control_disposition("no node on PATH", {}), "skip")
@@ -1342,6 +1633,24 @@ class LinterBitesTest(unittest.TestCase):
             [],
             "the pin refused a raise eslint itself honours",
         )
+
+    def test_each_scanner_limit_shape_is_a_real_directive_to_eslint(self):
+        """#205: control rc 1, the directive rc 0, and the pin reads it through the parser.
+
+        The three same-line shapes are the ones the scanner missed; the own-line rows are the
+        boundary it still reads, and the block regex on its own line is the shape it missed past
+        the end of the code line too. All of them are directives to eslint either way.
+        """
+        for name, code, same_line, _hidden in COMMENT_SHAPE_CASES:
+            with self.subTest(shape=name):
+                self.write(f"{code}\nconst neverUsed = 2;\n")
+                self.assertEqual(self.eslint(), (1, 1), "the control no longer fails eslint exactly once")
+                self.write(comment_shape_source(code, same_line))
+                self.assertEqual(self.eslint(), (0, 0), "one comment no longer disarms eslint: the arm moved")
+                problems = javascript_suppression_problems(self.root, ["probe.ts"])
+                self.assertEqual(len(problems), 1, problems)
+                self.assertIn(f"probe.ts:{1 if same_line else 2}: 'eslint-disable'", problems[0])
+                self.assertIn("block form", problems[0])
 
     def test_one_prettier_ignore_takes_the_api_step_from_rc_1_to_rc_0(self):
         """The formatter half of the same job, the same way."""
