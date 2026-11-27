@@ -776,7 +776,7 @@ class OpsFilesTestCase(unittest.TestCase):
             step["sections"].get("env"),
             ['WAKE_REQUIRE_LINTERS: "1"'],
             f"'Linter configs bite' env is {step['sections'].get('env')}, pinned to "
-            '[\'WAKE_REQUIRE_LINTERS: "1"\']: without it a missing eslint skips the control and the step '
+            "['WAKE_REQUIRE_LINTERS: \"1\"']: without it a missing eslint skips the control and the step "
             "stays green (#260)",
         )
         self.assertEqual(
