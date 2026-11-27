@@ -209,6 +209,13 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **The owner-address mask anchors both ends of the address.** The follow-up to the note above: a
+  local part in front of the owner's address is a different mailbox, and the mask only anchored the
+  end, so `someone.` + that address was blanked too. Both ends are anchored now, like the noreply
+  mask, and four more tests in `tests/test_scrub_check.py` hold the neighbours that must keep
+  failing: a longer local part before, a live address after, a live address beside, and a key on
+  the same line ([#248](https://github.com/Anxiety471/wake/issues/248)).
+
 - **`main`'s own secret scan no longer fails on the owner's address in a co-author trailer.**
   `main` at `7f739c5` failed `scripts/scrub-check.sh --history-head` on the squash merge of #241,
   which carried a `Co-authored-by:` trailer with the owner's own address: `6cd1f7a` was authored
