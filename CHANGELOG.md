@@ -249,6 +249,18 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **A bot's mailbox is no longer read as a leaked address, so a squash merge cannot red `main` with one.**
+  `main` at `b80e7ee` failed `scripts/scrub-check.sh --history-head` on a co-author trailer the
+  squash merge of #245 copied out of its branch: a bot's address at the instance's own agent domain, the
+  same shape #248 fixed for the owner's own address, and every branch cut from `main` inherited the red -
+  #220 and #227 both failed the job on it within minutes. An address at a `.trade` domain is one of the
+  instance's own identities, so the scan masks it per match, anchored on the end of the domain like the
+  noreply mask: a live address on a longer domain after it is still reported, and the line is never
+  skipped whole, so a key sharing it is still scanned. Five tests in `tests/test_scrub_check.py` hold
+  both directions, including the longer-domain and same-line-secret cases, and the guard names no host:
+  it matches the suffix, because this repository is public and keeps real hosts out of the tree
+  ([#253](https://github.com/Anxiety471/wake/issues/253)).
+
 - **The owner-address mask anchors both ends of the address.** The follow-up to the note above: a
   local part in front of the owner's address is a different mailbox, and the mask only anchored the
   end, so `someone.` + that address was blanked too. Both ends are anchored now, like the noreply
