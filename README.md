@@ -222,6 +222,38 @@ records, so the store read leaves it out on purpose and the store is quiet, not 
 must be taught, and a gate that has not been refuses it: `--inbox` then asks the plain
 `ls <store>` question instead, which is the answer #177 shipped. Gate first, client second.
 
+### `--silent` and `--pending`: message a bot without starting a run
+
+```sh
+wake engineer "heads up: CI is red" --silent          # record it, ring nothing
+wake --ask engineer "is the deploy done?" --silent    # same, as a thread waiting on an answer
+wake --pending                                        # what is addressed to me with no reply yet
+```
+
+A wake is a run, and a run's final answer is posted into the recipient bot's chat: the platform
+decides that, not the payload, and a model always produces a final message. So "answer without
+posting" is only ever a rule in that bot's routine, and no field wake sends can enforce it
+([#242](https://github.com/Anxiety471/wake/issues/242)). `--silent` is the structural answer: it
+writes the thread record to the store and POSTs nothing, so no run starts and nothing can appear
+in the recipient's chat. The cost is latency - the message waits for that bot's next turn, which
+finds it with `wake --pending` (threads addressed to me, no reply yet). It needs no webhook key,
+and it takes one target bot: `--all`, `--update` and `--ping` are refused with it, because a
+bulk silent send is a queue nobody reads.
+
+Use a loud wake when the bot must act now, and accept that its run may post a line in its chat.
+The answer leg matters as much as the ask. `--reply` writes the store, then notifies the asker,
+and a bot's notify is a wake - a run, and a chat line in the asker's chat. So a thread opened
+with `--silent` is answered on the same channel: the reply's notify is queued instead of rung,
+and the asker finds it with `wake --pending`. `--notify` still rings on a silent thread when
+the answer is urgent, and a loud ask keeps its loud answer.
+
+```sh
+wake --ask engineer "is the deploy done?" --silent   # nothing rings, no run starts
+wake --pending                                      # the engineer's next turn finds it
+wake --reply 1114-a3f2 "done"                        # silent on a silent thread
+wake --reply 1114-a3f2 "done" --notify               # or ring the asker now
+```
+
 ### `--setup`: create a webhook key
 
 ```sh
