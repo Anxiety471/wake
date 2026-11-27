@@ -18,6 +18,9 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GUARD = os.path.join(ROOT, "scripts", "changelog-guard.sh")
 ALLOW = os.path.join(ROOT, "scripts", "changelog-allow.txt")
+ALLOW_LABEL = "scripts/changelog-allow.txt"
+#: The day the guard is told it is, so a planted expiry means the same thing on every run.
+TODAY = "2026-11-24"
 CHANGELOG = os.path.join(ROOT, "CHANGELOG.md")
 CI = os.path.join(ROOT, ".github", "workflows", "ci.yml")
 
@@ -64,6 +67,35 @@ def clean_env(**extra):
 def text(path):
     with open(path, encoding="utf-8") as handle:
         return handle.read()
+
+
+def git_out(*args):
+    """Run git in this checkout and return the finished process, never raising on a non-zero exit."""
+    return subprocess.run(
+        ["git"] + list(args),
+        cwd=ROOT,
+        env=clean_env(),
+        text=True,
+        capture_output=True,
+    )
+
+
+def live_base():
+    """The base a pull request's guard run compares: `git merge-base origin/main HEAD`, or None.
+
+    None means this checkout cannot answer - a shallow clone without origin/main, or a repository with
+    no such branch - and the caller skips rather than comparing something else.
+    """
+    main = git_out("rev-parse", "--verify", "--quiet", "origin/main^{commit}")
+    if main.returncode != 0:
+        return None
+    head = git_out("rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+    if head.returncode != 0:
+        return None
+    merge = git_out("merge-base", main.stdout.strip(), head.stdout.strip())
+    if merge.returncode != 0:
+        return None
+    return merge.stdout.strip()
 
 
 def unreleased_bullet(document):
@@ -115,8 +147,9 @@ class ChangelogGuardTestCase(unittest.TestCase):
         self.git("commit", "-q", "-m", message)
         return self.git("rev-parse", "HEAD").stdout.strip()
 
-    def run_guard(self, *args, allow=None):
+    def run_guard(self, *args, allow=None, today=TODAY):
         env = clean_env()
+        env["WAKE_CHANGELOG_TODAY"] = today
         if allow is not None:
             env["WAKE_CHANGELOG_ALLOW"] = allow
         return subprocess.run(
@@ -348,8 +381,13 @@ class ChangelogGuardTestCase(unittest.TestCase):
         self.write_allow(allow_body)
         return self.commit(message)
 
-    def test_an_entry_the_base_carries_and_no_line_needs_fails(self):
-        """The #212 case: the base lists the entry, the change that needed it has merged, nothing is lost."""
+    def test_an_entry_the_base_carries_whose_line_it_already_lost_fails(self):
+        """The #212/#321 case: the base lists the entry and no longer carries the line it allowed to go.
+
+        The fixture has to delete the line in the base, because that is what a merged permission looks
+        like. An entry whose line the base still carries is a different thing - see the next test (#350).
+        """
+        self.write("CHANGELOG.md", BASE.replace(UNRELEASED + "\n\n", ""))
         base = self.commit_base_with_allow(
             f"# inherited permission\n{UNRELEASED}\n", "base carries an entry no line needs"
         )
@@ -358,6 +396,28 @@ class ChangelogGuardTestCase(unittest.TestCase):
         self.assertIn("inherited from", result.stdout)
         self.assertIn(UNRELEASED, result.stdout)
         self.assertIn("FAILED", result.stderr)
+
+    def test_an_inherited_permission_whose_line_the_base_still_carries_is_only_reported(self):
+        """#350: the base carries the entry and still carries the line, and the change touches nothing.
+
+        This is the shape that was red: the entry is a permission for a deletion that has not happened
+        yet, so it cannot be told apart from a live one and must not fail an unrelated change.
+        """
+        base = self.commit_base_with_allow(f"# pending permission\n{UNRELEASED}\n", "base carries a pending entry")
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("inherited from", result.stdout)
+        self.assertIn("has not made yet", result.stdout)
+        self.assertNotIn("FAILED", result.stderr)
+
+    def test_a_standing_permission_does_not_red_the_next_unrelated_change(self):
+        """The measured #350 shape: commit the entry, then one unrelated commit on top of it."""
+        base = self.commit_base_with_allow(f"# standing permission\n{UNRELEASED}\n", "commit the permission")
+        self.write("README.md", "an unrelated change\n")
+        head = self.commit("an unrelated change on top")
+        result = self.run_guard(base, head)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("FAILED", result.stderr)
 
     def test_an_entry_this_change_adds_and_no_line_needs_is_only_reported(self):
         """The entry is new in the pull request, so the base does not carry it yet: a NOTE, not a failure."""
@@ -376,6 +436,15 @@ class ChangelogGuardTestCase(unittest.TestCase):
         self.assertIn("1 of 1 removed line(s) listed", result.stdout)
         self.assertNotIn("inherited from", result.stdout)
 
+    def test_an_entry_committed_on_top_of_its_base_is_only_reported(self):
+        """#350: the committed-permission shape. The base has no entry, the head commits one: a NOTE, not a failure."""
+        self.write_allow(f"# new permission\n{UNRELEASED}\n")
+        head = self.commit("commit an entry on top of the base")
+        result = self.run_guard(self.base, head)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("match no line this base loses", result.stdout)
+        self.assertNotIn("inherited from", result.stdout)
+
     def test_a_base_that_predates_the_allowlist_has_no_inherited_entries(self):
         """Graceful skip: a base without scripts/changelog-allow.txt carries nothing to be dead."""
         self.git("rm", "-q", os.path.join("scripts", "changelog-allow.txt"))
@@ -385,14 +454,201 @@ class ChangelogGuardTestCase(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("inherited from", result.stdout)
 
+    # -- staleness is decided offline, from a date (#350) ------------------------
+
+    def test_an_inherited_entry_past_its_expiry_fails_and_names_file_line_date_and_fix(self):
+        """#350: `# expires:` is the marker that makes staleness decidable without a network call."""
+        base = self.commit_base_with_allow(
+            f"# drop this note once its replacement ships (#900)\n# expires: 2026-11-01\n{UNRELEASED}\n",
+            "base carries an entry whose date has passed",
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"{ALLOW_LABEL}:3", result.stdout)
+        self.assertIn(UNRELEASED, result.stdout)
+        self.assertIn("expired on 2026-11-01", result.stdout)
+        self.assertIn("remove it in its own commit", result.stdout)
+        self.assertIn("FAILED", result.stderr)
+
+    def test_an_inherited_entry_before_its_expiry_is_only_reported(self):
+        """A live permission is not stale: the base still carries the line and the date is ahead."""
+        base = self.commit_base_with_allow(
+            f"# this note goes at the next tag (#900)\n# expires: 2026-12-31\n{UNRELEASED}\n",
+            "base carries an entry whose date is ahead",
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("inherited from", result.stdout)
+        self.assertNotIn("FAILED", result.stderr)
+
+    def test_the_expiry_day_itself_is_still_standing(self):
+        """The entry is valid through its date; the day after is when it fails."""
+        body = f"# goes at the tag (#900)\n# expires: {TODAY}\n{UNRELEASED}\n"
+        base = self.commit_base_with_allow(body, "base carries an entry expiring today")
+        same_day = self.run_guard(base, today=TODAY)
+        self.assertEqual(same_day.returncode, 0, same_day.stdout + same_day.stderr)
+        next_day = self.run_guard(base, today="2026-11-25")
+        self.assertEqual(next_day.returncode, 1, next_day.stdout + next_day.stderr)
+        self.assertIn("expired on 2026-11-24", next_day.stdout)
+
+    def test_an_expired_entry_removed_by_this_change_is_clean(self):
+        """The fix the failure asks for: delete the entry, and the guard is satisfied."""
+        base = self.commit_base_with_allow(
+            f"# drop this note (#900)\n# expires: 2026-11-01\n{UNRELEASED}\n",
+            "base carries an expired entry",
+        )
+        self.write_allow("# nothing listed yet\n")
+        head = self.commit("remove the expired entry")
+        result = self.run_guard(base, head)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_removing_the_marker_does_not_disarm_an_expired_entry(self):
+        """The marker the base carries governs: a change cannot turn an expired entry into a NOTE."""
+        body = f"# drop this note (#900)\n# expires: 2026-11-01\n{UNRELEASED}\n"
+        base = self.commit_base_with_allow(body, "base carries an expired entry")
+        self.write_allow(f"# drop this note (#900)\n{UNRELEASED}\n")
+        head = self.commit("delete the marker, keep the entry")
+        result = self.run_guard(base, head)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("expired on 2026-11-01", result.stdout)
+
+    def test_this_change_may_add_its_own_expiry_to_an_inherited_entry(self):
+        """A marker this change adds applies when the base has none, so it is not ignored."""
+        base = self.commit_base_with_allow(f"# no marker yet (#900)\n{UNRELEASED}\n", "base carries an entry")
+        self.write_allow(f"# no marker yet (#900)\n# expires: 2026-11-01\n{UNRELEASED}\n")
+        head = self.commit("give the inherited entry a date")
+        result = self.run_guard(base, head)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("expired on 2026-11-01", result.stdout)
+
+    def test_an_expiry_that_is_not_a_date_cannot_be_verified(self):
+        """A marker nobody can read must not read as a standing permission."""
+        base = self.commit_base_with_allow(
+            f"# drop this note (#900)\n# expires: soon\n{UNRELEASED}\n", "base carries an unreadable expiry"
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cannot verify", result.stderr)
+        self.assertIn(f"{ALLOW_LABEL}:3", result.stderr)
+
+    def test_a_day_the_calendar_does_not_have_cannot_be_verified(self):
+        """2026-02-30 would compare as a date if it were only pattern-matched."""
+        base = self.commit_base_with_allow(
+            f"# drop this note (#900)\n# expires: 2026-02-30\n{UNRELEASED}\n", "base carries an impossible date"
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cannot verify", result.stderr)
+
+    def test_a_stale_when_marker_is_refused_because_it_needs_github(self):
+        """An issue lookup cannot be decided in an offline test job, so it fails closed, not open."""
+        base = self.commit_base_with_allow(
+            f"# drop this note\n# stale-when: 900\n{UNRELEASED}\n", "base carries an issue marker"
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cannot verify", result.stderr)
+        self.assertIn("decided offline", result.stderr)
+
+    def test_a_capitalised_expiry_marker_is_refused_rather_than_ignored(self):
+        """L3: `# Expires:` was not a marker, so it read as a reason and the entry stood forever."""
+        self.write_allow(f"# standing permission (#900)\n# Expires: 2026-12-31\n{UNRELEASED}\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cannot read the marker", result.stderr)
+        self.assertIn("Expires: 2026-12-31", result.stderr)
+        self.assertIn("expires: YYYY-MM-DD", result.stderr)
+
+    def test_an_expiry_marker_without_a_colon_is_refused(self):
+        """L3: `# expires 2026-11-01` has no colon, and the date it carries was silently dropped."""
+        self.write_allow(f"# standing permission (#900)\n# expires 2026-11-01\n{UNRELEASED}\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cannot read the marker", result.stderr)
+        self.assertIn("expires 2026-11-01", result.stderr)
+
+    def test_a_capitalised_stale_when_marker_is_refused_rather_than_ignored(self):
+        """The same gap in the other marker: the casing hid it from the unverifiable refusal."""
+        self.write_allow(f"# standing permission (#900)\n# Stale-when: 900\n{UNRELEASED}\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("cannot read the marker", result.stderr)
+
+    def test_a_reason_that_only_mentions_expiry_mid_sentence_is_still_a_reason(self):
+        """The refusal is for a marker attempt at the start of a comment, not for the word."""
+        self.write_allow(f"# this note expires when #900 merges, so it is reflowed\n{UNRELEASED}\n")
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("changelog-guard: clean", result.stdout)
+
+    def test_the_guard_prints_the_two_revisions_it_compares(self):
+        """A run has to say which base it took, or a caller cannot be held to the choice."""
+        result = self.run_guard(self.base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"changelog-guard: comparing base {self.base} with the working tree", result.stdout)
+
+    def test_the_guard_prints_the_head_revision_it_compares(self):
+        """The head side is printed too, so passing the base as the head is visible in the run."""
+        result = self.run_guard(self.base, "HEAD")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"changelog-guard: comparing base {self.base} with head HEAD", result.stdout)
+
+    def test_the_same_revision_on_both_sides_does_not_fail_a_standing_entry(self):
+        """The original #350 shape: base == HEAD, one standing entry, nothing removed."""
+        body = f"# standing permission (#900)\n# expires: 2026-12-31\n{UNRELEASED}\n"
+        head = self.commit_base_with_allow(body, "commit the standing permission")
+        result = self.run_guard(head, head)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("changelog-guard: clean", result.stdout)
+
+    def test_the_same_revision_on_both_sides_still_fails_an_expired_entry(self):
+        """base == HEAD is not a way out of the date: an expired entry fails with nothing removed."""
+        body = f"# standing permission (#900)\n# expires: 2026-11-01\n{UNRELEASED}\n"
+        head = self.commit_base_with_allow(body, "commit an already expired permission")
+        result = self.run_guard(head, head)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("expired on 2026-11-01", result.stdout)
+
+    def test_the_reason_that_fired_is_printed(self):
+        """An expired entry whose line is also gone reports the date, not the spent rule."""
+        self.write("CHANGELOG.md", BASE.replace(UNRELEASED + "\n\n", ""))
+        base = self.commit_base_with_allow(
+            f"# drop this note (#900)\n# expires: 2026-11-01\n{UNRELEASED}\n", "base spent and expired"
+        )
+        result = self.run_guard(base)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("expired on 2026-11-01", result.stdout)
+        self.assertNotIn("reason: spent", result.stdout)
+
 
 class LiveRepositoryTestCase(unittest.TestCase):
     """The guard against this repository's own files, so the rule is not only a fixture's."""
 
-    def test_this_changelog_is_clean_against_its_own_head(self):
-        result = subprocess.run([GUARD, "HEAD"], cwd=ROOT, env=clean_env(), text=True, capture_output=True)
+    def test_this_changelog_is_clean_against_the_base_a_pull_request_uses(self):
+        """#350: the base the CI step compares, not this head and not its parent.
+
+        CI runs the guard with `${{ github.event.pull_request.base.sha }}`, and a local run has to mirror
+        that or it measures a different question. `HEAD~1` was wrong in both directions: in the
+        pull_request shape HEAD is the merge commit of the base tip and the branch, so HEAD~1 is the base
+        tip only for a one-commit branch, and a base that carries a standing permission reds a change
+        that touches nothing.
+        """
+        base = live_base()
+        if base is None:
+            self.skipTest("no origin/main to compare against")
+        main = git_out("rev-parse", "origin/main").stdout.strip()
+        head = git_out("rev-parse", "HEAD").stdout.strip()
+        # The base choice is asserted at the call site, not only on live_base(): the guard prints the
+        # two revisions it compared and this reads that line back. An assertion on live_base() alone
+        # left the call site free - dropping the base argument there, or passing the head as the base,
+        # kept this module at 48 OK while the live run compared the head with itself (#350).
+        self.assertEqual(base, git_out("merge-base", main, head).stdout.strip())
+        if head != main:
+            self.assertNotEqual(base, head, "the live guard compares this head with itself again (#350)")
+        result = subprocess.run([GUARD, base, "HEAD"], cwd=ROOT, env=clean_env(), text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("changelog-guard: clean", result.stdout)
+        self.assertIn(f"changelog-guard: comparing base {base} with head HEAD", result.stdout)
 
     def test_this_changelogs_unreleased_notes_are_protected(self):
         live = text(CHANGELOG)
@@ -427,6 +683,37 @@ class LiveRepositoryTestCase(unittest.TestCase):
         result = subprocess.run([GUARD, "HEAD"], cwd=ROOT, env=clean_env(), text=True, capture_output=True)
         self.assertNotIn("no reason comment above it", result.stderr)
         self.assertTrue(os.path.isfile(ALLOW))
+
+
+class DocumentedRuleTestCase(unittest.TestCase):
+    """The rule a contributor reads is the rule the guard enforces (#350, L2).
+
+    #321's sentence - a merged entry left behind fails the next pull request - is false for a pending
+    permission, and the only lever that ends one, `# expires:`, was documented nowhere a contributor
+    looks. These read the two documents instead of the source.
+    """
+
+    @staticmethod
+    def flat(path):
+        """The document with its comment markers and line wrapping removed, so a phrase can be read."""
+        return " ".join(text(path).replace("#", " ").split())
+
+    def test_contributing_states_the_pending_rule_and_the_expiry_marker(self):
+        body = text(os.path.join(ROOT, "CONTRIBUTING.md"))
+        flat = self.flat(os.path.join(ROOT, "CONTRIBUTING.md"))
+        self.assertIn("# expires: YYYY-MM-DD", body)
+        self.assertIn("prints it as a NOTE and passes", flat)
+        self.assertNotIn("a merged entry left behind fails the next pull request", flat)
+        # The base's marker governs: bumping the date in a pull request is not a way to keep the entry.
+        self.assertIn("bumping the date in a pull request does not postpone an expiry", flat)
+
+    def test_the_allowlist_header_states_the_pending_rule_and_the_expiry_marker(self):
+        body = text(ALLOW)
+        flat = self.flat(ALLOW)
+        self.assertIn("# expires: YYYY-MM-DD", body)
+        self.assertIn("marker the base revision carries governs", flat.lower())
+        self.assertIn("refused as unreadable", flat)
+        self.assertIn("a deletion that has not happened yet", flat)
 
 
 class CiWiringTestCase(unittest.TestCase):

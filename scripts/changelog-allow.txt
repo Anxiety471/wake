@@ -9,7 +9,19 @@
 # An entry is a standing permission, not a one-PR note: once the change that needed it has merged,
 # remove the entry in its own commit, so the next deletion of that line is caught again.
 # An entry that the base revision already carries and that matches no line the base loses fails the
-# guard (#321): a merged permission someone forgot to remove.
+# guard (#321) only when that base no longer carries the line the entry permits to delete: a merged
+# permission someone forgot to remove. While the base still carries the line, the entry is a pending
+# permission - the guard prints it and does not fail, because a deletion that has not happened yet
+# cannot be told apart from one that never will, and failing both reds every change in between (#350).
+#
+# A permission that must not outlive a date carries that date in its reason, on its own comment line
+# directly above the entry: `# expires: YYYY-MM-DD`. Once the day is past, the entry fails the guard
+# and names the date, so it is removed in its own commit (#350). That exact form is the only one read;
+# a marker written any other way (`# Expires:`, `# expires` without the colon) is refused as
+# unreadable instead of being ignored, because an unread marker leaves a permission permanently
+# standing. The marker the base revision carries governs: editing the date in a pull request does not
+# postpone an expiry that has already passed. A `# stale-when: <issue>` marker is refused as
+# unverifiable, because staleness is decided offline and the test job cannot look an issue up.
 #
 # A line that starts with # is written with a leading backslash (\### Fixed), because a bare # line
 # is a comment here. Indentation is part of the entry: copy the line as it stands, and an entry that

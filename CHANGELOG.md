@@ -244,6 +244,28 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 - **A thread append into a store file owned by another user is no longer refused, and a refusal names the thread and the path.** The host sets `fs.protected_regular = 2`, and `rakazo-wake-gate` passed `O_CREAT` on every append, including when the file already existed. The store is `3770 root:wake` (setgid + sticky) and the gate runs as `wakeops`, so an `O_CREAT` open of a file owned by neither the caller nor the directory's owner is refused with `EACCES`: eleven store files belong to `hitori`, because a host-side `wake` writes as the user who runs it, and every append into one of them failed. `journalctl -t wake-gate` names eight refused appends in a burst on 2026-11-22 05:29-05:36 and one at 00:18:37, twelve seconds after a host-side client created `11230018-4953.jsonl` as `hitori` (its birth time is 00:18:25) (four more are on 2026-11-16, before the window these numbers cover); each line is a bare `wake-gate refuse thread append errno=13`, with no thread id and no path. In that burst the gate accepted 173 operations and not one of them was an append - 168 `thread read`, 4 `thread store read`, 1 `thread list` - so the eight refusals were the only writes attempted; appends into files owned by `root` (the directory's owner) or by `wakeops` were not affected. A scratch store of the same shape reproduced it by name (v11 refused, the same open without `O_CREAT` appended the line and kept the owner). Gate **v12** opens an existing file without `O_CREAT`, retries once with it when the file vanished between `lstat` and `open`, and keeps creating a new thread at 0660; a refusal now reads `wake-gate: io error: Permission denied (errno=13, key=<thread>, target=<path>)` and the journal line carries the same three fields, so the next loss names its thread. A `None` `strerror` no longer prints as `(None)`. `GateAppendOwnershipTests` in `tests/test_gate_shapes.py` holds the flag contract - the append route and the marker write, the refusal's stderr and its journal line - against a staged gate and fails on v11 ([#221](https://github.com/Anxiety471/wake/issues/221)). It skips wherever no gate is staged, which is every CI job while the gate still lives outside the repository, so CI green is not evidence for this contract yet.
 
+- **A standing allowlist entry no longer reds every change between its commit and its deletion.** #321
+  failed the guard on any entry the base carried that matched no line the base loses, which is also the
+  shape of a permission whose deletion has not happened yet. Measured at `2bc9452`: committing one entry
+  left `LiveRepositoryTestCase` at Ran 3 OK, and one unrelated commit on top with the entry still
+  standing took it to `FAILED (failures=1)`, `1 allowlist entry/entries inherited from HEAD~1 match no
+  line this base loses`, while `scripts/changelog-guard.sh origin/main` on the same tree was clean, rc 0.
+  The pull_request run has the same shape: `ci.yml` runs the guard with the pull request's base sha, so
+  a base that carries a standing permission reds a pull request that touches nothing, and a test-only
+  change cannot close that. An inherited entry now fails only when it is provably spent - the base no
+  longer carries the line it permits to delete, so the change it allowed has merged - and while the base
+  still carries that line it is printed as a NOTE, so it is still named in every run and removed when
+  its deletion merges. `LiveRepositoryTestCase` compares `git merge-base origin/main HEAD` with `HEAD`,
+  the base the CI step compares, instead of `HEAD~1`, and skips where `origin/main` is absent. The guard
+  now prints the two revisions it compares, and the test asserts that line against the merge base and
+  `HEAD`, so the choice is pinned where it is made: dropping the base argument at the call site, or
+  passing the head as the base, used to leave the module at 48 OK
+  ([#240](https://github.com/Anxiety471/wake/issues/240)). A date is the one staleness marker that needs
+  no network: `# expires: YYYY-MM-DD` in an entry's reason fails the guard once the day is past, and a
+  marker written any other way (`# Expires:`, or no colon) is now refused as unreadable rather than
+  read as a reason comment - an unread marker used to leave the entry standing forever. `CONTRIBUTING.md`
+  and this allowlist header state the rule that replaced #321 and document the marker.
+
 - **A suppression inside a linted file is pinned, so one comment cannot silence a whole check.** #185 closed the
   config files a linter loads on its own; a suppression comment is the same trust boundary one level
   in, and nothing read it. At `e4ca592` a standalone `# ruff: noqa` anywhere in a test file left
