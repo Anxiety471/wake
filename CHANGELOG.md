@@ -273,6 +273,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **A co-author trailer no longer reds the default branch with the machine's own user.** The squash
+  merge of #256 copied the branch commit's author identity, which a commit made on a fleet machine
+  writes as its own user at the host, into a Co-authored-by trailer, and the scan failed the default
+  branch at e9155061 on it - so every branch cut from it started red. It is an infrastructure
+  identity, not a person's mailbox, so the scan masks it: the mask names the user and not the host,
+  because this repository is public and names no real host, and it matches only inside a co-author
+  trailer's brackets - the same address written into a tracked file is still a leak and is still
+  reported. Four tests in tests/test_scrub_check.py hold both directions, and the trailers the
+  owner's and a bot's addresses arrive in keep their own rules
+  ([#258](https://github.com/Anxiety471/wake/issues/258)).
+
 - **The interrupt test fails on the interrupt, not on a 20 s clock.** `wake-wait`'s interrupt case
   read the exit with `communicate(timeout=20)`, so a slow runner that put the exit past 20 s got
   `subprocess.TimeoutExpired` (run 45059940486, Python 3.9) - a fact about the clock, not about the
