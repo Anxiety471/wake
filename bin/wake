@@ -29,6 +29,14 @@ THREADS = STATE + "/threads"  # on the host: shared by every bot and session tha
 KEY_HELPER = CFG["WAKE_KEY_HELPER"]
 GROUP = CFG["WAKE_GROUP"]
 DEFAULT_BOT = CFG["WAKE_BOT"]
+# A wake is a message between bots; the human should see that one arrived, not the answer to it.
+# The flag rides in the payload (silent) and as a tail on detail, so a receiver needs no per-bot
+# routine edit to stay quiet. WAKE_SILENT=0 or --chatty turns it off for one send.
+SILENT = str(CFG["WAKE_SILENT"]).strip().lower() not in ("0", "false", "no", "off")
+SILENT_TAIL = (
+    "[silent wake: post no chat output to the human; answer in the thread store (wake --reply) "
+    "or message_bot, then end the turn with no chat message]"
+)
 q = shlex.quote
 AGENT_NAMES = {"omp": "Oh My Pi"}  # display names for agent harnesses; others show their label as is
 # The API accepts a 64 KiB body (413 above it). `message` repeats most of `detail`, so a long wake
@@ -642,13 +650,17 @@ def read_key(path):
         return r.stdout.strip()
 
 
-def send(b, source, event, level, detail, ref, force=False, quiet=False):
+def send(b, source, event, level, detail, ref, force=False, quiet=False, silent=None):
+    if silent is None:
+        silent = SILENT
     if not BASE:
         sys.exit("WAKE_API_BASE is not set (env or config.env), e.g. https://bots.example.com/api/v1/bots")
     depth = guard(b, force)
     key = read_key(ensure_key(b))
     message = detail
     detail = (detail + " | " + context()).strip(" |")
+    if silent:
+        detail = detail + " | " + SILENT_TAIL
     # The sending bot's id lets the chats show the message as one bot to another. A label, not proof.
     sender = next((x for x in load() if "bot:" + x["alias"] == source), None) if os.path.exists(REGISTRY) else None
     # An agent outside the bot fleet (skill:omp, harness:x) shows under its own name, never as a bot.
@@ -662,6 +674,7 @@ def send(b, source, event, level, detail, ref, force=False, quiet=False):
         "message": message,
         "event": event,
         "level": level,
+        "silent": bool(silent),
         "detail": detail,
         "ref": ref,
         "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -748,11 +761,12 @@ def ask(b, text, wait, level, source, force, no_send=False, silent=False):
             "text": text,
             "to": b["alias"],
             "inbox": inbox_of_session(),
+            "silent_payload": SILENT,
         },
     )
     detail = f'{text} [thread {tid}] reply: wake --reply {tid} "YOUR ANSWER"'
     if not no_send:
-        send(b, source, "request", level, detail, "thread:" + tid, force)
+        send(b, source, "request", level, detail, "thread:" + tid, force, silent=SILENT)
     else:
         print(f"[dry-run] would ask {b['alias']}: {detail}")
     audit("ask", source, text, tid, b["alias"], 99 if no_send else 0)
@@ -859,7 +873,7 @@ def api_reply(tid, text):
         sys.exit(f"cannot reach the wake API at {base} to answer {tid}: {e.reason}")
 
 
-def reply(tid, text, source, notify, force, silent=False, notify_explicit=False):
+def reply(tid, text, source, notify, force, silent=False, notify_explicit=False, no_ring=False, chatty=False):
     recs = thread_read(tid)
     if recs is None:
         sys.exit(
@@ -870,12 +884,29 @@ def reply(tid, text, source, notify, force, silent=False, notify_explicit=False)
         # An id the API minted belongs to the API's store, not this folder: answer it there when
         # this bot holds its own token, and name the setting that is missing when it does not.
         if API_THREAD_ID.match(tid):
+            # The API's reply route has no tone: it rings the asker whatever the caller wanted, and
+            # its doorbell payload carries no `silent` key (apps/api/src/doorbell.ts). A flag that
+            # promises no run, no ring or a quiet payload cannot be honoured here, so it is refused
+            # before anything is posted rather than dropped after the asker was already rung (#382).
+            if silent or no_ring:
+                flag = "--silent" if silent else "--no-ring"
+                audit("reply-refused", source, text, tid, "api", 8)
+                sys.exit(
+                    f"thread {tid} lives on the wake API, whose reply route always rings the asker: "
+                    f"{flag} cannot be honoured there, so nothing was sent. Answer it without {flag}, "
+                    f"or have the API grow a quiet reply."
+                )
             status, answer = api_reply(tid, text)
             if status is not None:
                 if status == 201:
                     seq = answer.get("seq", "?") if isinstance(answer, dict) else "?"
                     audit("reply", source, text, tid, "api", 0)
                     print(f"replied on thread {tid} through the wake API (seq {seq}): {text}")
+                    if chatty:
+                        print(
+                            "  --chatty: the API reply is loud already (its payload carries no silent "
+                            "field), so the flag changes nothing here"
+                        )
                     return 0
                 audit("reply-refused", source, text, tid, "api", 7)
                 sys.exit(f"the wake API refused the reply to {tid}: {status} {answer}")
@@ -922,7 +953,19 @@ def reply(tid, text, source, notify, force, silent=False, notify_explicit=False)
         sys.exit(
             f"thread {tid} is owned by {owner} and replies go to {reply_to}; {source} is neither, so it cannot answer. Use --force to override."
         )
-    thread_append(tid, {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "from": source, "kind": "reply", "text": text})
+    # The tone travels with the thread, not with the replier: the asker set it, and --chatty is the
+    # only way to disagree. It is a different flag from silent, which starts no run at all.
+    tone = bool(head.get("silent_payload", SILENT)) and not chatty
+    thread_append(
+        tid,
+        {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "from": source,
+            "kind": "reply",
+            "text": text,
+            "silent_payload": tone,
+        },
+    )
     audit("reply", source, text, tid, reply_to, 0)
     print(f"replied on thread {tid} (owner {owner}, reply_to {reply_to}): {text}")
     ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -932,6 +975,10 @@ def reply(tid, text, source, notify, force, silent=False, notify_explicit=False)
             if tgt and notify:
                 if silent:
                     queue_silent(tgt, f"reply on thread {tid}: {text}", source, kind="reply", what="reply")
+                elif no_ring:
+                    # A ring starts a run on the asker, and a run's answer is the one leg no flag can
+                    # hide. Unrung the reply waits in the store: no run, so nothing to render.
+                    print(f"  no ring (--no-ring): {owner} reads it with: wake --thread {tid}  (or --inbox)")
                 else:
                     send(
                         tgt,
@@ -941,6 +988,7 @@ def reply(tid, text, source, notify, force, silent=False, notify_explicit=False)
                         f"reply on thread {tid}: {text}",
                         "thread:" + tid,
                         force,
+                        silent=tone,
                     )
         else:
             box = inbox_active(head.get("inbox") or "")
@@ -959,6 +1007,8 @@ def reply(tid, text, source, notify, force, silent=False, notify_explicit=False)
                     kind="reply",
                     what="reply",
                 )
+            elif no_ring:
+                print(f"  no ring (--no-ring): {reply_to} reads it with: wake --thread {tid}  (or --inbox)")
             else:
                 send(
                     tgt,
@@ -968,6 +1018,7 @@ def reply(tid, text, source, notify, force, silent=False, notify_explicit=False)
                     f"answer on thread {tid} from {source} (no reply needed): {text}",
                     "",
                     force,
+                    silent=tone,
                 )
                 print(f"  woke {reply_to} with the reply")
     return 0
@@ -993,6 +1044,17 @@ p.add_argument(
     help="record the message (or --reply) and start no run: nothing can post to the recipient's chat, it reads it with --pending",
 )
 p.add_argument("--pending", action="store_true", help="threads waiting on me: addressed to me, no reply yet")
+p.add_argument(
+    "--no-ring",
+    dest="no_ring",
+    action="store_true",
+    help="reply without waking the asker: the answer waits in the thread store, so no run starts",
+)
+p.add_argument(
+    "--chatty",
+    action="store_true",
+    help="let the receiver post its answer in its chat (payload silent=false; the default is WAKE_SILENT)",
+)
 p.add_argument("--setup", metavar="BOT", help="create (or with --rotate, replace) the webhook key for a bot")
 p.add_argument("--rotate", action="store_true")
 p.add_argument("--level", default="info", choices=["ok", "error", "info"])
@@ -1016,6 +1078,8 @@ p.add_argument(
 )
 p.add_argument("--all", metavar="MESSAGE", help="send one message to every open bot (private bots are skipped)")
 a = p.parse_args()
+if a.chatty:
+    SILENT = False
 bots = load()
 if a.source is None:
     a.source = default_source()
@@ -1025,6 +1089,18 @@ if a.silent and (a.all or a.ping or a.update or not (a.target or a.ask or a.repl
 
 if a.silent and a.wait:
     sys.exit("--silent starts no run, so --wait would wait on a bot that was never woken")
+
+# --notify and --no-ring are the two halves of one decision about the same ring, so a caller that
+# passes both has said nothing: the reply either wakes the asker or waits in the store. --no-ring
+# used to win silently (#382).
+if a.notify and a.no_ring:
+    sys.exit(
+        "--notify and --no-ring contradict each other: --notify rings the asker, --no-ring leaves the "
+        "answer in the thread store and rings nobody. Pass one of them."
+    )
+
+if a.no_ring and not a.reply:
+    sys.exit("--no-ring only applies to --reply: it leaves the answer in the thread store instead of waking the asker")
 
 if a.add or a.sync:
     if a.add:
@@ -1159,6 +1235,8 @@ if a.reply:
             a.force,
             a.silent,
             a.notify,
+            a.no_ring,
+            a.chatty,
         )
     )
 
