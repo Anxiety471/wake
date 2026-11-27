@@ -282,6 +282,14 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   that never fires fails with the code wake-wait came back with ("the interrupt did not end the
   wait: ..."), and an interrupt the runner ignores can no longer be reported as a timeout with no
   bearing on wake-wait ([#223](https://github.com/Anxiety471/wake/issues/223)).
+- **The api job's job-level `env`, `services` and `runs-on` are pinned by value.** Dr. Eggbot's
+  non-blocking finding on #232 (review 6045430138): the api job pin read every step's body, keys and
+  `with:` values, but not `TEST_DATABASE_URL`, the postgres service image, ports and health check, or
+  the runner, so each of them could change with the pin at 75 OK. `TEST_DATABASE_URL` is the connection
+  the suite uses and the image decides the postgres version it runs on, so a change to either changed
+  what the job proves while every step stayed green. The pin now reads those values and names the one
+  that moved in its failure; `tests/test_ops_scripts.py` holds it
+  ([#255](https://github.com/Anxiety471/wake/issues/255)).
 
 - **A bot's mailbox is no longer read as a leaked address, so a squash merge cannot red `main` with one.**
   `main` at `b80e7ee` failed `scripts/scrub-check.sh --history-head` on a co-author trailer the

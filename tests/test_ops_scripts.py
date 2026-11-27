@@ -982,6 +982,111 @@ class OpsFilesTestCase(unittest.TestCase):
             "runs the pin, so a different minor fails here instead of changing what it reads",
         )
 
+    def test_ci_api_job_environment_services_and_runner_are_pinned(self):
+        """#255: the api job's steps are pinned by value above, but its job-level values were not.
+        `TEST_DATABASE_URL` is the connection the suite uses, and the postgres service image and
+        ports decide what it connects to and which postgres the tests run on; `runs-on` decides
+        the runner. Measured on Dr. Eggbot's review of #232 (6045430138): each of these edited with
+        every step pin still green at 75 OK. The job's key list is pinned by the test above; this one
+        pins what each of those keys holds, as the lint job's `runs-on` is pinned.
+        """
+        lines = text(os.path.join(ROOT, ".github/workflows/ci.yml")).splitlines()
+        self.assertIn("  api:", lines, "the api (bun) job is gone")
+        start = lines.index("  api:")
+        block = []
+        for line in lines[start + 1 :]:
+            if line.startswith("  ") and not line.startswith("   ") and line.strip():
+                break
+            block.append(line)
+
+        def job_section(key):
+            """The non-comment lines under a job-level `key:`, indent kept, so a nested key can be told
+            from a child of it."""
+            found, body = False, []
+            for line in block:
+                if line.startswith("    ") and not line.startswith("     ") and line.strip():
+                    found = line.strip() == f"{key}:"
+                    continue
+                if found and line.strip() and not line.strip().startswith("#"):
+                    body.append(line.rstrip())
+            return body
+
+        runner = [line.strip() for line in block if line.startswith("    runs-on:")]
+        self.assertEqual(
+            runner,
+            ["runs-on: ubuntu-24.04"],
+            f"api job runs-on moved: {runner}: the runner decides what the api job runs on, so a "
+            "floating or self-hosted image changes what it proves while every step stays green",
+        )
+
+        env = [line.strip() for line in job_section("env")]
+        self.assertEqual(
+            env,
+            ["TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/wake_test"],
+            f"api job env moved: {env}: TEST_DATABASE_URL is the database the suite connects to, "
+            "so pointing it elsewhere changes what the job proves without touching a step",
+        )
+
+        # The services block, one level down: a service key is one indent deeper than the service name, so
+        # a key added to the postgres service is named in the failure rather than read as a second service.
+        services = job_section("services")
+        service_names = [
+            line.strip() for line in services if line.startswith("      ") and not line.startswith("       ")
+        ]
+        self.assertEqual(
+            service_names,
+            ["postgres:"],
+            f"api job services are {service_names}: the suite runs against one postgres service, "
+            "and a second service or a renamed one changes what the job connects to",
+        )
+        pg = {}
+        current = None
+        for line in services:
+            if line.startswith("      ") and not line.startswith("       "):
+                continue
+            if line.startswith("        ") and not line.startswith("         "):
+                key, _, rest = line.strip().partition(":")
+                current = key
+                pg[key] = [rest.strip()] if rest.strip() else []
+            elif current is not None:
+                pg[current].append(line.strip())
+        self.assertEqual(
+            list(pg),
+            ["image", "env", "ports", "options"],
+            f"api job services.postgres keys are {list(pg)}: a key added to the service changes the "
+            "database the tests run against, so each one is listed here",
+        )
+        self.assertEqual(
+            pg["image"],
+            ["postgres:17"],
+            f"api job services.postgres.image moved: {pg['image']}: the image decides the postgres "
+            "version the suite runs on, so a different tag changes what the job proves",
+        )
+        self.assertEqual(
+            pg["env"],
+            ["POSTGRES_USER: postgres", "POSTGRES_PASSWORD: postgres", "POSTGRES_DB: wake_test"],
+            f"api job services.postgres.env moved: {pg['env']}: these create the user, password and "
+            "database that TEST_DATABASE_URL above names",
+        )
+        self.assertEqual(
+            pg["ports"],
+            ["- 5432:5432"],
+            f"api job services.postgres.ports moved: {pg['ports']}: the host port is the one "
+            "TEST_DATABASE_URL connects to",
+        )
+        self.assertEqual(
+            pg["options"],
+            [
+                ">-",
+                '--health-cmd "pg_isready -U postgres -d wake_test"',
+                "--health-interval 5s",
+                "--health-timeout 5s",
+                "--health-retries 10",
+            ],
+            f"api job services.postgres.options moved: {pg['options']}: the health check decides when "
+            "the suite starts against the database, so a changed probe changes when it runs",
+        )
+
 
 class OpsBehaviourTestCase(unittest.TestCase):
     def test_wake_pg_prints_usage_for_an_unknown_command(self):
