@@ -180,6 +180,14 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Changed
 
+- **The secret scan masks the owner's own address.** The squash merge of #241 carried a
+  `Co-authored-by` line for a commit authored with the owner's personal address - no GitHub account
+  owns it, so GitHub kept it as a co-author - and `scripts/scrub-check.sh --history-head` has failed
+  on `main` since, for every branch cut from it, because that scan reads every commit the checked-out
+  commit can reach. The address cannot leave history without rewriting `main`, so the scan masks it
+  per match the way it masks a GitHub noreply address: the rest of the line is still scanned, an
+  address or a key sharing that line still fails, and `NoiseTests` holds both
+  ([#248](https://github.com/Anxiety471/wake/issues/248)).
 - **A host sets its store once in `/etc/wake/config.env`.** A deployment that kept the store
   somewhere other than the default patched the installed `bin/*` scripts, and every deploy put the
   patch back to `/var/lib/wake`, a directory the host does not have - so an installed

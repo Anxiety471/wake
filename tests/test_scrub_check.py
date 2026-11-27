@@ -287,6 +287,46 @@ class NoiseTests(ScrubCheckTestCase):
         self.commit("squash merge\n\nCo-authored-by: Hitori Bocchi <anxiety471@users.noreply.github.com>")
         self.assert_clean()
 
+    OWNER_MAIL = "hitoribocchi471" + "@" + "gmail" + ".com"  # assembled so this file does not carry it
+
+    def test_the_owner_address_in_a_squash_trailer_is_ignored(self):
+        # #248: the #241 squash trailer holds the owner's own address, and no rewrite has removed it
+        self.write("tick", "x\n")
+        self.commit("squash merge\n\nCo-authored-by: Joshua M. Valderrama <" + self.OWNER_MAIL + ">")
+        self.assert_clean()
+
+    def test_the_owner_address_in_a_tracked_file_is_ignored(self):
+        # the pattern in scripts/scrub-check.sh matches the address there too, and not its own line
+        self.write("mail.txt", "write to " + self.OWNER_MAIL + "\n")
+        self.commit("mail")
+        self.assert_clean()
+
+    def test_a_live_address_on_a_longer_domain_after_the_owner_address_fails(self):
+        # the mask anchors the domain like NOREPLY: a longer live domain after it is not masked
+        self.write("mail.txt", "write to " + self.OWNER_MAIL + ".attacker-cloud.cloud\n")
+        self.commit("mail")
+        self.assert_hit("email addresses (tracked files)")
+
+    def test_a_live_address_with_a_longer_local_part_before_the_owner_address_fails(self):
+        # a local part in front of it is a different mailbox, so the mask must not eat it
+        self.write("mail.txt", "write to someone." + self.OWNER_MAIL + "\n")
+        self.commit("mail")
+        self.assert_hit("email addresses (tracked files)")
+
+    def test_a_live_address_beside_the_owner_address_fails(self):
+        self.write(
+            "mail.txt",
+            "Co-authored-by: A <" + self.OWNER_MAIL + "> " + "someone" + "@" + "acme-mail" + ".net\n",
+        )
+        self.commit("mail")
+        self.assert_hit("email addresses (tracked files)")
+
+    def test_a_secret_sharing_a_line_with_the_owner_address_still_fails(self):
+        # masked per match, not skipped as a whole line, so a key beside it is still seen
+        self.write("tick", "x\n")
+        self.commit("oops\n\nCo-authored-by: A <" + self.OWNER_MAIL + "> sk-" + "c" * 30)
+        self.assert_hit("token-like strings (history)")
+
     def test_a_live_address_after_a_github_noreply_name_still_fails(self):
         # the noreply domain is public only as a whole address: a longer live domain after it is not
         self.write("mail.txt", "write to " + "someone" + "@users.noreply.github.com." + "attacker-cloud.cloud\n")

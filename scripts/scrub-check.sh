@@ -16,6 +16,7 @@
 # An address on an RFC 2606/6761 reserved test name (example.com, *.invalid, *.test, *.example,
 # *.localhost) cannot resolve or receive mail, so it is a fake and is not reported either.
 # A GitHub noreply address is public by design and is masked the same way, wherever it appears.
+# The owner's own address, left in history by a squash trailer (#248), is masked the same way.
 # If .git/scrub-patterns.txt exists (a private list of extended regexes, one per line, never committed),
 # tracked files and, under --history or --history-head, every commit that scan reads are also checked
 # against it, case-insensitively.
@@ -41,6 +42,14 @@ TEST_EMAIL='[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)*(invalid|test|example|localhost|
 # Masked per match, never skipped as a whole line; the last group anchors the end of the domain, so a
 # live-looking address on a longer domain after it still fails.
 NOREPLY='[A-Za-z0-9._%+-]+@users\.noreply\.github\.com([^.@A-Za-z0-9_%+-]|$)'
+# The owner's own address, from the #241 squash trailer (#248): 6cd1f7a was authored with it,
+# no GitHub account owns it, so the merge added a Co-authored-by line, and removing it would
+# mean rewriting main. It is the owner's address, not a third party's, so it is masked per
+# match like a noreply address and the rest of the line is still scanned. The escaped dot keeps
+# this line from matching itself in the tracked-files stage. The boundaries are the ones
+# NOREPLY carries: a longer domain after it, or a longer local part before it, is a
+# different address and is still reported.
+OWNER='(^|[^.@A-Za-z0-9_%+-])hitoribocchi471@gmail\.com([^.@A-Za-z0-9_%+-]|$)'
 # high-confidence secrets, checked everywhere including commit messages
 STRONG='(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|-{5}BEGIN[A-Z ]*PRIVATE KEY|Bearer [A-Za-z0-9._-]{20,})'
 # long hex or base64 blobs: heuristic, so it skips URLs (a doc link matches it) but never skips a strong hit
@@ -71,6 +80,9 @@ mask_test_addresses() {   # RFC 2606 test addresses are fakes: what is left on t
 
 mask_noreply() {   # a GitHub noreply address is public: mask it, and scan what is left on the line
     sed -E "s/$NOREPLY/ [noreply] /g" || true
+}
+mask_owner() {   # the owner's own address (#248): mask it, and scan what is left on the line
+    sed -E "s/$OWNER/ [owner] /g" || true
 }
 
 mask_allow() {   # allowlisted fixed strings are known fakes: blank each one, keep the rest of the line
@@ -128,12 +140,12 @@ report() {   # report <label>: stdin = hit lines that survived masking; runs ins
 }
 
 files -E "$IP" | mask_allow | sed 's/127\.0\.0\.1//g' | grep -E "$IP" | report "IP addresses other than 127.0.0.1 (tracked files)"
-files -E "$EMAIL" | mask_allow | mask_test_addresses | mask_noreply | grep -E "$EMAIL" | report "email addresses (tracked files)"
+files -E "$EMAIL" | mask_allow | mask_test_addresses | mask_noreply | mask_owner | grep -E "$EMAIL" | report "email addresses (tracked files)"
 files -E "$STRONG" | mask_allow | grep -E "$STRONG" | report "token-like strings (tracked files)"
 files_noblob -E "$BLOB" | mask_allow | sed -E 's#https?://[^ )>\"]+#URL#g' | grep -E "$BLOB" | report "long blobs outside URLs (tracked files)"
 if [ "$history" = 1 ]; then
     history_text | grep -nE "$IP" | mask_allow | sed 's/127\.0\.0\.1//g' | grep -E "$IP" | report "IP addresses other than 127.0.0.1 (history)"
-    history_text | grep -nE "$EMAIL" | mask_allow | mask_test_addresses | mask_noreply | grep -E "$EMAIL" | report "email addresses (history)"
+    history_text | grep -nE "$EMAIL" | mask_allow | mask_test_addresses | mask_noreply | mask_owner | grep -E "$EMAIL" | report "email addresses (history)"
     history_text | grep -nE "$STRONG" | mask_allow | grep -E "$STRONG" | report "token-like strings (history)"
     history_text_nomerges | grep -vE 'https?://[^ )>\"]+' | mask_allow | grep -nE "$BLOB" | report "long blobs outside URLs (history)"
 fi
