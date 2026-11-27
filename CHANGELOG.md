@@ -273,6 +273,16 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **The interrupt test fails on the interrupt, not on a 20 s clock.** `wake-wait`'s interrupt case
+  read the exit with `communicate(timeout=20)`, so a slow runner that put the exit past 20 s got
+  `subprocess.TimeoutExpired` (run 45059940486, Python 3.9) - a fact about the clock, not about the
+  trap - and passed on a re-run, which is how a check teaches people to ignore it. The test now waits
+  for the process to leave: through the stub's second call for the baseline, and after the `SIGINT`
+  until the wait's own `--timeout` plus headroom runs out, and it asserts the exit it got. A trap
+  that never fires fails with the code wake-wait came back with ("the interrupt did not end the
+  wait: ..."), and an interrupt the runner ignores can no longer be reported as a timeout with no
+  bearing on wake-wait ([#223](https://github.com/Anxiety471/wake/issues/223)).
+
 - **A bot's mailbox is no longer read as a leaked address, so a squash merge cannot red `main` with one.**
   `main` at `b80e7ee` failed `scripts/scrub-check.sh --history-head` on a co-author trailer the
   squash merge of #245 copied out of its branch: a bot's address at the instance's own agent domain, the

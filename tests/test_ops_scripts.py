@@ -1498,18 +1498,21 @@ class WakeWaitTestCase(unittest.TestCase):
         # exited 0. An interrupt must end the wait, not answer it.
         # Two things this test must not depend on: how the runner was launched (POSIX starts a
         # background job of a non-interactive shell with SIGINT ignored, and bash cannot trap a
-        # signal that was ignored on entry, so a nohup'd or backgrounded suite would poll for the
-        # whole 20 s window and report a timeout that says nothing about wake-wait) and machine
-        # speed (a slow first poll defers the trap; that is correct behaviour, not a failure).
+        # signal that was ignored on entry, so a nohup'd or backgrounded suite runs the wait's own
+        # window out and then fails on what that window means) and machine speed (a slow first poll
+        # defers the trap; that is correct behaviour, not a failure).
         ask = "[2026-11-15T12:00] human:tester (ask): what is the eta"
         old = "[2026-11-15T12:01] bot-other (reply): an older answer"
         self.stub_rounds([[ask, old]])
+        # Wake-wait's own window. The exit after the interrupt is bounded by it, so the wait below
+        # is derived from this number rather than from a second, drifting one.
+        window = 30
         base = {
             "PATH": self.bin + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": self.home,
         }
         proc = subprocess.Popen(
-            [os.path.join(OPS, "wake-wait"), "t-1", "--timeout", "30", "--interval", "1"],
+            [os.path.join(OPS, "wake-wait"), "t-1", "--timeout", str(window), "--interval", "1"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1526,18 +1529,30 @@ class WakeWaitTestCase(unittest.TestCase):
             # purpose: if it is weakened back to one call, this test fails here in milliseconds
             # rather than as a 20 s TimeoutExpired two runs in five.
             deadline = time.time() + 10
-            while len(self.called()) < 2 and time.time() < deadline:
+            while len(self.called()) < 2 and proc.poll() is None and time.time() < deadline:
                 time.sleep(0.02)
             self.assertGreaterEqual(
                 len(self.called()), 2, "the interrupt would race the baseline: the stub answered once"
             )
             proc.send_signal(signal.SIGINT)
-            out, err = proc.communicate(timeout=20)
+            # A trap that never fires leaves the loop at its own deadline, so the process cannot
+            # outlive the window by more than the poll it is inside: waiting on the exit is bounded
+            # too, with ten seconds of headroom for a slow runner. A bare communicate(timeout=20)
+            # instead raised TimeoutExpired whenever the exit landed past 20 s, which is a fact about
+            # the clock and not about the trap (#223); this says which condition failed.
+            leave_by = time.time() + window + 10
+            while proc.poll() is None and time.time() < leave_by:
+                time.sleep(0.05)
+            self.assertIsNotNone(
+                proc.poll(),
+                f"wake-wait was still polling {window + 10}s after the interrupt; an interrupt must end the wait",
+            )
+            out, err = proc.communicate()
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.communicate()
-        self.assertEqual(proc.returncode, 130, out + err)
+        self.assertEqual(proc.returncode, 130, "the interrupt did not end the wait: " + out + err)
         self.assertEqual(out, "", "an interrupt printed an answer")
 
     # ---- --from --------------------------------------------------------------------
