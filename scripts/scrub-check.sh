@@ -45,9 +45,9 @@ TEST_EMAIL='[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)*(invalid|test|example|localhost|
 NOREPLY='[A-Za-z0-9._%+-]+@users\.noreply\.github\.com([^.@A-Za-z0-9_%+-]|$)'
 # The owner's own address is his public identity, not a secret: --history reads message bodies, and a
 # squash merge copies his commit identity into a co-author trailer (#248). Masked per match, never
-# skipped as a whole line, and anchored on the end of the address like a noreply one, so a live
-# address on a longer domain after it still fails.
-OWNER_EMAIL='hitoribocchi471@gmail\.com([^.@A-Za-z0-9_%+-]|$)'
+# skipped as a whole line, and anchored on both ends like a noreply one: a local part in front of it
+# is another mailbox and a live domain after it is another address, so both are still reported.
+OWNER_EMAIL='(^|[^.@A-Za-z0-9_%+-])hitoribocchi471@gmail\.com([^.@A-Za-z0-9_%+-]|$)'
 # high-confidence secrets, checked everywhere including commit messages
 STRONG='(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|-{5}BEGIN[A-Z ]*PRIVATE KEY|Bearer [A-Za-z0-9._-]{20,})'
 # long hex or base64 blobs: heuristic, so it skips URLs (a doc link matches it) but never skips a strong hit
