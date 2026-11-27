@@ -647,6 +647,9 @@ class OpsFilesTestCase(unittest.TestCase):
             r"^actions/setup-python@v\d+$",
             f"setup-python action is {setup['values'].get('uses')!r}",
         )
+        # The list below is exact on purpose: `'3.13'` in single quotes or an added `cache: pip`
+        # fails it, and a Python bump edits this line and ci.yml in the same commit - the pair is
+        # what says which interpreter ruff and shellcheck run on, so neither moves quietly alone.
         self.assertEqual(
             setup["sections"].get("with"),
             ['python-version: "3.13"'],
