@@ -54,6 +54,14 @@ OWNER_EMAIL='(^|[^.@A-Za-z0-9_%+-])hitoribocchi471@gmail\.com([^.@A-Za-z0-9_%+-]
 # domain after it still fails and a key sharing the line is still scanned. The domain is not spelled
 # here: this repository is public and names no real host (tests/test_public_defaults.py).
 BOT_EMAIL='(^|[^.@A-Za-z0-9_%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]*\.trade([^.@A-Za-z0-9_%+-]|$)'
+# A commit made on a fleet machine carries that machine's own user in its author line, and a squash
+# merge copies it into a co-author trailer the way it copies the owner's address and a bot's (#256).
+# It is an infrastructure identity, not a person's mailbox. The mask names the user, not the host -
+# this repository is public and names no real host (tests/test_public_defaults.py) - and it matches
+# only inside a co-author trailer's brackets, so the same address in a tracked file is still a leak
+# and is still reported. Anchored on both ends: a longer local part is another mailbox, and a second
+# address on the same trailer is still scanned.
+HOST_TRAILER='(Co-authored-by:[^<]*<)hitori@[A-Za-z0-9.-]+\.[A-Za-z]{2,}([^.@A-Za-z0-9_%+-]|$)'
 # high-confidence secrets, checked everywhere including commit messages
 STRONG='(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|-{5}BEGIN[A-Z ]*PRIVATE KEY|Bearer [A-Za-z0-9._-]{20,})'
 # long hex or base64 blobs: heuristic, so it skips URLs (a doc link matches it) but never skips a strong hit
@@ -92,6 +100,10 @@ mask_owner_email() {   # the owner's own address is public: mask it, and scan wh
 
 mask_bot_email() {   # an agent identity at the instance's own domain is infrastructure: mask it too
     sed -E "s/$BOT_EMAIL/ [bot-address] /g" || true
+}
+
+mask_host_trailer() {   # the machine's own user, only inside a co-author trailer's brackets
+    sed -E "s/$HOST_TRAILER/\1[host-address]\2/g" || true
 }
 
 mask_allow() {   # allowlisted fixed strings are known fakes: blank each one, keep the rest of the line
@@ -154,7 +166,7 @@ files -E "$STRONG" | mask_allow | grep -E "$STRONG" | report "token-like strings
 files_noblob -E "$BLOB" | mask_allow | sed -E 's#https?://[^ )>\"]+#URL#g' | grep -E "$BLOB" | report "long blobs outside URLs (tracked files)"
 if [ "$history" = 1 ]; then
     history_text | grep -nE "$IP" | mask_allow | sed 's/127\.0\.0\.1//g' | grep -E "$IP" | report "IP addresses other than 127.0.0.1 (history)"
-    history_text | grep -nE "$EMAIL" | mask_allow | mask_test_addresses | mask_noreply | mask_owner_email | mask_bot_email | grep -E "$EMAIL" | report "email addresses (history)"
+    history_text | grep -nE "$EMAIL" | mask_allow | mask_test_addresses | mask_noreply | mask_owner_email | mask_bot_email | mask_host_trailer | grep -E "$EMAIL" | report "email addresses (history)"
     history_text | grep -nE "$STRONG" | mask_allow | grep -E "$STRONG" | report "token-like strings (history)"
     history_text_nomerges | grep -vE 'https?://[^ )>\"]+' | mask_allow | grep -nE "$BLOB" | report "long blobs outside URLs (history)"
 fi

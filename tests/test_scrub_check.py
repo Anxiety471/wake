@@ -363,6 +363,34 @@ class NoiseTests(ScrubCheckTestCase):
         self.commit("oops" + "\n" + "\n" + "Co-authored-by: P <" + self.BOT_MAIL + "> sk-" + "c" * 30)
         self.assert_hit("token-like strings (history)")
 
+    # #256: a commit made on a fleet machine carries that machine's user in its author line, and the
+    # squash merge copies it into a co-author trailer, so every branch cut from main failed on it.
+    HOST_MAIL = "hitori" + "@" + "vmi" + "424242" + "." + "acme-cloud" + ".net"
+
+    def test_the_host_identity_in_a_coauthor_trailer_is_ignored(self):
+        self.write("hosts.txt", "x" + "\n")
+        self.commit("squash merge" + "\n" + "\n" + "Co-authored-by: Joshua M. Valderrama <" + self.HOST_MAIL + ">")
+        self.assert_clean()
+
+    def test_the_host_identity_in_a_tracked_file_still_fails(self):
+        # the mask is scoped to a trailer: the same address written into a file is still a leak
+        self.write("mail.txt", "write to " + self.HOST_MAIL + "\n")
+        self.commit("mail")
+        self.assert_hit("email addresses (tracked files)")
+
+    def test_another_mailbox_beside_the_host_identity_in_a_trailer_fails(self):
+        # masked per match, never as a whole line, so a live address sharing the trailer is a hit
+        self.write("tick", "x" + "\n")
+        beside = "someone" + "@" + "acme-mail" + ".net"
+        self.commit("mail" + "\n" + "\n" + "Co-authored-by: A <" + self.HOST_MAIL + "> " + beside)
+        self.assert_hit("email addresses (history)")
+
+    def test_a_longer_local_part_before_the_host_identity_fails(self):
+        # not-hitori@ is another mailbox, so the start anchor has to hold
+        self.write("tick", "x" + "\n")
+        self.commit("mail" + "\n" + "\n" + "Co-authored-by: A <not-" + self.HOST_MAIL + ">")
+        self.assert_hit("email addresses (history)")
+
     def test_a_live_address_after_a_github_noreply_name_still_fails(self):
         # the noreply domain is public only as a whole address: a longer live domain after it is not
         self.write("mail.txt", "write to " + "someone" + "@users.noreply.github.com." + "attacker-cloud.cloud\n")
