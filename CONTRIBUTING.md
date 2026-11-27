@@ -37,7 +37,11 @@ CI tests Python 3.9 to 3.13 on Ubuntu and pins ruff in `.github/workflows/ci.yml
 - Update `README.md`, `docs/` and `CHANGELOG.md` (under an "Unreleased" heading) for user-visible changes.
 - A pull request may add `CHANGELOG.md` lines freely, and reorder them. If it deletes a line its
   base branch still has, list that exact line in `scripts/changelog-allow.txt` with a short reason
-  above it, or the `lint` job fails; reflowing an unreleased bullet is that case. A line that starts
+  above it, or the `lint` job fails; reflowing an unreleased bullet is that case. The guard runs in
+  `lint` on a pull request, against its base, and on a push to `main`, against the tip that ref had
+  before the push, so the merge commit that puts a deletion on `main` is judged even when the pull
+  request's own checks ran on an older base. A push to any other branch is not judged by itself: a
+  branch is judged by its pull request, so it may reword a line it added itself. A line that starts
   with `#` is a heading, so write it with a leading backslash (`\### Fixed`): an unescaped `#` line
   is a comment. An entry is compared with its own indentation, so copy the line as it stands - a
   wrapped bullet's continuation lines start with two spaces - and an entry that matches no removed

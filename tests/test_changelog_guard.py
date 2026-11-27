@@ -9,6 +9,7 @@ Run with the rest: python3 -m unittest discover -s tests
 """
 
 import os
+import pathlib
 import re
 import shutil
 import subprocess
@@ -108,6 +109,29 @@ def unreleased_bullet(document):
         if inside and line.startswith("- "):
             return line
     raise AssertionError("the changelog has no bullet under ## [Unreleased]")
+
+
+def step_run_block(name):
+    """The named step's `run:` block, dedented, exactly as the runner would execute it."""
+    lines = text(CI).splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if line == f"      - name: {name}":
+            start = index
+            break
+    if start is None:
+        raise AssertionError(f"no step named {name} in {CI}")
+    cursor = start
+    while lines[cursor].strip() != "run: |":
+        cursor += 1
+        if cursor == len(lines) or lines[cursor].startswith("      - "):
+            raise AssertionError(f"the step named {name} has no run block")
+    body = []
+    for line in lines[cursor + 1 :]:
+        if line.strip() and not line.startswith("          "):
+            break
+        body.append(line[10:] if line.strip() else "")
+    return "\n".join(body) + "\n"
 
 
 class ChangelogGuardTestCase(unittest.TestCase):
@@ -737,17 +761,41 @@ class CiWiringTestCase(unittest.TestCase):
                 current.append(line.strip())
         return steps
 
-    def test_the_lint_job_runs_the_guard_on_the_pull_requests_base(self):
+    def changelog_step(self):
+        """The one CHANGELOG.md deletions step, as the raw lines the job holds."""
         steps = [step for step in self.lint_steps() if step and step[0] == "name: CHANGELOG.md deletions"]
         self.assertEqual(len(steps), 1, f"the changelog step is {steps}")
-        step = steps[0]
+        return steps[0]
+
+    def step_script(self, name):
+        return step_run_block(name)
+
+    def test_the_lint_job_runs_the_guard_on_the_pull_requests_base(self):
+        step = "\n".join(self.changelog_step())
         self.assertIn("BASE_SHA: ${{ github.event.pull_request.base.sha }}", step)
-        self.assertIn('git fetch --no-tags --depth=1 origin "$BASE_SHA"', step)
-        self.assertIn('scripts/changelog-guard.sh "$BASE_SHA"', step)
-        # A push has no pull request base: the step says so and passes, so the guard never runs
-        # against an empty revision and reports a green build it did not earn.
-        self.assertIn('if [ -z "$BASE_SHA" ]; then', step)
-        self.assertIn('echo "changelog-guard: not a pull request; nothing to compare"', step)
+        self.assertIn('scripts/changelog-guard.sh "$base"', step)
+
+    def test_the_lint_job_compares_a_push_with_the_tip_it_replaced(self):
+        """#218: a push said "not a pull request" and passed, so no merge was ever judged."""
+        step = "\n".join(self.changelog_step())
+        self.assertIn("BEFORE_SHA: ${{ github.event.before }}", step)
+        self.assertIn('base="$BEFORE_SHA"', step)
+        # A ref that did not exist before reports an all-zero tip; that case is named, not silent.
+        self.assertIn('case "$base" in', step)
+        self.assertIn("*[!0]*) ;;", step)
+        self.assertIn("a new ref has no previous tip; nothing to compare", step)
+        # A tip that cannot be fetched fails the step: passing would claim a comparison that
+        # never ran, which is exactly the green #218 was about.
+        self.assertIn('if ! git fetch --no-tags --depth=1 origin "$base"; then', step)
+        self.assertIn("refusing to pass without comparing it", step)
+        # Only a push to main is judged by this arm. A branch push carries the branch's own
+        # commits, so judging it fails a branch for rewording a line it added itself: measured on
+        # #217's ebbb590 (3 branch-own lines, rc 1) and #212's 7b664a4 (13), both rc 0 under the
+        # pull request arm. The ref is pinned, and the skip names it.
+        self.assertIn("REF: ${{ github.ref }}", step)
+        self.assertIn('case "$REF" in', step)
+        self.assertIn("refs/heads/main) ;;", step)
+        self.assertIn("a branch push is judged by its pull request", step)
 
     def test_shellcheck_covers_the_new_script(self):
         self.assertRegex(
@@ -755,6 +803,112 @@ class CiWiringTestCase(unittest.TestCase):
             re.compile(r"shellcheck .*scripts/changelog-guard\.sh"),
             "the guard is shell and shellcheck's explicit list does not reach it",
         )
+
+
+class PushArmRunsTestCase(unittest.TestCase):
+    """The push arm of the step is executed, not only read: it must fail on a merge that drops a line."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="changelog-push-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.remote = os.path.join(self.root, "remote.git")
+        self.repo = os.path.join(self.root, "checkout")
+        os.makedirs(os.path.join(self.repo, "scripts"))
+        subprocess.run(["git", "init", "-q", "--bare", self.remote], env=clean_env(), check=True)
+        shutil.copy(GUARD, os.path.join(self.repo, "scripts", "changelog-guard.sh"))
+        os.chmod(os.path.join(self.repo, "scripts", "changelog-guard.sh"), 0o755)
+        self.write("scripts/changelog-allow.txt", "# nothing listed yet\n")
+        self.write("CHANGELOG.md", BASE)
+        self.git("init", "-q")
+        self.git("remote", "add", "origin", self.remote)
+        self.base = self.commit("base revision")
+        self.git("push", "-q", "origin", "HEAD:refs/heads/main")
+
+    def write(self, name, body):
+        path = os.path.join(self.repo, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        return path
+
+    def git(self, *args, check=True):
+        return subprocess.run(
+            ["git"] + list(args),
+            cwd=self.repo,
+            env=clean_env(),
+            text=True,
+            capture_output=True,
+            check=check,
+        )
+
+    def commit(self, message):
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD").stdout.strip()
+
+    def run_step(self, base_sha="", before_sha="", ref="refs/heads/main"):
+        script = pathlib.Path(self.root) / "step.sh"
+        script.write_text(step_run_block("CHANGELOG.md deletions"), encoding="utf-8")
+        return subprocess.run(
+            ["sh", str(script)],
+            cwd=self.repo,
+            env=clean_env(BASE_SHA=base_sha, BEFORE_SHA=before_sha, REF=ref),
+            text=True,
+            capture_output=True,
+        )
+
+    def test_a_merge_push_that_drops_a_line_fails_the_step(self):
+        """The hazard: the pull request looked green, the merge committed the deletion."""
+        self.write("CHANGELOG.md", BASE.replace(RELEASED + "\n", ""))
+        self.commit("merge that dropped a released note")
+        result = self.run_step(before_sha=self.base)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(RELEASED, result.stdout)
+        self.assertIn("changelog-guard: FAILED", result.stderr)
+
+    def test_a_merge_push_that_keeps_every_line_passes(self):
+        self.write("CHANGELOG.md", BASE + "\n- A note this push adds (#902).\n")
+        self.commit("merge that only adds")
+        result = self.run_step(before_sha=self.base)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("changelog-guard: clean", result.stdout)
+
+    def test_a_new_ref_has_nothing_to_compare_and_says_so(self):
+        result = self.run_step(before_sha="0" * 40)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("a new ref has no previous tip; nothing to compare", result.stdout)
+
+    def test_a_previous_tip_that_cannot_be_fetched_fails_instead_of_passing(self):
+        """A pass here would be a green that never compared anything (#218)."""
+        result = self.run_step(before_sha="1" * 40)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("refusing to pass without comparing it", result.stderr)
+
+    def test_a_feature_branch_push_is_left_to_its_pull_request(self):
+        """The arm reads main only: rewording a line the branch itself added is free (#218)."""
+        self.write("CHANGELOG.md", BASE.replace(RELEASED + "\n", ""))
+        self.commit("a branch commit that reworks its own note")
+        branch = "refs/heads/fix/218-changelog-guard-push"
+        result = self.run_step(before_sha=self.base, ref=branch)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"{branch} is not main", result.stdout)
+        self.assertIn("judged by its pull request", result.stdout)
+        # It passed by skipping, not by comparing: no line was read, so it must not claim clean.
+        self.assertNotIn("changelog-guard: clean", result.stdout)
+
+    def test_a_pull_request_still_compares_from_its_own_ref(self):
+        """The ref check sits after the base it merges into, so a pull request is not disarmed."""
+        self.write("CHANGELOG.md", BASE.replace(RELEASED + "\n", ""))
+        self.commit("a change a pull request would carry")
+        result = self.run_step(base_sha=self.base, ref="refs/pull/227/merge")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(RELEASED, result.stdout)
+        self.assertIn("changelog-guard: FAILED", result.stderr)
+
+    def test_a_push_that_reports_no_previous_tip_says_so_in_its_own_words(self):
+        result = self.run_step(before_sha="")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("the push reports no previous tip; nothing to compare", result.stdout)
 
 
 if __name__ == "__main__":

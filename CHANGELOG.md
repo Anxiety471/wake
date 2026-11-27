@@ -314,6 +314,34 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   read as a reason comment - an unread marker used to leave the entry standing forever. `CONTRIBUTING.md`
   and this allowlist header state the rule that replaced #321 and document the marker.
 
+- **The `CHANGELOG.md` guard now judges the push, so a merge cannot drop a note in silence.** It ran
+  only on `pull_request`, against `github.event.pull_request.base.sha`, and every push took the "not
+  a pull request; nothing to compare" branch and passed, so the merge commit that puts a deletion on
+  `main` was never read by anything. GitHub also does not re-run a pull request's checks when the
+  base branch moves, so a pull request whose CI ran before the guard existed - #212 at base
+  `dddefca8`, before #209 merged - showed a green that said nothing about deletions: the guard run
+  by hand at the merge result named 13 dropped lines and rc 1, while the merge itself is clean
+  ([#218](https://github.com/Anxiety471/wake/issues/218)). The `lint` job now compares a push to
+  `main` with the tip that ref had before it, `github.event.before`, so the merge commit on `main`
+  is judged by the rules the pull request arm applies: a listed line passes and is reported,
+  anything else fails. The arm reads `main` only. A branch push carries the branch's own commits, so
+  judging it there failed a branch for rewording a line the branch itself added, which the rules
+  allow: measured on a real commit, #217's `ebbb590` drops 3 lines its parent `924ea5d` carries and
+  `main` does not, rc 1 under this arm, and the same push is the named skip once the arm reads
+  `main` only. A branch therefore stays judged
+  by its pull request, against the base it merges into, which is the only revision that says
+  anything about `main`; the skip names the ref it passed on. A tip that cannot be fetched fails
+  the step instead of passing, because a pass there would report a comparison that never ran, and a
+  ref with no previous tip - 40 zeros, or none reported - is named as nothing to compare rather
+  than passed in silence. `PushArmRunsTestCase` executes the step's own `run:` block in a throwaway
+  repository: a merge push to `main` that drops a released line is rc 1 with that line named, a push
+  that only adds is rc 0, a feature-branch push that drops a line is the named skip and claims no
+  comparison, a pull request ref still compares and fails, a 40-zero tip is the named skip, a push
+  with no reported tip says so in its own words, and an unfetchable tip is rc 1. Against the
+  previous wiring the merge-push cases fail with "not a pull request; nothing to compare", so the
+  test holds the wiring rather than the prose. The pull request arm still compares its own base, so
+  a green on an old base stays a statement about that base only.
+
 - **A suppression inside a linted file is pinned, so one comment cannot silence a whole check.** #185 closed the
   config files a linter loads on its own; a suppression comment is the same trust boundary one level
   in, and nothing read it. At `e4ca592` a standalone `# ruff: noqa` anywhere in a test file left
