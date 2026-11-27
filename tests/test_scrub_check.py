@@ -329,6 +329,40 @@ class NoiseTests(ScrubCheckTestCase):
         self.commit("oops\n\nCo-authored-by: A <" + self.OWNER_MAIL + "> sk-" + "c" * 30)
         self.assert_hit("token-like strings (history)")
 
+    # #253: an address at a `.trade` domain is one of the instance's own identities, not a person, and a
+    # squash merge copies it into a co-author trailer the same way it copies the owner's address.
+    BOT_MAIL = "potato" + "@" + "bots" + "." + "trade"
+
+    def test_a_bot_mail_coauthor_trailer_is_ignored(self):
+        self.write("agents.txt", "Co-authored-by: Potato <" + self.BOT_MAIL + ">" + "\n")
+        self.commit("squash merge" + "\n" + "\n" + "Co-authored-by: Potato <" + self.BOT_MAIL + ">")
+        self.assert_clean()
+
+    def test_the_bot_mail_in_a_tracked_file_is_ignored(self):
+        self.write("agents.txt", "the devops bot is " + self.BOT_MAIL + "\n")
+        self.commit("agents")
+        self.assert_clean()
+
+    def test_a_live_address_after_the_bot_mail_still_fails(self):
+        # the mask anchors the end of the domain, so a real mailbox on a longer domain is still a hit
+        self.write("mail.txt", "write to " + self.BOT_MAIL + "." + "acme-mail" + ".net" + "\n")
+        self.commit("mail")
+        self.assert_hit("email addresses (tracked files)")
+
+    def test_another_mailbox_beside_the_bot_mail_fails(self):
+        self.write(
+            "mail.txt",
+            "Co-authored-by: A <" + self.BOT_MAIL + "> " + "someone" + "@" + "acme-mail" + ".net" + "\n",
+        )
+        self.commit("mail")
+        self.assert_hit("email addresses (tracked files)")
+
+    def test_a_secret_sharing_a_line_with_the_bot_mail_still_fails(self):
+        # masked per match, not skipped as a whole line, so a key beside it is still seen
+        self.write("tick", "x" + "\n")
+        self.commit("oops" + "\n" + "\n" + "Co-authored-by: P <" + self.BOT_MAIL + "> sk-" + "c" * 30)
+        self.assert_hit("token-like strings (history)")
+
     def test_a_live_address_after_a_github_noreply_name_still_fails(self):
         # the noreply domain is public only as a whole address: a longer live domain after it is not
         self.write("mail.txt", "write to " + "someone" + "@users.noreply.github.com." + "attacker-cloud.cloud\n")

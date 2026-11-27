@@ -48,6 +48,12 @@ NOREPLY='[A-Za-z0-9._%+-]+@users\.noreply\.github\.com([^.@A-Za-z0-9_%+-]|$)'
 # skipped as a whole line, and anchored on both ends like a noreply one: a local part in front of it
 # is another mailbox and a live domain after it is another address, so both are still reported.
 OWNER_EMAIL='(^|[^.@A-Za-z0-9_%+-])hitoribocchi471@gmail\.com([^.@A-Za-z0-9_%+-]|$)'
+# A mailbox at a `.trade` domain is one of the instance's own identities - a bot's address in a
+# co-author trailer, the same way the owner's address arrives (#253) - not a person's. Masked per
+# match, never as a whole line, and anchored on the end of the domain, so a live address on a longer
+# domain after it still fails and a key sharing the line is still scanned. The domain is not spelled
+# here: this repository is public and names no real host (tests/test_public_defaults.py).
+BOT_EMAIL='(^|[^.@A-Za-z0-9_%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]*\.trade([^.@A-Za-z0-9_%+-]|$)'
 # high-confidence secrets, checked everywhere including commit messages
 STRONG='(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|-{5}BEGIN[A-Z ]*PRIVATE KEY|Bearer [A-Za-z0-9._-]{20,})'
 # long hex or base64 blobs: heuristic, so it skips URLs (a doc link matches it) but never skips a strong hit
@@ -82,6 +88,10 @@ mask_noreply() {   # a GitHub noreply address is public: mask it, and scan what 
 
 mask_owner_email() {   # the owner's own address is public: mask it, and scan what is left on the line
     sed -E "s/$OWNER_EMAIL/ [owner-address] /g" || true
+}
+
+mask_bot_email() {   # an agent identity at the instance's own domain is infrastructure: mask it too
+    sed -E "s/$BOT_EMAIL/ [bot-address] /g" || true
 }
 
 mask_allow() {   # allowlisted fixed strings are known fakes: blank each one, keep the rest of the line
@@ -139,12 +149,12 @@ report() {   # report <label>: stdin = hit lines that survived masking; runs ins
 }
 
 files -E "$IP" | mask_allow | sed 's/127\.0\.0\.1//g' | grep -E "$IP" | report "IP addresses other than 127.0.0.1 (tracked files)"
-files -E "$EMAIL" | mask_allow | mask_test_addresses | mask_noreply | mask_owner_email | grep -E "$EMAIL" | report "email addresses (tracked files)"
+files -E "$EMAIL" | mask_allow | mask_test_addresses | mask_noreply | mask_owner_email | mask_bot_email | grep -E "$EMAIL" | report "email addresses (tracked files)"
 files -E "$STRONG" | mask_allow | grep -E "$STRONG" | report "token-like strings (tracked files)"
 files_noblob -E "$BLOB" | mask_allow | sed -E 's#https?://[^ )>\"]+#URL#g' | grep -E "$BLOB" | report "long blobs outside URLs (tracked files)"
 if [ "$history" = 1 ]; then
     history_text | grep -nE "$IP" | mask_allow | sed 's/127\.0\.0\.1//g' | grep -E "$IP" | report "IP addresses other than 127.0.0.1 (history)"
-    history_text | grep -nE "$EMAIL" | mask_allow | mask_test_addresses | mask_noreply | mask_owner_email | grep -E "$EMAIL" | report "email addresses (history)"
+    history_text | grep -nE "$EMAIL" | mask_allow | mask_test_addresses | mask_noreply | mask_owner_email | mask_bot_email | grep -E "$EMAIL" | report "email addresses (history)"
     history_text | grep -nE "$STRONG" | mask_allow | grep -E "$STRONG" | report "token-like strings (history)"
     history_text_nomerges | grep -vE 'https?://[^ )>\"]+' | mask_allow | grep -nE "$BLOB" | report "long blobs outside URLs (history)"
 fi
