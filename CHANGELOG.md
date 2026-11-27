@@ -17,6 +17,16 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   and the receiver falls back to `detail`. This is the client half of hivemind `7469aa5d1`, which the
   deployed API already accepts.
 
+- **`.prettierignore` is pinned, so no entry can leave the formatter half checking nothing.** The
+  `api (bun)` job runs `prettier --check apps packages`, which loads `.prettierignore` on its own,
+  and nothing read that file: measured at `ce29cf0` with prettier 3.10.1, appending `apps/` to it
+  took the step from rc 1 to rc 0 with a misformatted `apps/api/src/probe.ts` planted, every pin
+  green - the shape #201 measured for ruff's `.gitignore`. `tests/test_inline_suppressions.py` now
+  pins the file's lines and refuses a pattern that matches a tracked path or a directory under
+  `apps/` or `packages/`, with fixtures in both directions, and it refuses a `prettier-ignore` in
+  the files under those roots it cannot read: the job formats `.json` and `.md` there, and a
+  directive in either - measured from rc 1 to rc 0 - now fails the suite
+  ([#219](https://github.com/Anxiety471/wake/issues/219)).
 - **The inline pin's control now runs in CI, in the one job that installs the linters.** The
   scanner tests ran in the Python jobs; the two tests that prove a directive really takes
   `eslint apps` from rc 1 to rc 0 - and `prettier --check` the same way - need `node_modules` and

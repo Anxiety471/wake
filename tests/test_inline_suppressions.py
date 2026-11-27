@@ -104,6 +104,18 @@ is read by the scanner for that file alone, which is the pin's one silent narrow
 `CommentReaderParityTest` refuses it, failing on a tracked file the parser could not parse as well
 as on a comment the two readers disagree about.
 
+The formatter's own configuration is the third way in. `prettier --check apps packages` loads
+`.prettierignore` without being asked, and nothing read it: at `ce29cf0` with prettier 3.10.1,
+appending `apps/` to the tracked file took that step from rc 1 to rc 0 with a misformatted
+`apps/api/src/probe.ts` planted, every pin here still green (#219). The file's lines are pinned by
+value, and a pattern that matches a tracked path - or a directory - under `apps/` or `packages/` is
+refused: an exclude that names a directory hides everything under it. Prettier also formats `.json`
+and `.md` there, and this scan reads neither: a `// prettier-ignore` in a `.json` file and
+`<!-- prettier-ignore -->` in a `.md` file each took `prettier --check` from rc 1 to rc 0
+(measured), so the directive's literal text is refused in every tracked file under those roots that
+this scan does not read. That guard is a string test, not a reader; it also refuses a file that only
+mentions the word, which is the direction a pin should fail in.
+
 Run with the rest: `python3 -m unittest discover -s tests`
 """
 
@@ -263,6 +275,22 @@ PINNED_JAVASCRIPT_FILES = (
     "scripts/js-comments.mjs",
 )
 
+#: The formatter half of the `api (bun)` job: `prettier --check apps packages`, from `package.json`'s
+#: `lint` script. Prettier loads `.prettierignore` on its own, so a line there decides what the half
+#: checks without touching a pinned value - the shape #201 measured for ruff's `.gitignore` (#219).
+PRETTIER_IGNORE_FILE = ".prettierignore"
+PRETTIER_CHECKED_ROOTS = ("apps", "packages")
+
+#: The tracked ignore file's lines, in order, with comments and blank lines dropped. A new entry
+#: lists itself here in the same commit, with its reason above the constants, and
+#: `test_no_prettier_ignore_pattern_hides_a_checked_path` then says whether it is safe to keep.
+PINNED_PRETTIER_IGNORES = ("node_modules", "dist", "coverage")
+
+#: The directive as a string. Prettier reads `// prettier-ignore`, `/* prettier-ignore */` and
+#: `<!-- prettier-ignore -->`, and no spelling of it misses these characters, so the files under the
+#: roots that `JAVASCRIPT_SUFFIXES` does not match are refused on the text rather than parsed.
+PRETTIER_IGNORE_TEXT = "prettier-ignore"
+
 
 def text(path):
     with open(path, encoding="utf-8", errors="surrogateescape") as handle:
@@ -405,6 +433,82 @@ def eslint_files(root=ROOT, paths=None):
     """Every tracked file eslint can read a comment out of, by suffix."""
     listed = tracked_paths(root) if paths is None else paths
     return sorted(rel for rel in listed if rel.lower().endswith(JAVASCRIPT_SUFFIXES))
+
+
+def prettier_formatted_but_unscanned(root=ROOT, paths=None):
+    """Tracked files under the roots the api job hands prettier that this comment scan does not read.
+
+    Prettier formats `.json`, `.md`, `.css` and more as well as JS; `JAVASCRIPT_SUFFIXES` is the only
+    set the scan walks, so the rest are where a directive goes unread (#219).
+    """
+    listed = tracked_paths(root) if paths is None else paths
+    return sorted(
+        rel
+        for rel in listed
+        if rel.split("/")[0] in PRETTIER_CHECKED_ROOTS and not rel.lower().endswith(JAVASCRIPT_SUFFIXES)
+    )
+
+
+def parent_paths(rel):
+    """Every directory above `rel`, as git spells it: `a/b/c.ts` -> `a`, `a/b`."""
+    parts = rel.split("/")[:-1]
+    return ["/".join(parts[:count]) for count in range(1, len(parts) + 1)]
+
+
+def prettier_hidden_paths(root=ROOT, exclude_file=None, paths=None):
+    """Paths the api job's prettier roots lose to `.prettierignore`, when no path list is given the
+    tracked ones under `apps/` and `packages/` plus their directories.
+
+    A pattern that names a directory hides everything under it, and a directory is not a tracked
+    file, so the parents go in too. git answers: the file is handed to `check-ignore --no-index` as
+    `core.excludesFile`, because without `--no-index` git never reports a *tracked* path as ignored.
+    The root `.gitignore` is consulted as well and matches no tracked path - `tests/test_linter_configs.py`
+    refuses one that does. Measured at `ce29cf0`: with `apps/` appended, git named line 4 of the file
+    for `apps/api/src/app.ts`, and the real `prettier --check apps packages` went from rc 1 to rc 0
+    with a misformatted file planted under that path.
+    """
+    exclude_file = exclude_file or os.path.join(root, PRETTIER_IGNORE_FILE)
+    if paths is None:
+        checked = [rel for rel in tracked_paths(root) if rel.split("/")[0] in PRETTIER_CHECKED_ROOTS]
+        paths = sorted(set(checked) | {parent for rel in checked for parent in parent_paths(rel)})
+    if not paths:
+        return []
+    try:
+        run = subprocess.run(
+            [
+                "git",
+                "-C",
+                root,
+                "-c",
+                f"core.excludesFile={os.path.abspath(exclude_file)}",
+                "check-ignore",
+                "--no-index",
+                "-v",
+                "--stdin",
+            ],
+            input="\n".join(paths) + "\n",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:  # pragma: no cover - git is there in CI and in any checkout
+        raise unittest.SkipTest(f"git is not available: {error}") from error
+    return [line.split("\t", 1)[1] for line in run.stdout.splitlines() if "\t" in line]
+
+
+def unscanned_prettier_ignores(root, paths):
+    """Those of `paths` that carry a `prettier-ignore` directive a JS-comment scan cannot see.
+
+    Measured at `ce29cf0` with prettier 3.10.1: `// prettier-ignore` and `/* prettier-ignore */` in
+    a `.json` file under `apps/`, and `<!-- prettier-ignore -->` in a `.md` file there, each took
+    `prettier --check` from rc 1 to rc 0. `JAVASCRIPT_SUFFIXES` matches neither file, so the scan has
+    no reader for them and the literal text is what is refused here.
+    """
+    return [
+        rel
+        for rel in paths
+        if not rel.lower().endswith(JAVASCRIPT_SUFFIXES) and PRETTIER_IGNORE_TEXT in text(os.path.join(root, rel))
+    ]
 
 
 def skip_quoted(source, index):
@@ -838,6 +942,121 @@ class InlineSuppressionTestCase(unittest.TestCase):
             self.assertIn(rel, javascript, f"eslint reads {rel}, and the javascript scan does not read it")
         js_comments = sum(len(found) for found in javascript_comment_map(ROOT, javascript).values())
         self.assertGreater(js_comments, 150, f"the javascript comment scan found only {js_comments} comments")
+
+    def test_the_shipped_prettier_ignore_file_is_the_pinned_one(self):
+        """#219: an entry added to `.prettierignore` decides the formatter half, so it fails here.
+
+        `prettier --check apps packages` loads this file on its own and nothing in the tree read it,
+        so `apps/` in it left the whole half checking nothing with every pin here green.
+        """
+        self.assertIn(
+            PRETTIER_IGNORE_FILE,
+            tracked_paths(),
+            "`.prettierignore` must be tracked: an untracked one is not in the checkout the job runs in",
+        )
+        path = os.path.join(ROOT, PRETTIER_IGNORE_FILE)
+        if not os.path.exists(path):
+            self.fail(
+                f"`{PRETTIER_IGNORE_FILE}` is tracked but not in this checkout: the formatter half then "
+                "reads no ignore file, and this pin cannot say what it checks (#219)"
+            )
+        shipped = [
+            line.strip() for line in text(path).splitlines() if line.strip() and not line.lstrip().startswith("#")
+        ]
+        self.assertEqual(
+            shipped,
+            list(PINNED_PRETTIER_IGNORES),
+            "`.prettierignore` moved: a new line is listed in PINNED_PRETTIER_IGNORES in the same commit, "
+            "and `test_no_prettier_ignore_pattern_hides_a_checked_path` then says whether it is safe (#219)",
+        )
+
+    def test_no_prettier_ignore_pattern_hides_a_checked_path(self):
+        """The entry that matters: a pattern covering `apps/` or `packages/` (#219)."""
+        self.assertEqual(
+            prettier_hidden_paths(),
+            [],
+            "`.prettierignore` hides a path the api job formats: measured at `ce29cf0`, `apps/` there left "
+            "`prettier --check apps packages` at rc 0 with a misformatted `apps/api/src/probe.ts` planted, "
+            "so the formatter half of the job checked nothing",
+        )
+
+    def test_the_prettier_ignore_check_bites_on_a_fixture(self):
+        """The refusal above is only as good as git's answer, so prove it on a fixture."""
+        root = tempfile.mkdtemp(prefix="prettier-ignore-")
+        try:
+            for rel in ("apps/api/src/app.ts", "packages/shared/src/index.ts", "scripts/x.sh"):
+                path = os.path.join(root, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("x\n")
+            init = subprocess.run(["git", "-C", root, "init", "-q"], capture_output=True, text=True)
+            if init.returncode != 0:  # pragma: no cover - git is there in CI and in any checkout
+                self.skipTest(f"git init failed: {init.stderr.strip()}")
+            ignore = os.path.join(root, PRETTIER_IGNORE_FILE)
+            probed = ["apps/api/src/app.ts", "packages/shared/src/index.ts"]
+            with open(ignore, "w", encoding="utf-8") as handle:
+                handle.write("node_modules\ndist\ncoverage\n")
+            self.assertEqual(prettier_hidden_paths(root, paths=probed), [], "a harmless entry was refused")
+            with open(ignore, "w", encoding="utf-8") as handle:
+                handle.write("node_modules\ndist\ncoverage\napps/\n")
+            self.assertEqual(
+                prettier_hidden_paths(root, paths=probed),
+                ["apps/api/src/app.ts"],
+                "`apps/` no longer matches a path under it: the check has stopped biting",
+            )
+            with open(ignore, "w", encoding="utf-8") as handle:
+                handle.write("packages/shared/src\n")
+            self.assertEqual(
+                prettier_hidden_paths(root, paths=probed),
+                ["packages/shared/src/index.ts"],
+                "a directory named without a trailing slash no longer hides what is under it",
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_no_unscanned_file_under_the_api_roots_carries_a_prettier_ignore(self):
+        """prettier formats `.json` and `.md` under the roots it is given; this scan reads neither."""
+        self.assertEqual(
+            unscanned_prettier_ignores(ROOT, prettier_formatted_but_unscanned()),
+            [],
+            "a `prettier-ignore` sits in a file this module's comment scan does not read: measured at "
+            "`ce29cf0`, a directive in a `.json` or `.md` file under `apps/` or `packages/` takes "
+            "`prettier --check` from rc 1 to rc 0. Remove it, or give the scan a reader for that file (#219)",
+        )
+
+    def test_the_unscanned_file_guard_bites_on_a_fixture(self):
+        """The refusal above reads the text, so prove both the accept and the refuse on one fixture."""
+        root = tempfile.mkdtemp(prefix="prettier-unread-")
+        try:
+            os.makedirs(os.path.join(root, "apps/api/src"))
+            bodies = {
+                "apps/api/probe.md": "<!-- prettier-ignore -->\n#   heading\n",
+                "apps/api/probe.json": '{\n  "a":   1\n}\n',
+                "apps/api/src/probe.ts": "// prettier-ignore\nexport const  x   =    1;\n",
+                "scripts/probe.md": "<!-- prettier-ignore -->\n#   heading\n",
+            }
+            for rel, body in bodies.items():
+                path = os.path.join(root, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(body)
+            self.assertEqual(
+                prettier_formatted_but_unscanned(root, sorted(bodies)),
+                ["apps/api/probe.json", "apps/api/probe.md"],
+                "the file filter no longer follows the roots: `scripts/` is outside `prettier --check`",
+            )
+            self.assertEqual(
+                unscanned_prettier_ignores(root, prettier_formatted_but_unscanned(root, sorted(bodies))),
+                ["apps/api/probe.md"],
+                "the directive guard no longer reads the files the filter hands it",
+            )
+            self.assertEqual(
+                unscanned_prettier_ignores(root, sorted(bodies)),
+                ["apps/api/probe.md", "scripts/probe.md"],
+                "the text test stopped seeing the directive at all",
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
     def test_a_file_level_noqa_is_refused(self):
         """Measured: a standalone `# ruff: noqa` anywhere in the file, with a real F821 further down."""
