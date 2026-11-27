@@ -287,6 +287,22 @@ class NoiseTests(ScrubCheckTestCase):
         self.commit("squash merge\n\nCo-authored-by: Hitori Bocchi <anxiety471@users.noreply.github.com>")
         self.assert_clean()
 
+    # #248: the owner's own address is his public identity, and a squash merge copies his commit
+    # identity into a co-author trailer, so every branch cut from main failed the scan on it.
+    OWNER_MAIL = "hitoribocchi471" + "@" + "gmail" + ".com"
+
+    def test_the_owner_address_in_a_squash_trailer_is_ignored(self):
+        self.write("owners.txt", "Co-authored-by: Joshua M. Valderrama <" + self.OWNER_MAIL + ">\n")
+        self.commit("squash merge\n\nCo-authored-by: Joshua M. Valderrama <" + self.OWNER_MAIL + ">")
+        self.assert_clean()
+
+    def test_a_live_address_after_the_owner_address_still_fails(self):
+        # the owner mask anchors the end of the address, like the noreply mask: a longer live
+        # domain after it is not his address and is still a hit
+        self.write("mail.txt", self.OWNER_MAIL + "." + "acme-mail" + ".net" + "\n")
+        self.commit("mail")
+        self.assert_hit("email addresses (tracked files)")
+
     def test_a_live_address_after_a_github_noreply_name_still_fails(self):
         # the noreply domain is public only as a whole address: a longer live domain after it is not
         self.write("mail.txt", "write to " + "someone" + "@users.noreply.github.com." + "attacker-cloud.cloud\n")
