@@ -119,6 +119,8 @@ Put each bot's webhook key in `~/.config/wake/<bot-id>.key` (`chmod 600`), or le
 
 A thread the **API** opened is not in that store: its id lives in the API's Postgres, the doorbell names `POST /threads/<id>/reply`, and its `ref` is `api-thread:<id>` rather than `thread:<id>`. `wake --reply <id>` answers one for a bot that holds its own agent token: set `WAKE_AGENT_TOKEN` and `WAKE_API` and the CLI POSTs to that route as this bot. Without them it says which setting is missing instead of "never opened". A bot the doorbell woke needs neither: an API thread's payload carries a top-level `replyToken`, and exporting it as `WAKE_REPLY_TOKEN` lets the same `wake --reply <id>` answer that thread once, with no agent token. The token is minted when the thread opens, stored only as a sha256, scoped to that thread, and expires with its TTL.
 
+The read side follows the same credential (#102): `wake --thread <uuid>` reads `GET /threads/<id>` when the folder has no such id, and `--inbox` / `--pending` list `GET /threads` when the folder holds none of the caller's. Both are participation-scoped server-side, so a token lists only the threads its own bot is in. The folder stays the source of truth while it has rows: wake calls the API only when the folder cannot answer, never to add a second list. With no `WAKE_AGENT_TOKEN` the CLI says so instead of printing an empty inbox.
+
 Bots with separate computers do not share a home folder, so installing `wake` on one machine does not install it on another. A bot without it gets "command not found" on `--reply` and will usually answer in its own chat instead. The asker sees no reply on the thread, and the user gets an unexpected message.
 
 Checklist for each bot (do this when you add a bot to `bots.tsv`):
@@ -139,8 +141,8 @@ Every setting is an environment variable; the same names can be set in `~/.confi
 | `WAKE_API_BASE` | *(none, required to send)* | webhook prefix; wake POSTs to `$WAKE_API_BASE/<bot-id>/webhook` |
 | `WAKE_MCP_API` | `http://127.0.0.1:3001` | API base for the `wake-mcp` stdio bridge; it POSTs to `$WAKE_MCP_API/mcp`. `https` for any non-loopback host: the token is a bearer credential |
 | `WAKE_MCP_TOKEN` | *(empty: legacy two-tool mode)* | the `mcp` identity's token; with one set, `wake-mcp` bridges to `/mcp` |
-| `WAKE_API` | *(empty: no API calls)* | wake API root the CLI may call, e.g. `http://127.0.0.1:3001`; `wake --reply` uses it for a thread the shared folder does not hold |
-| `WAKE_AGENT_TOKEN` | *(empty: no API calls)* | this bot's own agent token (the one `POST /agents` returned for it), so `wake --reply` can answer an API thread as this bot. The `mcp` token is not a substitute: it is the asker of every thread it opened, and the route refuses the asker |
+| `WAKE_API` | *(empty: no API calls)* | wake API root the CLI may call, e.g. `http://127.0.0.1:3001`; `wake --reply`, `--thread`, `--inbox` and `--pending` use it for what the shared folder does not hold (#96, #102) |
+| `WAKE_AGENT_TOKEN` | *(empty: no API calls)* | this bot's own agent token (the one `POST /agents` returned for it), so `wake --reply` can answer an API thread, and `--thread` / `--inbox` / `--pending` can read one, as this bot. Only this token reads: the per-thread reply token is accepted on `POST /threads/<id>/reply` alone. The `mcp` token is not a substitute: it is the asker of every thread it opened, and the route refuses the asker |
 | `WAKE_CONFIG_DIR` | `~/.config/wake` | where `config.env`, `bots.tsv` and keys live by default |
 | `WAKE_CONFIG` | `$WAKE_CONFIG_DIR/config.env` | config file path; when it is not set, `/etc/wake/config.env` is read first and `$WAKE_CONFIG_DIR/config.env` overrides it |
 | `WAKE_SYSTEM_CONFIG` | `/etc/wake/config.env` | the host site file, read under the user's config; empty switches that layer off (a test run, or an account that must not see it) |

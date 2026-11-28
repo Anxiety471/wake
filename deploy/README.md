@@ -456,6 +456,80 @@ stored:
 sudo -u postgres psql -d wake -A -F, -c 'SELECT id, status, last_seq, reply_token_hash IS NULL FROM threads ORDER BY created_at DESC LIMIT 3'
 ```
 
+### 6.6 Public read routes
+
+A bot in its own container cannot reach `127.0.0.1:3001`, and the reply route alone
+answers a question it can never read back (#102). Two `GET` locations publish the reads
+the CLI falls back to: `--thread` on an API id, and `--inbox` / `--pending` when the
+shared folder holds none of the caller's rows. Both are participation-scoped in the app —
+`GET /threads` joins `thread_participants` on the caller and `GET /inbox` filters by the
+token's agent — so a token shows only its own bot's threads. The operator and dashboard
+routes, `POST /inbox/read` and `POST /threads`, stay on loopback.
+
+The second `map` also belongs at the top of the file, beside `$wake_reply_has_auth`:
+
+```nginx
+map "$http_authorization" $wake_read_has_auth {
+    ""      0;
+    default 1;
+}
+```
+
+and the locations go in the same 443 `server` block, before `location /`:
+
+```nginx
+    location ~ "^/(inbox|threads)$" {
+        if ($request_method != GET) { return 405; }
+        if ($wake_read_has_auth = 0) { return 401; }
+        client_max_body_size 64k;
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Connection "";
+        proxy_read_timeout 30s;
+    }
+    location ~ "^/threads/[0-9a-fA-F-]{36}$" {
+        if ($request_method != GET) { return 405; }
+        if ($wake_read_has_auth = 0) { return 401; }
+        client_max_body_size 64k;
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Connection "";
+        proxy_read_timeout 30s;
+    }
+```
+
+Why each line, in the same order as §6.5:
+
+- **Anchored to the two routes, and `GET` only.** `^/inbox` would also publish
+  `POST /inbox/read` (mark a message read), and `^/threads` would publish `POST /threads`
+  (open one) and `POST /threads/<uuid>/read`. The `405` is answered in the rewrite phase,
+  before the app is reached, so an unpublished method never learns whether the route exists.
+- **The edge gate is separate from the reply one on purpose.** A reply token is not a read
+  credential: the app accepts `X-Wake-Reply-Token` on `POST /threads/<uuid>/reply` alone, so
+  a request that carries only that token is refused here as well instead of reaching the app
+  to be refused there.
+- **`GET /threads` returns the caller's participations, not the store.** The join on
+  `thread_participants` is in the query, so a stolen token lists one bot's threads and no
+  others. This is what makes the route safe to publish: the scope is not a header or a query
+  parameter a caller can choose.
+
+Verify with a token, not without: without one every route answers `401`, which proves the
+gate and not the route. `GET` on an unpublished path falls through to the web UI and answers
+`200 text/html`, so read the status and the content type together:
+
+```sh
+curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' https://bots.example.com/inbox           # 401: no credential
+curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' https://bots.example.com/threads         # 401: no credential
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST https://bots.example.com/inbox                    # 405: not GET
+curl -sS -H "Authorization: Bearer $WAKE_AGENT_TOKEN" https://bots.example.com/inbox | head -c 200  # the bot's own inbox
+```
+
 ## 7. Update
 
 The redeploy path is §3 again, with a stop around it so the old bundle is not

@@ -96,15 +96,27 @@ class FakeWebhook:
 
 
 class FakeWakeApi:
-    """Records every POST /threads/<id>/reply; answers 201 with seq 2, or the status set per id."""
+    """Records every request; POST /threads/<id>/reply answers 201 with seq 2 (or the status set per
+    id), and the two read routes answer the threads planted on the fake (#102)."""
 
     def __init__(self):
         self.requests = []
         self.status = {}
         self.error = {}
+        self.threads = []  # GET /threads rows, as the API returns them
+        self.thread = {}  # uuid -> GET /threads/<id> body
+        self.get_status = {}  # uuid, or "list", -> status for a read
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
+            def _answer(self, code, payload):
+                out = json.dumps(payload).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 m = re.match(r"^/threads/([^/]+)/reply$", self.path)
@@ -123,12 +135,23 @@ class FakeWakeApi:
                     }
                 else:
                     payload = {"error": outer.error.get(tid, "refused")}
-                out = json.dumps(payload).encode()
-                self.send_response(code)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(out)))
-                self.end_headers()
-                self.wfile.write(out)
+                self._answer(code, payload)
+
+            def do_GET(self):
+                outer.requests.append({"path": self.path, "method": "GET", "headers": dict(self.headers)})
+                if self.path.startswith("/threads?"):
+                    code = outer.get_status.get("list", 200)
+                    payload = {"threads": outer.threads, "next": None} if code == 200 else {"error": "refused"}
+                    self._answer(code, payload)
+                    return
+                m = re.match(r"^/threads/([^/?]+)$", self.path)
+                tid = m.group(1) if m else ""
+                code = outer.get_status.get(tid, 200 if tid in outer.thread else 404)
+                if code == 200:
+                    payload = outer.thread[tid]
+                else:
+                    payload = {"error": outer.error.get(tid, "not found")}
+                self._answer(code, payload)
 
             def log_message(self, *args):
                 pass
@@ -686,7 +709,10 @@ class InboxStoreReadTests(WakeTestCase):
         bridge, log = self.bridge("hostops-empty")
         r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        # The quiet line stays quiet, and now says why a thread the API opened cannot be listed
+        # here: an empty folder must not read as "nothing was opened anywhere" (#102).
+        self.assertIn("no threads opened by bot:coordinator", r.stdout)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stdout)
         cmds = self.commands(log)
         self.assertEqual(len(cmds), 2, cmds)
         self.assertIn("@@wake-file", cmds[0])
@@ -785,7 +811,10 @@ class InboxStoreReadTests(WakeTestCase):
         finally:
             os.chmod(store, 0o755)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        # The quiet line stays quiet, and now says why a thread the API opened cannot be listed
+        # here: an empty folder must not read as "nothing was opened anywhere" (#102).
+        self.assertIn("no threads opened by bot:coordinator", r.stdout)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stdout)
 
     def test_a_jsonl_directory_does_not_make_a_quiet_store_an_error(self):
         """#186: a `mkdir stray.jsonl` in a store holding no records answered `cannot read the
@@ -798,7 +827,10 @@ class InboxStoreReadTests(WakeTestCase):
         bridge, log = self.bridge("hostops-jsonl-dir")
         r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        # The quiet line stays quiet, and now says why a thread the API opened cannot be listed
+        # here: an empty folder must not read as "nothing was opened anywhere" (#102).
+        self.assertIn("no threads opened by bot:coordinator", r.stdout)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stdout)
         cmds = self.commands(log)
         self.assertIn("@@wake-file", cmds[0])
         self.assertTrue(cmds[1].startswith("ls -F "), cmds[1])
@@ -815,7 +847,10 @@ class InboxStoreReadTests(WakeTestCase):
             env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": self.bridge("hostops-jsonl-link")[0]},
         )
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        # The quiet line stays quiet, and now says why a thread the API opened cannot be listed
+        # here: an empty folder must not read as "nothing was opened anywhere" (#102).
+        self.assertIn("no threads opened by bot:coordinator", r.stdout)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stdout)
 
     def test_a_fifo_under_a_thread_name_is_quiet_too(self):
         """The other entries `ls -F` marks and the store read skips: `-F` says `|` for a fifo and
@@ -830,7 +865,10 @@ class InboxStoreReadTests(WakeTestCase):
         bridge, log = self.bridge("hostops-jsonl-fifo")
         r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        # The quiet line stays quiet, and now says why a thread the API opened cannot be listed
+        # here: an empty folder must not read as "nothing was opened anywhere" (#102).
+        self.assertIn("no threads opened by bot:coordinator", r.stdout)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stdout)
         self.assertTrue(self.commands(log)[1].startswith("ls -F "), self.commands(log)[1])
 
     def test_a_socket_under_a_thread_name_is_quiet_too(self):
@@ -849,7 +887,10 @@ class InboxStoreReadTests(WakeTestCase):
         bridge, log = self.bridge("hostops-jsonl-socket")
         r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        # The quiet line stays quiet, and now says why a thread the API opened cannot be listed
+        # here: an empty folder must not read as "nothing was opened anywhere" (#102).
+        self.assertIn("no threads opened by bot:coordinator", r.stdout)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stdout)
         self.assertTrue(self.commands(log)[1].startswith("ls -F "), self.commands(log)[1])
 
     def test_a_plain_thread_name_the_read_did_not_return_is_still_loud(self):
@@ -898,7 +939,10 @@ class InboxStoreReadTests(WakeTestCase):
         )
         r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": path})
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        # The quiet line stays quiet, and now says why a thread the API opened cannot be listed
+        # here: an empty folder must not read as "nothing was opened anywhere" (#102).
+        self.assertIn("no threads opened by bot:coordinator", r.stdout)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stdout)
         cmds = self.commands(log)
         self.assertTrue(cmds[1].startswith("ls -F "), cmds[1])
         self.assertEqual(cmds[2], f"ls {os.path.join(self.state, 'threads')} 2>/dev/null", cmds[2])
@@ -973,7 +1017,10 @@ class InboxStoreReadTests(WakeTestCase):
             env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": self.bridge("hostops-not-threads")[0]},
         )
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        # The quiet line stays quiet, and now says why a thread the API opened cannot be listed
+        # here: an empty folder must not read as "nothing was opened anywhere" (#102).
+        self.assertIn("no threads opened by bot:coordinator", r.stdout)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stdout)
 
     def test_an_inbox_on_a_store_with_threads_of_another_source_is_still_quiet(self):
         """The confirmation must not turn 'nobody asked you anything' into a store failure: a
@@ -982,7 +1029,10 @@ class InboxStoreReadTests(WakeTestCase):
         bridge, log = self.bridge("hostops-other-source")
         r = self.wake("--inbox", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_HOSTOPS": bridge})
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), "no threads opened by bot:coordinator")
+        # The quiet line stays quiet, and now says why a thread the API opened cannot be listed
+        # here: an empty folder must not read as "nothing was opened anywhere" (#102).
+        self.assertIn("no threads opened by bot:coordinator", r.stdout)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stdout)
         self.assertEqual(len(self.commands(log)), 1, self.commands(log))
 
     def test_a_record_that_names_the_marker_is_not_a_thread(self):
@@ -1464,6 +1514,190 @@ class DirectoryTests(WakeTestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("registry sync is an operator action", r.stdout)
         self.assertIn("bot-ops9-0009", slurp(os.path.join(self.cfg, "bots.tsv")))
+
+
+class ApiThreadReadTests(WakeTestCase):
+    """An id the API minted is not in the shared folder, so --thread reads it on the API (#102)."""
+
+    UUID = "11a793f5-9f12-40c5-8880-19d4fb80431b"
+
+    def setUp(self):
+        super().setUp()
+        # A readable, empty folder: the store is a store, not a failure, and this is the state an
+        # API-only thread goes missing in.
+        os.makedirs(os.path.join(self.state, "threads"))
+
+    OTHER = "22b893f5-9f12-40c5-8880-19d4fb80431c"
+
+    def api_env(self, token="bob-agent-token", base=None):
+        env = {"WAKE_SOURCE": "bot:engineer", "WAKE_API": self.api.base if base is None else base}
+        if token is not None:
+            env["WAKE_AGENT_TOKEN"] = token
+        return env
+
+    def thread_body(self, tid, status="answered", messages=None):
+        if messages is None:
+            messages = [
+                {"id": "m1", "seq": 1, "from": "mcp", "body": "why", "createdAt": "2026-11-16T04:00:00+08:00"},
+                {"id": "m2", "seq": 2, "from": "engineer", "body": "because", "createdAt": "2026-11-16T04:01:00+08:00"},
+            ]
+        return {
+            "id": tid,
+            "kind": "ask",
+            "status": status,
+            "createdBy": "mcp",
+            "createdAt": "2026-11-16T04:00:00+08:00",
+            "updatedAt": "2026-11-16T04:01:00+08:00",
+            "expiresAt": None,
+            "expired": False,
+            "lastSeq": len(messages),
+            "myReadSeq": len(messages),
+            "participants": [{"name": "mcp"}, {"name": "engineer"}],
+            "messages": messages,
+        }
+
+    def row(self, tid, createdBy="mcp", unread=1, status="open", kind="ask"):
+        return {
+            "id": tid,
+            "kind": kind,
+            "status": status,
+            "createdBy": createdBy,
+            "createdAt": "2026-11-16T04:00:00+08:00",
+            "updatedAt": "2026-11-16T04:01:00+08:00",
+            "expired": False,
+            "lastSeq": 2,
+            "myReadSeq": 1,
+            "unread": unread,
+            "participants": [{"name": createdBy}, {"name": "engineer"}],
+        }
+
+    def test_thread_reads_an_api_thread(self):
+        """The folder never held this id; the API has it and this bot is a participant."""
+        self.api.thread[self.UUID] = self.thread_body(self.UUID)
+        r = self.wake("--thread", self.UUID, env=self.api_env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("thread " + self.UUID, r.stdout)
+        self.assertIn("[2026-11-16T04:00] mcp (ask): why", r.stdout)
+        self.assertIn("[2026-11-16T04:01] engineer (reply): because", r.stdout)
+        self.assertIn("read from the wake API", r.stdout)
+        [req] = self.api.requests
+        self.assertEqual(req["method"], "GET")
+        self.assertEqual(req["path"], "/threads/" + self.UUID)
+        self.assertEqual(req["headers"]["Authorization"], "Bearer bob-agent-token")
+        self.assertEqual(req["headers"]["User-Agent"], "wake-cli/" + wake_config.VERSION)
+
+    def test_thread_without_a_token_names_the_setting(self):
+        """An API id in the folder-only message is a lie; the setting that unlocks it is the point."""
+        r = self.wake("--thread", self.UUID, env=self.api_env(token=None))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stderr)
+        self.assertIn("GET /threads/" + self.UUID, r.stderr)
+        self.assertNotEqual(r.stderr.strip(), "no thread " + self.UUID)
+        self.assertEqual(self.api.requests, [])
+
+    def test_reply_token_cannot_read_a_thread(self):
+        """The per-thread reply token is accepted on POST .../reply alone, so it reads nothing."""
+        env = self.api_env(token=None)
+        env["WAKE_REPLY_TOKEN"] = "thread-token-abc"
+        r = self.wake("--thread", self.UUID, env=env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stderr)
+        self.assertEqual(self.api.requests, [])
+
+    def test_thread_the_api_does_not_know_is_refused(self):
+        """404 is not a participant, and saying so beats "no thread" for an id the folder cannot hold."""
+        self.api.get_status[self.UUID] = 404
+        r = self.wake("--thread", self.UUID, env=self.api_env())
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("404", r.stderr)
+        self.assertIn("participants", r.stderr)
+
+    def test_a_refused_token_names_the_token(self):
+        self.api.get_status[self.UUID] = 401
+        r = self.wake("--thread", self.UUID, env=self.api_env())
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("401", r.stderr)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stderr)
+
+    def test_an_unreachable_api_is_not_a_missing_thread(self):
+        """A network failure must not read as "this thread does not exist"."""
+        r = self.wake("--thread", self.UUID, env=self.api_env(base="http://127.0.0.1:1"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("cannot reach the wake API", r.stderr)
+        self.assertNotIn("no thread", r.stderr)
+
+    def test_a_cli_shape_id_never_calls_the_api(self):
+        """A non-uuid id was never the API's, so the folder is the only place it can be."""
+        r = self.wake("--thread", "0101-beef", env=self.api_env())
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no thread 0101-beef", r.stderr)
+        self.assertEqual(self.api.requests, [])
+
+    def test_inbox_lists_the_api_threads_this_bot_opened(self):
+        """An empty folder is where an API thread disappears from --inbox (#102)."""
+        self.api.threads = [self.row(self.UUID, createdBy="engineer"), self.row(self.OTHER, createdBy="mcp")]
+        r = self.wake("--inbox", env=self.api_env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(self.UUID, r.stdout)
+        self.assertNotIn(self.OTHER, r.stdout)
+        self.assertIn("wake API", r.stdout)
+        [req] = self.api.requests
+        self.assertEqual(req["path"], "/threads?limit=100")
+
+    def flat_thread(self, tid="1114-a3f2", sender="bot:engineer"):
+        """One CLI thread in the shared folder, in the shape the store writes."""
+        path = os.path.join(self.state, "threads", tid + ".jsonl")
+        rec = {"from": sender, "to": "coordinator", "kind": "ask", "text": "why", "ts": "2026-11-16T04:00:00+08:00"}
+        with open(path, "w") as f:
+            f.write(json.dumps(rec) + "\n")
+        return tid
+
+    def test_inbox_keeps_the_folder_first(self):
+        """While the folder has rows it stays the source of truth: no API call, no second list."""
+        self.flat_thread()
+        r = self.wake("--inbox", env=self.api_env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.api.requests, [])
+
+    def test_inbox_says_when_the_api_cannot_be_listed(self):
+        """No token must not read as "no threads": name the setting instead."""
+        r = self.wake("--inbox", env=self.api_env(token=None))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("no threads opened by bot:engineer", r.stdout)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stdout)
+
+    def test_inbox_reports_a_refused_list(self):
+        """An inbox that could not be read must never print as an empty one (#101, #168)."""
+        self.api.get_status["list"] = 401
+        r = self.wake("--inbox", env=self.api_env())
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("401", r.stderr)
+        self.assertNotIn("no threads opened", r.stdout)
+
+    def test_pending_lists_an_unread_api_thread(self):
+        """--pending is the bot's own inbox: what someone else opened for it, still unread."""
+        self.api.threads = [
+            self.row(self.UUID, createdBy="mcp", unread=1),
+            self.row(self.OTHER, createdBy="engineer", unread=4),
+        ]
+        r = self.wake("--pending", env=self.api_env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(self.UUID, r.stdout)
+        self.assertIn("from mcp", r.stdout)
+        self.assertNotIn(self.OTHER, r.stdout)
+
+    def test_pending_says_when_the_api_cannot_be_listed(self):
+        """The same honesty as --inbox: an empty folder is not proof that nothing is waiting."""
+        r = self.wake("--pending", env=self.api_env(token=None))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("nothing is waiting on bot:engineer", r.stdout)
+        self.assertIn("WAKE_AGENT_TOKEN", r.stdout)
+
+    def test_pending_ignores_a_read_api_thread(self):
+        self.api.threads = [self.row(self.UUID, createdBy="mcp", unread=0)]
+        r = self.wake("--pending", env=self.api_env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("nothing is waiting on bot:engineer", r.stdout)
 
 
 class BulkTests(WakeTestCase):

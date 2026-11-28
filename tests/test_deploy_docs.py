@@ -21,6 +21,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 README = os.path.join(ROOT, "deploy", "README.md")
 UNITS = {"k": 1024, "m": 1024 * 1024, None: 1}
 HEADING = "### 6.5 Public reply route"
+READ_HEADING = "### 6.6 Public read routes"
 
 
 def read():
@@ -67,8 +68,8 @@ def reply_problems(text):
     """
     problems = []
     blocks = nginx_blocks(text)
-    if len(blocks) != 3:
-        problems.append(f"expected the runbook's three audited nginx blocks, found {len(blocks)}")
+    if len(blocks) != 5:
+        problems.append(f"expected the runbook's five audited nginx blocks, found {len(blocks)}")
     if HEADING not in text:
         return problems + ["§6.5 is gone from the runbook"]
     local = reply_blocks(text)
@@ -160,6 +161,135 @@ def reply_problems(text):
     return problems
 
 
+def read_blocks(text):
+    return nginx_blocks(section(text, READ_HEADING))
+
+
+def read_gate(text):
+    blocks = [b for b in read_blocks(text) if "map " in b]
+    assert len(blocks) == 1, f"section 6.6 shows {len(blocks)} maps, expected the read gate"
+    return blocks[0]
+
+
+def read_locations(text):
+    blocks = [b for b in read_blocks(text) if "location" in b]
+    assert len(blocks) == 1, f"section 6.6 shows {len(blocks)} location blocks, expected one with both"
+    return blocks[0]
+
+
+def read_problems(text):
+    """What section 6.6 must publish, and the ways it can publish too much.
+
+    The read routes are the ones that hand a caller the rows of a store, so the failure modes
+    are the reply route's: a pattern that matches past its route, a method guard the wrong way
+    round, or a gate that lets a credential-less request through to the app. The section also
+    has to stay out of POST /inbox/read (mark a message read) and POST /threads (open one).
+    """
+    problems = []
+    if READ_HEADING not in text:
+        return ["section 6.6 is gone from the runbook"]
+    local = read_blocks(text)
+    if len(local) != 2:
+        problems.append(f"section 6.6 shows {len(local)} nginx blocks, expected the map and the locations")
+        return problems
+    gate = read_gate(text)
+    block = read_locations(text)
+
+    if not re.search(r'^map\s+"\$http_authorization"\s+\$wake_read_has_auth\s*\{', gate, re.M):
+        problems.append("section 6.6 no longer defines $wake_read_has_auth from the bearer alone")
+    if not re.search(r'^\s*""\s+0;', gate, re.M):
+        problems.append("section 6.6's read map no longer maps an empty Authorization to 0")
+    if not re.search(r"^\s*default\s+1;", gate, re.M):
+        problems.append("section 6.6's read map no longer defaults to 1")
+    if "location" in gate:
+        problems.append("section 6.6's read gate carries a location; a map belongs at http level")
+    if "$http_x_wake_reply_token" in gate:
+        problems.append("section 6.6 gates reads on the reply token, which the app accepts on POST /reply alone")
+
+    patterns = re.findall(r'^\s*location\s+~\s+"([^"]+)"\s*\{', block, re.M)
+    if sorted(patterns) != sorted(["^/(inbox|threads)$", "^/threads/[0-9a-fA-F-]{36}$"]):
+        problems.append(f"section 6.6 publishes {patterns}, expected the two exact read routes")
+    for pattern in patterns:
+        if not pattern.startswith("^"):
+            problems.append(f"the read pattern {pattern!r} is not anchored to the start of the path")
+        if not pattern.endswith("$"):
+            problems.append(f"the read pattern {pattern!r} does not end at $")
+    for pattern in patterns:
+        try:
+            route = re.compile(pattern)
+        except re.error as error:
+            problems.append(f"a read pattern is not a valid regex: {error}")
+            continue
+        if pattern == "^/(inbox|threads)$":
+            for path in ("/inbox", "/threads"):
+                if route.fullmatch(path) is None:
+                    problems.append(f"the read pattern does not match {path}")
+            for path in ("/inbox/read", "/threads/", "/inboxx", "/agents"):
+                if route.fullmatch(path) is not None:
+                    problems.append(f"the read pattern accepts {path}, which is not a published route")
+            continue
+        if route.fullmatch("/threads/" + str(uuid.uuid4())) is None:
+            problems.append("the thread read pattern does not match a thread id")
+            continue
+        if route.fullmatch("/threads/" + "a" * 35) is not None:
+            problems.append("the thread read pattern does not pin the id length")
+        if route.fullmatch("/threads/" + "z" * 36) is not None:
+            problems.append("the thread read pattern matches 36 characters that cannot be in a thread id")
+        if route.fullmatch("/threads/" + str(uuid.uuid4()) + "x") is not None:
+            problems.append("the thread read pattern accepts a path that runs on past the thread id")
+
+    method_guard = "if ($request_method != GET) { return 405; }"
+    gate_guard = "if ($wake_read_has_auth = 0) { return 401; }"
+    if block.count(method_guard) != 2:
+        problems.append(f"section 6.6 does not carry {method_guard} in both locations")
+    if block.count(gate_guard) != 2:
+        problems.append(f"section 6.6 does not carry {gate_guard} in both locations")
+    if method_guard in block and gate_guard in block and block.index(method_guard) > block.index(gate_guard):
+        problems.append("section 6.6 checks the credential before the method, so a non-GET gets a 401 instead of a 405")
+    if "limit_except" in block:
+        problems.append("section 6.6 gates the method with limit_except, which runs after the 401 check")
+    if block.count("proxy_pass http://127.0.0.1:3001;") != 2:
+        problems.append("section 6.6 does not proxy both read routes to the loopback API")
+    ceilings = re.findall(r"client_max_body_size\s+(\d+)([km])?;", block)
+    if len(ceilings) != 2:
+        problems.append("section 6.6 does not bound the body of both read routes")
+    for number, unit in ceilings:
+        size = int(number) * UNITS[unit]
+        if not 8 * 1024 <= size <= 64 * 1024:
+            problems.append(f"section 6.6 body ceiling {size} B is not between the app's 8 KiB and 64k")
+
+    # A prefix anywhere would publish the routes the read gate is not written for.
+    for route in ("/inbox", "/threads"):
+        if re.search(r"^\s*location\s+(?:\^~|~\*?|=\s*)?\s*" + re.escape(route) + r"\b", text, re.M):
+            problems.append(f"the runbook carries a prefix location for {route}")
+    return problems
+
+
+class ReadRoutePublishTest(unittest.TestCase):
+    def test_the_runbook_publishes_the_two_read_routes(self):
+        self.assertEqual(read_problems(read()), [])
+
+    def test_an_unanchored_read_route_is_caught(self):
+        text = read().replace('"^/(inbox|threads)$"', '"/inbox|/threads"')
+        self.assertNotEqual(read_problems(text), [])
+
+    def test_a_wider_inbox_pattern_is_caught(self):
+        # ^/inbox would also publish POST /inbox/read, which marks a message read.
+        text = read().replace('"^/(inbox|threads)$"', '"^/(inbox|threads)"')
+        self.assertNotEqual(read_problems(text), [])
+
+    def test_a_read_route_without_the_gate_is_caught(self):
+        self.assertNotEqual(read_problems(read().replace("return 401", "return 404")), [])
+
+    def test_the_read_method_guard_flipped_is_caught(self):
+        text = read().replace("if ($request_method != GET)", "if ($request_method = GET)")
+        self.assertNotEqual(read_problems(text), [])
+
+    def test_a_read_map_that_accepts_no_credential_is_caught(self):
+        text = read().replace('    ""      0;', '    ""      1;')
+        self.assertNotEqual(read_problems(text), [])
+
+
 class PublishSnippetTest(unittest.TestCase):
     def test_publishes_mcp_by_exact_match_and_nothing_else(self):
         locations = re.findall(r"^\s*location\s+([^{]+?)\s*\{?\s*$", nginx_block(read()), re.M)
@@ -192,12 +322,14 @@ class ReplyRoutePublishTest(unittest.TestCase):
     def test_the_runbook_publishes_the_reply_route_and_only_that_route(self):
         self.assertEqual(reply_problems(read()), [])
 
-    def test_the_runbook_shows_three_audited_blocks_and_no_fourth(self):
+    def test_the_runbook_shows_the_audited_blocks_and_no_more(self):
         blocks = nginx_blocks(read())
-        self.assertEqual(len(blocks), 3)
+        self.assertEqual(len(blocks), 5)
         self.assertEqual(sum("= /mcp" in b for b in blocks), 1)
         self.assertEqual(sum("$wake_reply_has_auth" in b and "location" not in b for b in blocks), 1)
         self.assertEqual(sum("/reply" in b for b in blocks), 1)
+        self.assertEqual(sum("$wake_read_has_auth" in b and "location" not in b for b in blocks), 1)
+        self.assertEqual(sum("$wake_read_has_auth" in b and "location" in b for b in blocks), 1)
 
     def test_a_prefix_location_for_threads_is_caught(self):
         """The first attempt at /mcp, one route further on: it publishes the whole store."""
@@ -291,9 +423,12 @@ class ReplyRoutePublishTest(unittest.TestCase):
         # sites-enabled files are included inside http{}: a map in the server block is a
         # config error, and one location pasted at http level silently does nothing.
         self.assertNotIn("map ", reply_block(read()))
-        gate = [b for b in nginx_blocks(read()) if "map " in b]
-        self.assertEqual(len(gate), 1)
-        self.assertNotIn("location", gate[0])
+        gates = [b for b in nginx_blocks(read()) if "map " in b]
+        self.assertEqual(len(gates), 2, "the reply gate and the read gate")
+        for needle in ("$wake_reply_has_auth", "$wake_read_has_auth"):
+            one = [b for b in gates if needle in b]
+            self.assertEqual(len(one), 1)
+            self.assertNotIn("location", one[0])
 
     def test_the_body_ceiling_sits_between_the_apps_limit_and_a_spoolable_body(self):
         ceiling = re.search(r"client_max_body_size\s+(\d+)([km])?;", reply_block(read()))

@@ -914,6 +914,137 @@ def api_reply(tid, text):
         sys.exit(f"cannot reach the wake API at {base} to answer {tid}: {e.reason}")
 
 
+def api_read_credential():
+    """(base, agent token) for reading threads on the API, or (None, None) when this shell holds
+    neither.
+
+    Only an agent token can read: the per-thread reply token is accepted on POST .../reply alone,
+    so it can list no thread and open none (#102).
+    """
+    base = (CFG.get("WAKE_API") or "").strip().rstrip("/")
+    token = (CFG.get("WAKE_AGENT_TOKEN") or "").strip()
+    if not base or not token:
+        return None, None
+    return base, token
+
+
+def api_alias(bots, source):
+    """This shell's own name on the wake API, or None when the shell is nobody's bot.
+
+    The API registers an agent under the alias the fleet uses ("engineer", "potato"), and a bot's
+    WAKE_SOURCE carries that same alias, so the alias is the one name both sides agree on.
+    """
+    if source.startswith("bot:"):
+        return source.split(":", 1)[1]
+    b = own_bot(bots)
+    return b["alias"] if b else None
+
+
+def api_get(base, token, path):
+    """GET one API route as this bot. (status, body) for an answer the API gave, (None, reason) when
+    it could not be reached at all: an unreachable API must never read as an empty list."""
+    req = urllib.request.Request(
+        base + path,
+        method="GET",
+        headers={
+            "Authorization": "Bearer " + token,
+            "User-Agent": "wake-cli/" + wake_config.VERSION,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status, json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode()
+        try:
+            message = json.loads(raw).get("error") or raw
+        except (ValueError, AttributeError):
+            message = raw
+        return e.code, message[:300]
+    except urllib.error.URLError as e:
+        return None, str(e.reason)
+    except OSError as e:
+        return None, str(e)
+
+
+def api_read_missing(tid):
+    """What to say when an API-shaped id is not in the folder and this shell cannot ask the API."""
+    return (
+        f"no thread {tid} in the shared-folder store at {THREADS}: that id belongs to a thread the "
+        f"wake API opened, which that store cannot show. Read it on the API: GET /threads/{tid} as "
+        f"this bot, which needs WAKE_AGENT_TOKEN and WAKE_API in config.env."
+    )
+
+
+def api_refusal(status, body, what):
+    """One refusal in the terms this bot can act on. "what" is what was asked for, already worded:
+    "thread <id>", or "the thread list"."""
+    if status == 401:
+        return (
+            f"the wake API refused the token in WAKE_AGENT_TOKEN (401) for {what}: it is not a live "
+            f"agent token for this bot."
+        )
+    if status == 404:
+        return f"the wake API answered 404 for {what}: it was never opened, or this bot is not one of its participants."
+    return f"the wake API refused {what}: {status} {body}"
+
+
+def api_thread_recs(thread):
+    """One API thread as the records the flat store holds, so show() renders both the same way.
+
+    The API keeps a thread's messages in order under a per-thread seq; the first one opened the
+    thread, so it is the ask and every later one is a reply (#102).
+    """
+    recs = []
+    for m in thread.get("messages") or []:
+        recs.append(
+            {
+                "from": m.get("from", "?"),
+                "kind": "ask" if m.get("seq", 0) == 1 else "reply",
+                "text": m.get("body", ""),
+                "ts": m.get("createdAt", ""),
+            }
+        )
+    return recs
+
+
+def api_missing_hint(alias):
+    """The sentence an empty view earns when this shell cannot ask the API at all.
+
+    Empty when it can, or when there is no alias to ask as. An empty folder must never read as
+    "nothing was opened anywhere": naming the setting that is missing is what tells the two apart
+    (#101, #102).
+    """
+    if not alias:
+        return ""
+    base, token = api_read_credential()
+    if base and token:
+        return ""
+    missing = [name for name, value in (("WAKE_AGENT_TOKEN", token), ("WAKE_API", base)) if not value]
+    return (
+        " (this shell holds no " + " and no ".join(missing) + ", so a thread opened on the wake API "
+        "cannot be listed here)"
+    )
+
+
+def api_thread_rows(alias):
+    """The threads this bot takes part in on the wake API, newest first, or None when this shell
+    holds no agent token (the folder is then the only view there is).
+
+    Raises SystemExit with the reason when the API was asked and refused: an inbox that could not
+    be read must never print as an empty one (#101, #168, #177).
+    """
+    base, token = api_read_credential()
+    if not base or not token:
+        return None
+    status, body = api_get(base, token, "/threads?limit=100")
+    if status is None:
+        sys.exit(f"cannot reach the wake API at {base} to list threads: {body}")
+    if status != 200:
+        sys.exit(api_refusal(status, body, f"the thread list of {alias}"))
+    return [t for t in body.get("threads") or [] if isinstance(t, dict)]
+
+
 def reply(tid, text, source, notify, force, silent=False, notify_explicit=False, no_ring=False, chatty=False):
     recs = thread_read(tid)
     if recs is None:
@@ -1229,8 +1360,17 @@ if a.pending:
         sys.exit(
             f"cannot read the thread store at {THREADS}: check WAKE_HOSTOPS (guest) and that the directory is readable."
         )
+    api_waiting = []
+    alias = None
     if not waiting:
-        print(f"nothing is waiting on {a.source}")
+        # Nothing in the folder, so ask the API what is waiting on this bot there (#102).
+        alias = api_alias(bots, a.source)
+        if alias:
+            api_waiting = [
+                t for t in api_thread_rows(alias) or [] if t.get("createdBy") != alias and (t.get("unread") or 0) > 0
+            ]
+    if not waiting and not api_waiting:
+        print(f"nothing is waiting on {a.source}{api_missing_hint(alias)}")
         sys.exit(0)
     for tid, recs in waiting:
         head = recs[0]
@@ -1238,36 +1378,70 @@ if a.pending:
         for r in recs[1:]:
             print(f"    [{r.get('from')}] {r.get('text', '')}"[:300])
         print("    answer with: wake --reply " + tid + ' "<answer>"')
+    for t in api_waiting:
+        tid = str(t.get("id", "?"))
+        print(
+            f"{tid}  from {t.get('createdBy', '?')}  ({t.get('kind', 'ask')})  "
+            f"{t.get('unread', 0)} unread  | {t.get('status', '?')}"
+        )
+        print("    read it with: wake --thread " + tid + ", answer with: wake --reply " + tid + ' "<answer>"')
+    if api_waiting:
+        print(f"(wake API: {len(api_waiting)} waiting on {alias})")
     sys.exit(0)
-
 if a.thread:
     recs = thread_read(a.thread)
     if recs is None:
         sys.exit(
             f"cannot read the thread store at {THREADS}: check WAKE_HOSTOPS (guest) and that the directory is readable."
         )
+    api_note = ""
+    if not recs and API_THREAD_ID.match(a.thread):
+        # The id is the API's, so the folder never held it: read it where it lives (#102).
+        base, token = api_read_credential()
+        if not base or not token:
+            sys.exit(api_read_missing(a.thread))
+        status, body = api_get(base, token, "/threads/" + urllib.parse.quote(a.thread))
+        if status is None:
+            sys.exit(f"cannot reach the wake API at {base} to read thread {a.thread}: {body}")
+        if status != 200:
+            sys.exit(api_refusal(status, body, f"thread {a.thread}"))
+        recs = api_thread_recs(body)
+        api_note = f"(read from the wake API: {len(recs)} message(s), thread {body.get('status', '?')})"
     if not recs:
         sys.exit(f"no thread {a.thread}")
     show(recs, a.thread)
+    if api_note:
+        print(api_note)
     sys.exit(0)
-
 if a.inbox:
     mine = threads_mine(a.source)
     if mine is None:
         sys.exit(
             f"cannot read the thread store at {THREADS}: check WAKE_HOSTOPS (guest) and that the directory is readable."
         )
+    opened = []
+    alias = None
     if not mine:
-        print(f"no threads opened by {a.source}")
-        sys.exit(0)
-    for tid, recs in mine:
-        answers = [r for r in recs if r.get("kind") == "reply"]
-        state = f"{len(answers)} reply" if answers else "no reply yet"
-        print(f"{tid}  to {recs[0].get('to', '?')}  {state}  | {recs[0].get('text', '')[:70]}")
-        for r in answers:
-            print(f"    [{r.get('from')}] {r.get('text')}"[:300])
+        # The folder is the source of truth while it has rows; an empty one is where an API thread
+        # would be missing, so list those too (#102).
+        alias = api_alias(bots, a.source)
+        if alias:
+            opened = [t for t in api_thread_rows(alias) or [] if t.get("createdBy") == alias]
+    if mine:
+        for tid, recs in mine:
+            answers = [r for r in recs if r.get("kind") == "reply"]
+            state = f"{len(answers)} reply" if answers else "no reply yet"
+            print(f"{tid}  to {recs[0].get('to', '?')}  {state}  | {recs[0].get('text', '')[:70]}")
+            for r in answers:
+                print(f"    [{r.get('from')}] {r.get('text')}"[:300])
+    elif opened:
+        for t in opened:
+            names = ", ".join(str(p.get("name", "?")) for p in t.get("participants") or [])
+            print(f"{t.get('id', '?')}  status {t.get('status', '?')}  {t.get('unread', 0)} unread  | {names}")
+        print(f"(wake API: {len(opened)} thread(s) opened by {alias}; read one with wake --thread <id>)")
+    else:
+        print(f"no threads opened by {a.source}{api_missing_hint(alias)}")
     sys.exit(0)
-
 if a.reply:
     if len(a.reply) < 2:
         sys.exit('usage: wake --reply <thread-id> "YOUR ANSWER"')
