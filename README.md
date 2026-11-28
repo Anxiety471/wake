@@ -248,6 +248,18 @@ records, so the store read leaves it out on purpose and the store is quiet, not 
 must be taught, and a gate that has not been refuses it: `--inbox` then asks the plain
 `ls <store>` question instead, which is the answer #177 shipped. Gate first, client second.
 
+A thread the **API** opened lives in Postgres, not in that folder, so its UUID is not a name
+`--thread` can find. `--thread <uuid>` therefore falls back to `GET {WAKE_API}/threads/<id>`, and
+`--inbox` lists the API threads this bot takes part in after the folder's own. Two credentials
+reach those routes, and the CLI sends whichever it has, one header, never both: `WAKE_AGENT_TOKEN`,
+this bot's own token (the only one that can list), or `WAKE_REPLY_TOKEN`, the per-thread token a
+wake payload carried, which the API accepts on the thread it names and nowhere else. Neither is
+required for the folder: without them the CLI answers exactly as it did before, and `--thread`
+names the setting that is missing instead of claiming the thread was never opened. A store
+this shell cannot read is no longer the end of the line either: `--reply` and `--thread` still
+reach an API id, which is the shell that used to fail with `Permission denied` on the store
+([#265](https://github.com/Anxiety471/wake/issues/265)).
+
 ### `--silent` and `--pending`: message a bot without starting a run
 
 ```sh

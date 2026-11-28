@@ -97,10 +97,26 @@ const UNAVAILABLE_MESSAGES = [
   'the database system is starting up',
 ];
 
-// POST /threads/:id/reply, the one route a reply token can reach (#93). Matched
-// against the path alone and anchored: `request.url` carries the query string, so
-// an unanchored test also matched `POST /messages?q=/threads/x/reply`.
-const REPLY_TOKEN_ROUTE = /^\/threads\/[^/?]+\/reply$/;
+// The routes a per-thread reply token can reach (#93, #322): its own thread's
+// answer, read and read receipt. Never the list (`GET /threads`) or the inbox,
+// so the token stays scoped to the one thread it names. Matched against the path
+// alone and anchored: `request.url` carries the query string, so an unanchored
+// test also matched `POST /messages?q=/threads/x/reply`.
+const REPLY_TOKEN_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
+  { method: 'POST', pattern: /^\/threads\/[^/?]+\/reply$/ },
+  { method: 'GET', pattern: /^\/threads\/[^/?]+$/ },
+  { method: 'POST', pattern: /^\/threads\/[^/?]+\/read$/ },
+];
+
+function replyTokenRoute(method: string, url: string): boolean {
+  const path = url.split('?')[0];
+  if (path === undefined) {
+    return false;
+  }
+  return REPLY_TOKEN_ROUTES.some(
+    (route) => route.method === method && route.pattern.test(path),
+  );
+}
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -572,17 +588,15 @@ export function buildApp(databaseUrl: string, options?: BuildAppOptions) {
       const token = bearerToken(request.headers.authorization);
       if (token === undefined) {
         // A doorbell-woken bot holds a per-thread reply token, not an agent
-        // token (#93), so the reply route alone may pass without a bearer. That
-        // route verifies and spends the token; nothing else runs unauthenticated.
+        // token (#93), so the routes that token names may pass without a bearer.
+        // Each one verifies the token against its own thread's hash; nothing
+        // else runs unauthenticated.
         const header = request.headers['x-wake-reply-token'];
         const replyToken = Array.isArray(header) ? header[0] : header;
-        const [path] = request.url.split('?');
         if (
-          request.method === 'POST' &&
-          path !== undefined &&
-          REPLY_TOKEN_ROUTE.test(path) &&
           replyToken !== undefined &&
-          replyToken !== ''
+          replyToken !== '' &&
+          replyTokenRoute(request.method, request.url)
         ) {
           request.agent = null;
           return;
