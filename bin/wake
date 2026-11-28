@@ -31,13 +31,32 @@ GROUP = CFG["WAKE_GROUP"]
 DEFAULT_BOT = CFG["WAKE_BOT"]
 # A wake is a message between bots; the human should see that one arrived, not the answer to it.
 # The flag rides in the payload (silent) and as a tail on detail, so a receiver needs no per-bot
-# routine edit to stay quiet. WAKE_SILENT=0 or --chatty turns it off for one send.
-SILENT = str(CFG["WAKE_SILENT"]).strip().lower() not in ("0", "false", "no", "off")
+# routine edit to stay quiet. The tone follows the sender unless WAKE_SILENT forces one tone for
+# every send; --chatty is the one-send override.
+_SILENT_CFG = str(CFG["WAKE_SILENT"]).strip().lower()
+SILENT = None if _SILENT_CFG in ("", "auto", "source") else _SILENT_CFG not in ("0", "false", "no", "off")
 SILENT_TAIL = (
     "[silent wake: post no chat output to the human; answer in the thread store (wake --reply) "
     "or message_bot, then end the turn with no chat message]"
 )
 q = shlex.quote
+
+
+def default_silent(source):
+    """The tone a wake carries when the config forces none.
+
+    A bot or agent session is answered in the thread store and ends its turn: its chat is already
+    a message to someone else. A person at a shell reads the answer in the chat in front of them,
+    so their wake is chatty.
+    """
+    return not (source or "").startswith("human:")
+
+
+def tone_for(source):
+    """The tone one send carries: the forced config tone if there is one, else the sender's own."""
+    return SILENT if SILENT is not None else default_silent(source)
+
+
 AGENT_NAMES = {"omp": "Oh My Pi"}  # display names for agent harnesses; others show their label as is
 # The API accepts a 64 KiB body (413 above it). `message` repeats most of `detail`, so a long wake
 # would double past that and be lost; drop the duplicate once the encoded payload passes this.
@@ -652,7 +671,7 @@ def read_key(path):
 
 def send(b, source, event, level, detail, ref, force=False, quiet=False, silent=None):
     if silent is None:
-        silent = SILENT
+        silent = tone_for(source)
     if not BASE:
         sys.exit("WAKE_API_BASE is not set (env or config.env), e.g. https://bots.example.com/api/v1/bots")
     depth = guard(b, force)
@@ -749,6 +768,7 @@ def ask(b, text, wait, level, source, force, no_send=False, silent=False):
         # recipient's next turn instead of starting one (#242).
         queue_silent(b, text, source, kind="ask")
         return 0
+    tone = tone_for(source)
     tid = tid_new()
     thread_append(
         tid,
@@ -761,12 +781,12 @@ def ask(b, text, wait, level, source, force, no_send=False, silent=False):
             "text": text,
             "to": b["alias"],
             "inbox": inbox_of_session(),
-            "silent_payload": SILENT,
+            "silent_payload": tone,
         },
     )
     detail = f'{text} [thread {tid}] reply: wake --reply {tid} "YOUR ANSWER"'
     if not no_send:
-        send(b, source, "request", level, detail, "thread:" + tid, force, silent=SILENT)
+        send(b, source, "request", level, detail, "thread:" + tid, force, silent=tone)
     else:
         print(f"[dry-run] would ask {b['alias']}: {detail}")
     audit("ask", source, text, tid, b["alias"], 99 if no_send else 0)
@@ -955,7 +975,8 @@ def reply(tid, text, source, notify, force, silent=False, notify_explicit=False,
         )
     # The tone travels with the thread, not with the replier: the asker set it, and --chatty is the
     # only way to disagree. It is a different flag from silent, which starts no run at all.
-    tone = bool(head.get("silent_payload", SILENT)) and not chatty
+    asked = head.get("silent_payload")
+    tone = bool(tone_for(owner) if asked is None else asked) and not chatty
     thread_append(
         tid,
         {
@@ -1053,7 +1074,10 @@ p.add_argument(
 p.add_argument(
     "--chatty",
     action="store_true",
-    help="let the receiver post its answer in its chat (payload silent=false; the default is WAKE_SILENT)",
+    help=(
+        "let the receiver post its answer in its chat (payload silent=false). The default follows the "
+        "sender: chatty from human:, silent from a bot or agent session"
+    ),
 )
 p.add_argument("--setup", metavar="BOT", help="create (or with --rotate, replace) the webhook key for a bot")
 p.add_argument("--rotate", action="store_true")

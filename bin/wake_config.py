@@ -30,10 +30,11 @@ DEFAULTS = {
     "WAKE_REGISTRY_GROUP": "",  # group given to the host copy of the registry by --sync; empty = leave the group alone
     "WAKE_RATE_DIR": "/tmp",  # where the per-uid rate log wake-rate-<uid>.json is kept
     "WAKE_BOT": "coordinator",  # default bot for wake-hook, wake-run and the legacy `wake <source> <event>` form
-    # 1 = a woken bot posts no chat output to the human (it answers in the thread store and ends
-    # the turn); 0 = chatty, the receiver's answer shows in its chat. --chatty overrides it for one
-    # send; --silent is a different flag, it starts no run at all, so this one never applies.
-    "WAKE_SILENT": "1",
+    # auto (the default) follows the sender: silent from a bot or agent session, which answers
+    # someone else and ends its turn, and chatty from human:, which reads the answer in that chat.
+    # 1 forces silent for every sender, 0 forces chatty; --chatty overrides either for one send.
+    # --silent is a different flag: it starts no run at all, so this one never applies.
+    "WAKE_SILENT": "auto",
 }
 
 

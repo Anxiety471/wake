@@ -1752,6 +1752,32 @@ class InboxIoFailureTests(WakeTestCase):
         marker = os.path.join(self.state, "inbox", "active", "abc123.json")
         self.assertEqual(slurp(marker), "", "the refused marker write still landed")
 
+    def test_read_fails_when_the_host_refuses_it(self):
+        """A refused read used to look exactly like a quiet inbox: the command's status was
+        discarded, so a session whose reads had stopped working polled a queue that never filled
+        and every reply to it went nowhere (#101)."""
+        box = os.path.join(self.state, "inbox", "abc123.jsonl")
+        r = self.run_bin("wake-inbox-io", "read", box, env=self.env_host)
+        self.assertEqual(r.returncode, 75, (r.stdout, r.stderr))
+        self.assertIn("the gate refused", r.stderr)
+        self.assertEqual(r.stdout, "", "a refused read still printed an inbox body")
+
+    def test_an_inbox_nothing_was_written_to_is_an_empty_read(self):
+        """A session may poll before anything was sent to it, and that is not a failure."""
+        hostops = os.path.join(self.fakebin, "hostops-ok")
+        write_exe(
+            hostops,
+            """
+            #!/bin/sh
+            exec bash -c "$1"
+        """,
+        )
+        box = os.path.join(self.state, "inbox", "abc123.jsonl")
+        r = self.run_bin("wake-inbox-io", "read", box, env={"WAKE_HOSTOPS": hostops})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertEqual(r.stderr, "")
+
     def test_beat_fails_when_the_host_refuses_it(self):
         inbox = os.path.join(self.state, "inbox")
         os.makedirs(os.path.join(inbox, "active"))
@@ -2531,13 +2557,96 @@ class SilenceTests(WakeTestCase):
 
     TAIL = "post no chat output to the human"
 
-    def test_a_wake_is_silent_by_default(self):
+    def test_a_bot_wake_is_silent_by_default(self):
         self.put_key("bot-engineer-0002")
-        r = self.wake("engineer", "hello")
+        r = self.wake("engineer", "hello", env={"WAKE_SOURCE": "bot:coordinator"})
         self.assertEqual(r.returncode, 0, r.stderr)
         [req] = self.hook.requests
         self.assertIs(req["json"]["silent"], True)
         self.assertIn(self.TAIL, req["json"]["detail"])
+
+    def test_a_human_wake_is_chatty_by_default(self):
+        """The rule is about messages between bots. A person at a shell wants the answer in the
+        chat in front of them, which is the only chat it can appear in (Joshua, 2026-11-28)."""
+        self.put_key("bot-engineer-0002")
+        r = self.wake("engineer", "hello", env={"WAKE_SOURCE": "human:hitori"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        self.assertIs(req["json"]["silent"], False)
+        self.assertNotIn(self.TAIL, req["json"]["detail"])
+
+    def test_a_default_source_is_read_as_a_person(self):
+        """No --source and no WAKE_SOURCE in the test environment resolves to human:<user>, so the
+        tone follows it without the caller having to know the rule."""
+        self.put_key("bot-engineer-0002")
+        r = self.wake("engineer", "hello")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        self.assertEqual(req["json"]["source"], "human:tester")
+        self.assertIs(req["json"]["silent"], False)
+
+    def test_an_agent_session_keeps_the_bot_tone(self):
+        """A skill: or harness: session answers someone else, so it is silent even though a person
+        started it."""
+        self.put_key("bot-engineer-0002")
+        r = self.wake("engineer", "hello", env={"WAKE_SOURCE": "harness:omp"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        self.assertIs(req["json"]["silent"], True)
+
+    def test_the_config_can_force_silent_for_a_person(self):
+        self.put_key("bot-engineer-0002")
+        r = self.wake("engineer", "hello", env={"WAKE_SOURCE": "human:hitori", "WAKE_SILENT": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        self.assertIs(req["json"]["silent"], True)
+        self.assertIn(self.TAIL, req["json"]["detail"])
+
+    def test_a_human_ask_records_the_chatty_tone_and_the_reply_inherits_it(self):
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("--ask", "engineer", "why", env={"WAKE_SOURCE": "human:hitori"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        tid = re.search(r"thread (\S+) opened", r.stdout).group(1)
+        path = os.path.join(self.state, "threads", tid + ".jsonl")
+        with open(path) as f:
+            head = json.loads(f.readline())
+        self.assertIs(head["silent_payload"], False)
+        # a human's ask keeps its answer in the session inbox, so the tone is asserted on the
+        # record the reply leaves behind rather than on a webhook that a person never gets
+        r = self.wake("--reply", tid, "because", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(path) as f:
+            reply = [json.loads(x) for x in f][1]
+        self.assertIs(reply["silent_payload"], False)
+        self.assertEqual(len(self.hook.requests), 1, "a human's reply rang a doorbell")
+
+    def test_a_thread_written_before_the_tone_followed_the_sender_takes_it_from_the_asker(self):
+        """A record without silent_payload used to fall back to the machine-wide default, so an old
+        thread answered from a bot could turn chatty or silent with the config rather than the ask."""
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-coordinator-0001")
+        tid = "2026-11-20T101010+0800-abc123"
+        os.makedirs(os.path.join(self.state, "threads"), exist_ok=True)
+        with open(os.path.join(self.state, "threads", tid + ".jsonl"), "w") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "ts": "2026-11-20T10:10:10+0800",
+                        "from": "bot:coordinator",
+                        "owner": "bot:coordinator",
+                        "reply_to": "bot:engineer",
+                        "kind": "ask",
+                        "text": "why",
+                        "to": "engineer",
+                    }
+                )
+                + chr(10)
+            )
+        r = self.wake("--reply", tid, "because", "--force", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        notice = self.hook.requests[0]["json"]
+        self.assertIs(notice["silent"], True, "an old bot ask was answered on the machine default")
 
     def test_chatty_turns_it_off_for_one_send(self):
         self.put_key("bot-engineer-0002")
@@ -2549,7 +2658,7 @@ class SilenceTests(WakeTestCase):
 
     def test_the_config_turns_it_off_for_every_send(self):
         self.put_key("bot-engineer-0002")
-        r = self.wake("engineer", "hello", env={"WAKE_SILENT": "0"})
+        r = self.wake("engineer", "hello", env={"WAKE_SOURCE": "bot:coordinator", "WAKE_SILENT": "0"})
         self.assertEqual(r.returncode, 0, r.stderr)
         [req] = self.hook.requests
         self.assertIs(req["json"]["silent"], False)
