@@ -638,6 +638,8 @@ def caller_identity():
     exported with no token behind it, and "label" is the shared self file, which names one bot
     for every run there.
     """
+    if not (CFG.get("WAKE_SENDER_BOT_ID") or "").strip():
+        return None, "label"
     if not os.path.exists(REGISTRY):
         return None, "label"
     b = own_bot(load())
@@ -645,9 +647,7 @@ def caller_identity():
         return None, "label"
     if (CFG.get("WAKE_SENDER_TOKEN") or "").strip():
         return b["id"], "token"
-    if (CFG.get("WAKE_SENDER_BOT_ID") or "").strip():
-        return b["id"], "run"
-    return None, "label"
+    return b["id"], "run"
 
 
 def record_rotation(bot_id, key, action):

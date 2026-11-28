@@ -586,6 +586,21 @@ class RotationGuardTests(WakeTestCase):
         self.assertEqual(rec["sender_proof"], "label")
         self.assertEqual(rec["source"], "bot:ops")
 
+    def test_a_token_without_the_exported_id_names_nobody(self):
+        """The token says which bot minted it, not which run holds it; a config file in a shared
+        home can carry one bot's token into every run there. Without the id the platform exports,
+        this shell cannot tell whose run it is, so it records a label and no name.
+        """
+        env, _log = self.helper()
+        env["WAKE_SENDER_TOKEN"] = "sender-token-abc"
+        with open(os.path.join(self.cfg, "self"), "w") as f:
+            f.write("ops\n")
+        r = self.wake("--setup", "engineer", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rec = self.rotations()[0]
+        self.assertIsNone(rec["sender"])
+        self.assertEqual(rec["sender_proof"], "label")
+
     def test_a_key_from_before_the_log_still_rotates(self):
         """Every install that predates this change has a key and no log; the guard must not
         read that silence as "rotated just now" and refuse the first real rotation.
