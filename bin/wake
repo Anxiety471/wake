@@ -915,17 +915,23 @@ def api_reply(tid, text):
 
 
 def api_read_credential():
-    """(base, agent token) for reading threads on the API, or (None, None) when this shell holds
-    neither.
+    """(base, auth headers) for reading threads on the API, or (None, None) when this shell holds
+    no credential at all.
 
-    Only an agent token can read: the per-thread reply token is accepted on POST .../reply alone,
-    so it can list no thread and open none (#102).
+    A bot reads with its own agent token, or - when it holds none - with the per-thread reply token
+    the wake payload carried: the API accepts that token on the one thread it names, for reading it
+    and for marking it read (#322). A reply token names a single thread and cannot enumerate, so
+    the routes that list (GET /threads, GET /inbox) still need the agent token; api_thread_rows
+    refuses to pretend otherwise. Only one credential travels, in a header, never in argv.
     """
     base = (CFG.get("WAKE_API") or "").strip().rstrip("/")
     token = (CFG.get("WAKE_AGENT_TOKEN") or "").strip()
-    if not base or not token:
+    reply_token = (CFG.get("WAKE_REPLY_TOKEN") or "").strip()
+    if not base or not (token or reply_token):
         return None, None
-    return base, token
+    if token:
+        return base, {"Authorization": "Bearer " + token}
+    return base, {"X-Wake-Reply-Token": reply_token}
 
 
 def api_alias(bots, source):
@@ -940,16 +946,14 @@ def api_alias(bots, source):
     return b["alias"] if b else None
 
 
-def api_get(base, token, path):
-    """GET one API route as this bot. (status, body) for an answer the API gave, (None, reason) when
-    it could not be reached at all: an unreachable API must never read as an empty list."""
+def api_get(base, auth, path):
+    """GET one API route as this bot, with the credential api_read_credential chose. (status, body)
+    for an answer the API gave, (None, reason) when it could not be reached at all: an unreachable
+    API must never read as an empty list."""
     req = urllib.request.Request(
         base + path,
         method="GET",
-        headers={
-            "Authorization": "Bearer " + token,
-            "User-Agent": "wake-cli/" + wake_config.VERSION,
-        },
+        headers={**auth, "User-Agent": "wake-cli/" + wake_config.VERSION},
     )
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
@@ -972,7 +976,8 @@ def api_read_missing(tid):
     return (
         f"no thread {tid} in the shared-folder store at {THREADS}: that id belongs to a thread the "
         f"wake API opened, which that store cannot show. Read it on the API: GET /threads/{tid} as "
-        f"this bot, which needs WAKE_AGENT_TOKEN and WAKE_API in config.env."
+        f"this bot, which needs WAKE_API and either WAKE_AGENT_TOKEN or the thread's own reply "
+        f"token in WAKE_REPLY_TOKEN (the wake payload carries it) in config.env."
     )
 
 
@@ -1017,10 +1022,10 @@ def api_missing_hint(alias):
     """
     if not alias:
         return ""
-    base, token = api_read_credential()
-    if base and token:
+    base, auth = api_read_credential()
+    if base and auth:
         return ""
-    missing = [name for name, value in (("WAKE_AGENT_TOKEN", token), ("WAKE_API", base)) if not value]
+    missing = [name for name, value in (("WAKE_AGENT_TOKEN", base and auth), ("WAKE_API", base)) if not value]
     return (
         " (this shell holds no " + " and no ".join(missing) + ", so a thread opened on the wake API "
         "cannot be listed here)"
@@ -1034,10 +1039,12 @@ def api_thread_rows(alias):
     Raises SystemExit with the reason when the API was asked and refused: an inbox that could not
     be read must never print as an empty one (#101, #168, #177).
     """
-    base, token = api_read_credential()
-    if not base or not token:
+    base, auth = api_read_credential()
+    # Only an agent token can list: a reply token names one thread, and asking /threads with it
+    # would earn a 401 that reads like a broken token rather than a credential that cannot list.
+    if not base or not auth or "Authorization" not in auth:
         return None
-    status, body = api_get(base, token, "/threads?limit=100")
+    status, body = api_get(base, auth, "/threads?limit=100")
     if status is None:
         sys.exit(f"cannot reach the wake API at {base} to list threads: {body}")
     if status != 200:
@@ -1397,10 +1404,10 @@ if a.thread:
     api_note = ""
     if not recs and API_THREAD_ID.match(a.thread):
         # The id is the API's, so the folder never held it: read it where it lives (#102).
-        base, token = api_read_credential()
-        if not base or not token:
+        base, auth = api_read_credential()
+        if not base or not auth:
             sys.exit(api_read_missing(a.thread))
-        status, body = api_get(base, token, "/threads/" + urllib.parse.quote(a.thread))
+        status, body = api_get(base, auth, "/threads/" + urllib.parse.quote(a.thread))
         if status is None:
             sys.exit(f"cannot reach the wake API at {base} to read thread {a.thread}: {body}")
         if status != 200:

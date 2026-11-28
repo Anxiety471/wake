@@ -8,6 +8,7 @@ import type {
   InboxPage,
   RegisteredAgent,
   SentMessage,
+  ThreadDetail,
   ThreadReply,
   WakeReport,
 } from '@wake/shared';
@@ -437,6 +438,113 @@ test('a reply token past its expiry is refused', async () => {
   const late = await replyWithToken(thread.threadId, replyToken, 'late');
   expect(late.statusCode).toBe(401);
   expect(late.json().error).toBe('reply token expired');
+});
+
+function readWithToken(threadId: string, replyToken: string) {
+  return app.inject({
+    method: 'GET',
+    url: `/threads/${threadId}`,
+    headers: { 'x-wake-reply-token': replyToken },
+  });
+}
+
+function readReceiptWithToken(
+  threadId: string,
+  replyToken: string,
+  seq: number,
+) {
+  return app.inject({
+    method: 'POST',
+    url: `/threads/${threadId}/read`,
+    headers: { 'x-wake-reply-token': replyToken },
+    payload: { seq },
+  });
+}
+
+// #322: the token answers its thread, so it also reads that thread. Reading must not
+// spend it: a bot reads the ask, then answers it.
+test('a reply token reads its own thread without spending itself', async () => {
+  const alice = await register('alice');
+  await register('bob');
+  const { thread, replyToken } = await askWithToken(
+    alice.token,
+    'bob',
+    'what happened?',
+  );
+  const read = await readWithToken(thread.threadId, replyToken);
+  expect(read.statusCode).toBe(200);
+  const detail: ThreadDetail = read.json();
+  expect(detail.id).toBe(thread.threadId);
+  expect(detail.createdBy).toBe('alice');
+  expect(detail.status).toBe('open');
+  expect(detail.messages.map((message) => message.body)).toEqual([
+    'what happened?',
+  ]);
+  expect(
+    detail.participants.map((participant) => participant.name).sort(),
+  ).toEqual(['alice', 'bob']);
+  // Not spent: the same token still answers.
+  expect(
+    (await replyWithToken(thread.threadId, replyToken, 'the answer'))
+      .statusCode,
+  ).toBe(201);
+  // And the answer is what spends it.
+  const after = await readWithToken(thread.threadId, replyToken);
+  expect(after.statusCode).toBe(401);
+  expect(after.json().error).toBe('invalid reply token');
+});
+
+test('a reply token reads no thread but the one it names', async () => {
+  const alice = await register('alice');
+  await register('bob');
+  const first = await askWithToken(alice.token, 'bob', 'one?');
+  const second = await askWithToken(alice.token, 'bob', 'two?');
+  const wrong = await readWithToken(second.thread.threadId, first.replyToken);
+  expect(wrong.statusCode).toBe(401);
+  expect(wrong.json().error).toBe('invalid reply token');
+});
+
+test('a reply token cannot list threads or reach any other route', async () => {
+  const alice = await register('alice');
+  await register('bob');
+  const { replyToken } = await askWithToken(alice.token, 'bob', 'list me?');
+  const list = await app.inject({
+    method: 'GET',
+    url: '/threads',
+    headers: { 'x-wake-reply-token': replyToken },
+  });
+  expect(list.statusCode).toBe(401);
+  expect(list.json().error).toBe('unauthorized');
+  // The query string is not a path: the read exception is anchored to /threads/<id>,
+  // so an inbox read that merely mentions one stays unauthenticated.
+  const disguised = await app.inject({
+    method: 'GET',
+    url: '/inbox?q=/threads/00000000-0000-4000-8000-000000000000',
+    headers: { 'x-wake-reply-token': replyToken },
+  });
+  expect(disguised.statusCode).toBe(401);
+  expect(disguised.json().error).toBe('unauthorized');
+});
+
+test('a reply token marks its own thread read', async () => {
+  const alice = await register('alice');
+  await register('bob');
+  const { thread, replyToken } = await askWithToken(
+    alice.token,
+    'bob',
+    'read this',
+  );
+  const marked = await readReceiptWithToken(thread.threadId, replyToken, 1);
+  expect(marked.statusCode).toBe(200);
+  expect(marked.json()).toEqual({ threadId: thread.threadId, readSeq: 1 });
+  const other = await askWithToken(alice.token, 'bob', 'not this');
+  const wrong = await readReceiptWithToken(
+    other.thread.threadId,
+    replyToken,
+    1,
+  );
+  expect(wrong.statusCode).toBe(401);
+  expect(wrong.json().error).toBe('invalid reply token');
 });
 
 test('a query string that looks like the reply route is still unauthenticated', async () => {

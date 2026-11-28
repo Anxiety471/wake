@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import {
   encodeSearchCursor,
@@ -359,6 +359,72 @@ async function consumeReplyToken(
   };
 }
 
+type ReplyTokenRead =
+  | { ok: true; agent: AuthenticatedAgent }
+  | { ok: false; status: number; error: string };
+
+// Check the token without spending it: a bot may read the thread its wake payload
+// named before it answers, and the answer is what burns the token (#322). Refusals
+// come in consumeReplyToken's order, minus the burn.
+async function verifyReplyToken(
+  pool: Pool,
+  threadId: string,
+  token: string,
+  ttlHours: number | null,
+): Promise<ReplyTokenRead> {
+  const row = await replyTokenThread(pool, threadId, ttlHours);
+  if (row === null) {
+    return { ok: false, status: 404, error: 'not found' };
+  }
+  if (row.token_expired) {
+    return { ok: false, status: 401, error: 'reply token expired' };
+  }
+  const matched = await pool.query(
+    `SELECT 1
+       FROM threads
+      WHERE id = $1::uuid
+        AND reply_token_hash = $2
+        AND (
+          reply_token_expires_at IS NULL
+          OR reply_token_expires_at > clock_timestamp()
+        )`,
+    [threadId, hashToken(token)],
+  );
+  if (matched.rowCount !== 1) {
+    return { ok: false, status: 401, error: 'invalid reply token' };
+  }
+  if (row.recipient_id === null) {
+    return { ok: false, status: 404, error: 'not found' };
+  }
+  return {
+    ok: true,
+    agent: {
+      id: row.recipient_id,
+      name: row.recipient_name ?? '',
+      kind: row.recipient_kind === 'mcp' ? 'mcp' : 'bot',
+    },
+  };
+}
+
+// Who is reading: the bearer's agent, or the recipient the per-thread reply token
+// names (#322). That token is only ever compared with the hash on its own thread's
+// row, so a read it authorises cannot reach another thread.
+async function readCaller(
+  pool: Pool,
+  request: FastifyRequest,
+  threadId: string,
+  ttlHours: number | null,
+): Promise<ReplyTokenRead> {
+  if (request.agent !== null) {
+    return { ok: true, agent: caller(request) };
+  }
+  const token = replyTokenHeader(request.headers['x-wake-reply-token']);
+  if (token === undefined) {
+    return { ok: false, status: 401, error: 'unauthorized' };
+  }
+  return verifyReplyToken(pool, threadId, token, ttlHours);
+}
+
 async function postMessage(
   query: Pick<Pool, 'query'> | Pick<PoolClient, 'query'>,
   input: {
@@ -709,7 +775,16 @@ export function registerThreadRoutes(
       },
     },
     async (request, reply) => {
-      const agent = caller(request);
+      const reader = await readCaller(
+        pool,
+        request,
+        request.params.id,
+        ttlHours,
+      );
+      if (!reader.ok) {
+        return reply.code(reader.status).send({ error: reader.error });
+      }
+      const agent = reader.agent;
       const result = await pool.query<DetailRow>(
         `SELECT ${threadColumns('$3')},
                 CASE
@@ -916,7 +991,16 @@ export function registerThreadRoutes(
       },
     },
     async (request, reply) => {
-      const agent = caller(request);
+      const reader = await readCaller(
+        pool,
+        request,
+        request.params.id,
+        ttlHours,
+      );
+      if (!reader.ok) {
+        return reply.code(reader.status).send({ error: reader.error });
+      }
+      const agent = reader.agent;
       const result = await pool.query<{ last_read_seq: number }>(
         `UPDATE thread_participants tp
          SET last_read_seq = LEAST($3::integer, t.last_seq)

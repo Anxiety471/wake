@@ -1595,13 +1595,41 @@ class ApiThreadReadTests(WakeTestCase):
         self.assertNotEqual(r.stderr.strip(), "no thread " + self.UUID)
         self.assertEqual(self.api.requests, [])
 
-    def test_reply_token_cannot_read_a_thread(self):
-        """The per-thread reply token is accepted on POST .../reply alone, so it reads nothing."""
+    def test_the_reply_token_reads_the_thread_it_names(self):
+        """#322: the bot a doorbell woke holds no agent token, and it must still read the ask it is
+        answering. The token travels in its own header, never as a bearer, and only that thread."""
+        self.api.thread[self.UUID] = self.thread_body(self.UUID)
         env = self.api_env(token=None)
         env["WAKE_REPLY_TOKEN"] = "thread-token-abc"
         r = self.wake("--thread", self.UUID, env=env)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("WAKE_AGENT_TOKEN", r.stderr)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("[2026-11-16T04:00] mcp (ask): why", r.stdout)
+        self.assertIn("[2026-11-16T04:01] engineer (reply): because", r.stdout)
+        [req] = self.api.requests
+        self.assertEqual(req["method"], "GET")
+        self.assertEqual(req["path"], "/threads/" + self.UUID)
+        self.assertEqual(req["headers"]["X-Wake-Reply-Token"], "thread-token-abc")
+        self.assertNotIn("Authorization", req["headers"])
+
+    def test_the_bearer_wins_over_the_reply_token_for_a_read(self):
+        """Both credentials, one header: a shell that also holds its agent token reads as that bot,
+        and the per-thread token stays unspent for the answer."""
+        self.api.thread[self.UUID] = self.thread_body(self.UUID)
+        env = self.api_env()
+        env["WAKE_REPLY_TOKEN"] = "thread-token-abc"
+        r = self.wake("--thread", self.UUID, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.api.requests
+        self.assertEqual(req["headers"]["Authorization"], "Bearer bob-agent-token")
+        self.assertNotIn("X-Wake-Reply-Token", req["headers"])
+
+    def test_a_reply_token_never_asks_to_list(self):
+        """A reply token names one thread, so --inbox must not turn it into a 401 that reads like a
+        broken token: it stays quiet and the folder answers (#322)."""
+        env = self.api_env(token=None)
+        env["WAKE_REPLY_TOKEN"] = "thread-token-abc"
+        r = self.wake("--inbox", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.api.requests, [])
 
     def test_thread_the_api_does_not_know_is_refused(self):

@@ -58,6 +58,14 @@ authenticates with the `mcp` bearer alone, so a bot woken by the doorbell
 answers the route directly, or runs `wake --reply <id>` with the payload's
 `replyToken` exported as `WAKE_REPLY_TOKEN`. See `docs/doorbell.md`.
 
+That same token reads the one thread it names, and marks it read: `GET /threads/:id`
+and `POST /threads/:id/read` accept `X-Wake-Reply-Token` too, resolved to the
+participant the token was minted for and refused on every other route - never
+`GET /threads` or `GET /inbox`, so it cannot enumerate anything. Reading spends
+nothing: the answer is what burns it, so a bot reads the ask and then answers it.
+Without this a doorbell-woken bot could answer a thread it was unable to read
+([#265](https://github.com/Anxiety471/wake/issues/265)).
+
 ## Transport
 
 ```
@@ -281,8 +289,9 @@ quietly answering with two tools, which looks like a working session (issue #76)
 - **per-client tokens**: one public token, rotated by the operator, is the
   contract for now.
 - **the CLI as an API client**: `bin/wake` still uses the shared-folder store and
-  the webhook doorbell. Its API calls are made as this bot when `WAKE_AGENT_TOKEN`
-  and `WAKE_API` are set, and only for what the folder cannot answer:
+  the webhook doorbell. Its API calls are made when `WAKE_API` and a credential are set, and
+  only for what the folder cannot answer: a read takes `WAKE_AGENT_TOKEN` or the
+  payload's `WAKE_REPLY_TOKEN`, and only an agent token can list:
   `wake --reply` POSTs `/threads/:id/reply` for a thread the store does not hold,
   `wake --thread` reads `GET /threads/:id`, and `--inbox` / `--pending` list
   `GET /threads` when the folder holds none of the caller's (#96, #102). Moving the
