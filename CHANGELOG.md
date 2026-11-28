@@ -236,6 +236,15 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Changed
 
+- **The silent flag follows the sender: chatty from a person, silent from a bot.** `WAKE_SILENT` was one
+  global defaulting to `1`, so a wake typed at a shell told the receiver to answer in the thread store and
+  the person who typed it saw nothing in the chat in front of them; Joshua named the rule on 2026-11-28 -
+  silent for bots, chatty for `human:hitori`. `WAKE_SILENT` now defaults to `auto`: a `human:` source
+  sends `silent: false` and no tail, a bot, skill or harness source keeps `silent: true` and the tail.
+  `WAKE_SILENT=1` or `0` still pins one tone for every send, and `--chatty` still overrides it for one.
+  The tone is recorded on a thread's first record, so the answer still inherits the asker's, and a thread
+  written before this change without `silent_payload` takes its tone from the asker rather than the machine.
+
 - **The gate tests say what v9 actually carries.** `GateStoreListingTests` claimed v9 and v10 both
   lack the store-listability check, so a reader who ran the class against v9 got a pass with no
   explanation. The v9 artifact (`e616c10e...`, 19,752 B) carries the check and the class passes
@@ -272,6 +281,13 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   ([#22](https://github.com/Anxiety471/wake/issues/22)).
 
 ### Fixed
+
+- **A refused inbox read is a failure, not an empty queue** ([#101](https://github.com/Anxiety471/wake/issues/101)).
+  `wake-inbox-io read` discarded the status of the command it ran, so when the host gate refused the read
+  the bridge exited 0 and printed nothing: a session whose reads had stopped working polled an inbox that
+  would never fill, and every reply to it vanished while the caller believed the queue was just quiet. A
+  read now returns that status and prints the gate's message, while a `cat` on a missing inbox is still
+  an empty inbox and exits 0.
 
 - **The eslint config control runs in the job that has eslint, and skipping it there is a failure.** The
   live check that `eslint.config.js` still reports an unused parameter skipped in every CI job: the `test`

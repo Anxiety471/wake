@@ -255,7 +255,9 @@ usage: wake-inbox-io register <hash> [json] | read <inbox> | beat <hash> [json]
   store is unreachable and WAKE_HOSTOPS is empty (that line is printed once per uid per outage,
   and again after a command reaches the store; a path at the marker that is not this account's own
   file is named once per obstruction, not on every poll). If the command it runs fails, its stderr
-  is printed and its status is returned; a refused register never prints an inbox path.
+  is printed and its status is returned; a refused register never prints an inbox path, and a
+  refused read prints nothing on stdout and returns the status, so an empty inbox and a refused
+  one no longer look alike (#101).
 """
 
 
@@ -283,8 +285,16 @@ def main():
     if op == "read":
         if not valid_inbox(key):
             sys.exit(f"bad inbox path: expected {BASE}/<hash>.jsonl")
-        sys.stdout.write(sh(f"cat {q(key)} 2>/dev/null", write=False).stdout)
-        return
+        r = sh(f"cat {q(key)} 2>/dev/null", write=False)
+        # A refusal used to read as a quiet inbox: the command's status was discarded, so a gate
+        # that refused the read looked exactly like an empty queue, and every answer to this
+        # session went nowhere while its caller polled an inbox that would never fill (#101).
+        # A cat on a file that is not there is still an empty inbox; anything else is a failure
+        # and says so, which is the one case a poll cannot tell from silence.
+        if r.returncode == 0 or (r.returncode == 1 and not (r.stderr or "").strip()):
+            sys.stdout.write(r.stdout)
+            return
+        checked(r)
     if op == "beat":
         checked(sh(f"cat > {q(f'{ACTIVE}/{key}.json')}", meta))
         return

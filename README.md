@@ -182,9 +182,11 @@ wake --ask engineer "why does CI fail on main?" --wait 180 # headless: block unt
 wake --ask engineer "..." --no-send                        # record the thread only (dry run)
 ```
 
-A wake is silent by default (`silent: true` in the payload, plus one bracketed sentence at the end of
-`detail` asking the receiver to post no chat output and answer in the thread store). `--chatty` turns it off
-for one send and `WAKE_SILENT=0` for a machine. The flag is recorded on the thread, and the answer inherits
+The tone follows the sender: a bot or skill wake carries `silent: true` in the payload plus one bracketed
+sentence at the end of `detail` asking the receiver to post no chat output and answer in the thread store,
+while a wake typed at a shell (`human:<you>`) carries `silent: false`, because the answer belongs in the
+chat in front of the person who asked. `--chatty` forces chatty for one send, and `WAKE_SILENT=1` or `0`
+pins one tone for every send on that machine. The flag is recorded on the thread, and the answer inherits
 it from the question.
 
 The bot receives `<question> [thread <id>] reply: wake --reply <id> "YOUR ANSWER"` for a CLI thread. A thread opened through the API or MCP carries `ref: api-thread:<id>` and the API route instead: that id is in Postgres, not in the shared folder, so `wake --reply` reaches it only through the API (`WAKE_API` plus `WAKE_AGENT_TOKEN`, or the payload's `replyToken` exported as `WAKE_REPLY_TOKEN`).
@@ -276,8 +278,9 @@ wake --reply 1114-a3f2 "done" --notify               # or ring the asker now
 
 One word, two flags, and the difference is where they act. `--silent` acts before the doorbell: it
 POSTs nothing, so no run exists to post anything. The `silent` field in the payload acts inside a run
-that does start: it is on by default (plus one bracketed sentence at the end of `detail`), `--chatty`
-turns it off for one send and `WAKE_SILENT=0` for a machine. A `--silent` send POSTs nothing, so
+that does start: it follows the sender by default - on for a bot or skill session, off for `human:` (plus
+one bracketed sentence at the end of `detail` when on) - `--chatty` turns it off for one send and
+`WAKE_SILENT=1` or `0` pins one tone for a machine. A `--silent` send POSTs nothing, so
 `--chatty` has nothing to act on there; on a loud thread, `--no-ring` is the same choice as `--silent`
 for the answer, with the answer left in the thread store instead of a new one.
 
