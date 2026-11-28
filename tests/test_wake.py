@@ -361,6 +361,68 @@ class SendTests(WakeTestCase):
         self.assertEqual((req["json"]["source"], req["json"]["event"]), ("backup-job", "failed"))
 
 
+class SenderTokenTests(WakeTestCase):
+    """A sender token turns the label a wake carries into something the edge can check (#456).
+
+    The platform exports WAKE_SENDER_BOT_ID and WAKE_SENDER_TOKEN into each bot's own commands; the
+    CLI sends them as X-Wake-Sender: <botId>:<token> and changes nothing when no token is set.
+    """
+
+    def test_token_travels_as_a_header_naming_this_bot(self):
+        self.put_key("bot-coordinator-0001")
+        r = self.wake(
+            "coordinator",
+            "PR",
+            "#42",
+            "is",
+            "ready",
+            env={"WAKE_SOURCE": "bot:engineer", "WAKE_SENDER_TOKEN": "sender-token-abc"},
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        self.assertEqual(req["headers"]["X-Wake-Sender"], "bot-engineer-0002:sender-token-abc")
+        self.assertEqual(req["json"]["fromBotId"], "bot-engineer-0002")
+        # The token authenticates; it is never part of what the recipient reads.
+        self.assertNotIn("sender-token-abc", json.dumps(req["json"]))
+
+    def test_no_header_without_a_token(self):
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("coordinator", "hi", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        self.assertNotIn("X-Wake-Sender", req["headers"])
+
+    def test_no_header_when_the_label_names_no_bot_of_this_fleet(self):
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("coordinator", "hi", env={"WAKE_SENDER_TOKEN": "sender-token-abc"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        self.assertEqual(req["json"]["source"], "human:tester")
+        self.assertNotIn("X-Wake-Sender", req["headers"])
+
+    def test_the_exported_bot_id_beats_the_shared_self_file(self):
+        """One shared home has one self file, so every run there resolved to whichever bot it named;
+        the id the platform exports per run is the only name that tells two of them apart (#458)."""
+        self.put_key("bot-engineer-0002")
+        with open(os.path.join(self.cfg, "self"), "w") as f:
+            f.write("ops\n")
+        self.put_key("bot-coordinator-0001")
+        r = self.wake("coordinator", "hi", env={"WAKE_SENDER_BOT_ID": "bot-engineer-0002"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [req] = self.hook.requests
+        self.assertEqual(req["json"]["source"], "bot:engineer")
+        self.assertEqual(req["json"]["fromBotId"], "bot-engineer-0002")
+
+    def test_me_reports_whether_wakes_are_proven_and_never_the_token(self):
+        r = self.wake("--me", env={"WAKE_SENDER_TOKEN": "sender-token-abc"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("sender-token-abc", r.stdout)
+        r = self.wake("--me", env={"WAKE_SENDER_BOT_ID": "bot-engineer-0002", "WAKE_SENDER_TOKEN": "t"})
+        self.assertIn("token set", r.stdout)
+        r = self.wake("--me", env={"WAKE_SENDER_BOT_ID": "bot-engineer-0002"})
+        self.assertIn("no token", r.stdout)
+
+
 class KeyTests(WakeTestCase):
     @unittest.skipIf(IS_ROOT, ROOT_SKIP)
     def test_unreadable_key_falls_back_to_sg_group(self):

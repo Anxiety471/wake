@@ -112,8 +112,15 @@ def in_container():
 
 
 def own_bot(bots):
-    """Which bot this shell is running inside: a bot computer's cwd is .../bots/<id>, or the
-    config dir names it in a `self` file (a harness that runs from a neutral cwd, e.g. /tmp)."""
+    """Which bot this shell is running inside: WAKE_SENDER_BOT_ID, which the platform exports into
+    every command of one bot's run and the only name that is per run; then a bot computer's cwd
+    (.../bots/<id>); then the config dir's `self` file, which in a shared home names one
+    bot for every run there, so it is the last resort (#458)."""
+    exported = (CFG.get("WAKE_SENDER_BOT_ID") or "").strip()
+    if exported:
+        for b in bots:
+            if b["id"] == exported:
+                return b
     cwd = os.path.realpath(os.getcwd()) + "/"
     for b in bots:
         if f"/bots/{b['id']}/" in cwd:
@@ -792,6 +799,10 @@ def send(b, source, event, level, detail, ref, force=False, quiet=False, silent=
         detail = detail + " | " + SILENT_TAIL
     # The sending bot's id lets the chats show the message as one bot to another. A label, not proof.
     sender = next((x for x in load() if "bot:" + x["alias"] == source), None) if os.path.exists(REGISTRY) else None
+    # With a token the label stops being a claim: the edge resolves <botId>:<token> to that bot's own
+    # secret and refuses a payload whose fromBotId disagrees (#456). No token, no header, and the
+    # wake is delivered exactly as it is today.
+    sender_token = (CFG.get("WAKE_SENDER_TOKEN") or "").strip()
     # An agent outside the bot fleet (skill:omp, harness:x) shows under its own name, never as a bot.
     kind, _, label = source.partition(":")
     agent = AGENT_NAMES.get(label, label) if kind in ("skill", "harness") and label else ""
@@ -818,6 +829,7 @@ def send(b, source, event, level, detail, ref, force=False, quiet=False, silent=
         method="POST",
         headers={
             "Authorization": "Bearer " + key,
+            **({"X-Wake-Sender": sender["id"] + ":" + sender_token} if sender and sender_token else {}),
             "Content-Type": "application/json",
             "Idempotency-Key": idem,
             "User-Agent": "wake-cli/" + wake_config.VERSION,
@@ -1441,6 +1453,13 @@ if a.me:
         print("  role     " + (b["role"] or "not set"))
         print("  kind     " + b["kind"])
         print("  as       " + a.source + "  (bots use their own alias; a coding harness sets WAKE_SOURCE)")
+        # Whether the wakes from here are proven, never the token itself (#456).
+        token_state = (
+            "token set: the edge can prove this bot is the sender"
+            if (CFG.get("WAKE_SENDER_TOKEN") or "").strip()
+            else "no token: a wake names this bot but nothing proves it"
+        )
+        print("  sender   " + token_state)
     else:
         print("not inside a bot computer: a human or harness shell, so wakes are sent as " + a.source)
         print("  to be treated as a bot, or as an agent harness, set WAKE_SOURCE=bot:<alias> or skill:<name>")
