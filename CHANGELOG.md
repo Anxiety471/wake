@@ -7,6 +7,19 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **The CLI can read a thread the API opened, not only answer it (#102).** `--reply` has
+  reached an API thread since #96; the read side could not see one at all, so a bot answered a
+  question it then could not read back. `wake --thread <uuid>` now reads `GET /threads/<id>`
+  when the shared folder holds no such id, and `--inbox` / `--pending` list `GET /threads`
+  when the folder holds none of the caller's rows, both as this bot with `WAKE_AGENT_TOKEN` and
+  `WAKE_API`. The folder stays the source of truth while it has rows: the API is asked only
+  when the folder cannot answer, never to add a second list. The per-thread reply token cannot
+  read — the app accepts it on `POST /threads/<id>/reply` alone — so a shell holding only that
+  token is told which setting is missing instead of being shown an empty inbox, and a refused or
+  unreachable API exits non-zero rather than printing "nothing". `deploy/README` §6.6 carries
+  the two nginx `GET` locations that make the routes reachable from a bot's container; they are
+  participation-scoped in the app, so a token lists its own bot's threads and no others.
+
 - **A wake is silent by default, and the silence travels with it.** Joshua's rule (2026-11-26) is
   that a bot-to-bot wake shows him that a message arrived, not the answer to it; a per-bot routine
   clause made that a habit rather than a property of the message. `wake` now sends `silent: true` in

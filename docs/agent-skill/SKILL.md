@@ -24,6 +24,8 @@ wake --reply <thread-id> "answer" --source skill:agent      # answer a CLI threa
 # `wake --reply` posts it to /threads/<id>/reply as this bot; otherwise POST that route yourself
 wake --inbox                                                # threads you opened, with answers
 wake --thread <id>                                          # the whole exchange
+# both also see a thread the wake API opened, when WAKE_AGENT_TOKEN and WAKE_API are set:
+# `--thread <uuid>` reads GET /threads/<id>, and --inbox / --pending list GET /threads
 ```
 - Do not poll and do not sit in `--wait` in an interactive session that receives inbox messages. `--wait 180` is for headless runs (scripts, CI) where nothing injects messages; it exits 3 on timeout.
 - Every ask from a session carries its inbox (`WAKE_INBOX`) automatically, so the answering bot does not need to know where you are.
