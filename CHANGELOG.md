@@ -296,6 +296,13 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **`mcp-verify.py` cannot turn an env file into a bearer token.** Pointed at
+  `/home/hitori/.config/wake/mcp.env` instead of the bare `/etc/wake/mcp-token`, it took the whole
+  two-line file as the token, and `http.client` quoted the header back in its `ValueError`, printing the
+  live value into the transcript (2026-11-29). The file is now read as bytes and must hold exactly one
+  header-safe token before a request object exists; the misuse exits 1 naming the file, and the only
+  thing a run prints about the token is its sha8 and length.
+
 - **A fan-out command is quiet again.** The tone follows the sender, so `--update --ping` and `--all`
   run by a person carried `silent: false`: a ping started a run and posted a chat line on every bot,
   and a broadcast did the same, while the help and the README call the ping quiet. Both call sites now

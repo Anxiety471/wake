@@ -6,6 +6,7 @@ that is empty (FST_ERR_CTP_EMPTY_JSON_BODY, 400). Nothing touches /etc/wake, a r
 API or the network.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -259,6 +260,30 @@ class VerifyTestCase(OpsTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("is empty", result.stderr)
         self.assertEqual(self.stub.requests, [])
+
+    def test_a_multi_line_token_file_stops_before_any_request(self):
+        """The env-file mistake: a newline cannot ride a bearer header, and the value must not leak.
+
+        Pointed at an env file instead of the bare token file, the verifier once took both lines as the
+        token; http.client quoted the header back in its ValueError and printed the live value.
+        """
+        self.token("WAKE_MCP_API=http://127.0.0.1:3001\nWAKE_MCP_TOKEN=stub-token-1\n")
+        result = self.run_script(VERIFY, self.stub.base + "/mcp")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("must hold one bare token", result.stderr)
+        self.assertIn(self.token_file, result.stderr)
+        self.assertNotIn("stub-token-1", result.stdout + result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.stub.requests, [])
+
+    def test_prints_the_token_sha8_and_never_the_token(self):
+        self.stub.responder = mcp_answer
+        token = self.token()
+        result = self.run_script(VERIFY, self.stub.base + "/mcp")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        sha8 = hashlib.sha256(token.strip().encode()).hexdigest()[:8]
+        self.assertIn("sha8=" + sha8, result.stdout)
+        self.assertNotIn("stub-token-1", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

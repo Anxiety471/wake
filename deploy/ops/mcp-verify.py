@@ -2,8 +2,14 @@
 """Prove the public MCP endpoint answers a real client over HTTPS.
 
 Reads the token file, runs initialize, tools/list and one tools/call, prints only
-status codes, the negotiated protocol version and the tool names. Never prints
-the token. Exits non-zero unless every step answered 200.
+status codes, the negotiated protocol version, the tool names and the token's
+sha8. Never prints the token. Exits non-zero unless every step answered 200.
+
+WAKE_TOKEN_FILE is the bare token file (default /etc/wake/mcp-token), NOT an env
+file such as /home/hitori/.config/wake/mcp.env: that file holds several KEY=VALUE
+lines, and a bearer header cannot carry a newline. The value is validated here,
+before a request object exists, because http.client quotes the header back in its
+ValueError and that prints the token.
 
 A redirect is refused, not followed: urllib builds a GET for the new location and
 keeps the Authorization header, which hands the bearer token to whatever host the
@@ -11,6 +17,7 @@ answer names. Plain http is refused unless the host is this machine, so the
 pre-public loopback check still works.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -44,19 +51,24 @@ def check_url():
 
 
 def read_token():
-    """The token, or a local error naming the file.
+    """The token, or a local error naming the file. Never a traceback, never the value.
 
     A missing file used to traceback, and an empty one sent a bare `Bearer ` and
-    reported the server's 401, which reads as an auth failure; both are local.
+    reported the server's 401, which reads as an auth failure; both are local. A
+    multi-line file is the mistake that leaked the value once: it must stop here.
     """
     try:
-        with open(TOKEN_FILE) as handle:
-            token = handle.read().strip()
+        with open(TOKEN_FILE, "rb") as handle:
+            raw = handle.read()
     except OSError as error:
         sys.exit(f"cannot read {TOKEN_FILE}: {error.strerror}; run mcp-identity.py create")
-    if not token:
+    text = raw.decode("utf-8", "replace").strip()
+    if not text:
         sys.exit(f"{TOKEN_FILE} is empty; run mcp-identity.py create")
-    return token
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) != 1 or any(ch.isspace() or not ch.isprintable() for ch in text):
+        sys.exit(f"{TOKEN_FILE} must hold one bare token; this is an env file or has extra lines")
+    return text
 
 
 def post(payload, protocol_version=None):
@@ -104,6 +116,7 @@ def fail(raw):
 
 check_url()
 TOKEN = read_token()
+print(f"token: {TOKEN_FILE} sha8={hashlib.sha256(TOKEN.encode()).hexdigest()[:8]} len={len(TOKEN)}")
 
 status, raw = post(
     {
