@@ -314,8 +314,9 @@ If no key is saved and no key helper is reachable, wake exits with a clear messa
 Each mint appends one line to `$WAKE_KEY_DIR/wake-rotations.jsonl`: time, bot, key prefix, the claimed
 `source`, and `sender` with `sender_proof` - the bot id the platform exported into that run, marked
 `token` when the run held that bot's sender secret, `run` when it held only the id, and `label` when
-all it had was the shared `self` file. Never the key or the token. A rotation inside
-`WAKE_ROTATE_COOLDOWN` is refused unless `WAKE_ROTATE_AGAIN=1`.
+nothing named this run (the shared `self` file, or a token from a config file that names whose secret
+it is, not whose run this is). Never the key or the token. A rotation inside `WAKE_ROTATE_COOLDOWN`
+is refused unless `WAKE_ROTATE_AGAIN=1`.
 
 ### Registry maintenance
 

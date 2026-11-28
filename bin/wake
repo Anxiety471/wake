@@ -635,8 +635,8 @@ def caller_identity():
 
     A sender token is minted for one bot and the platform exports it into that bot's own runs, so
     "token" names a bot no other run in a shared home can claim. "run" is the id the platform
-    exported with no token behind it, and "label" is the shared self file, which names one bot
-    for every run there.
+    exported with no token behind it. Without that id nothing names this run: "label" is the shared
+    self file, or a token from a config file, which says whose secret it is and not whose run it is.
     """
     if not (CFG.get("WAKE_SENDER_BOT_ID") or "").strip():
         return None, "label"
