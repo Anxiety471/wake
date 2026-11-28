@@ -626,8 +626,8 @@ def rotation_age_hours(rec):
 def record_rotation(bot_id, key, action):
     """One line per mint: when, which bot, a sha256 prefix of the key, and the label that did it.
 
-    Never the key. The host may refuse the write (a guest with no host access); a rotation that
-    worked must not fail because its note could not be saved, so a failed write stays silent.
+    Never the key. The note is best effort: a key dir that cannot be written must not fail a
+    rotation that worked, so a failed write stays silent, like the audit log.
     """
     rec = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -663,8 +663,9 @@ def ensure_key(b, rotate=False):
         again = os.environ.get("WAKE_ROTATE_AGAIN", "").strip() == "1"
         if age is not None and age * 3600 < ROTATE_COOLDOWN_S and not again:
             sys.exit(
-                f"{b['name']}'s key was rotated {max(1, int(age * 60))} min ago by {prev.get('source', '?')} "
-                f"on {prev.get('host', '?')} ({prev.get('sha256_12', '?')}); every machine still holding "
+                f"{b['name']}'s key was rotated {max(1, int(age * 60))} min ago ({prev.get('ts', '?')}) by "
+                f"{prev.get('source', '?')} on {prev.get('host', '?')} ({prev.get('sha256_12', '?')}); "
+                f"every machine still holding "
                 f"the old key is refused until its key dir is refreshed (wake-keys). Not rotating again. "
                 f"Set WAKE_ROTATE_AGAIN=1 if a second rotation really is intended."
             )
