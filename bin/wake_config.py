@@ -23,6 +23,11 @@ DEFAULTS = {
     "WAKE_API": "",  # wake API root for the CLI: POST {api}/threads/ID/reply ; empty = no API call
     "WAKE_AGENT_TOKEN": "",  # the token of this bot; empty = --reply cannot answer an API thread
     "WAKE_REPLY_TOKEN": "",  # a thread's reply token from the doorbell payload; answers that thread once
+    # This bot's own sender credential, minted on the host as Secret kind "sender:<botId>" and
+    # exported per run beside WAKE_SENDER_BOT_ID. Sent as X-Wake-Sender so the edge can prove the
+    # sender; empty keeps today's unverified label.
+    "WAKE_SENDER_TOKEN": "",
+    "WAKE_SENDER_BOT_ID": "",  # which bot this run is, exported by the platform per command
     "WAKE_STATE_DIR": "/var/lib/wake",  # shared threads/ and inbox/ live here (on the host)
     "WAKE_HOSTOPS": "",  # executable: runs its one argument as a shell command on the host, stdin passed through
     "WAKE_KEY_HELPER": "wake-webhook-key",  # creates/rotates webhook keys: has-key ID | ID [--rotate] | enable-bot ID

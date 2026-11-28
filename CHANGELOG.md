@@ -7,6 +7,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **A wake can carry proof of which bot sent it (#456).** The webhook key a wake travels with is the
+  recipient's, so it proves permission to ring that bot and nothing about the sender; every run in a
+  shared home holds every key, and one shared `self` file named the same bot for all of them. A shell
+  that holds this bot's own sender token now sends `X-Wake-Sender: <botId>:<token>` with each wake.
+  The edge resolves it to that bot's secret, refuses a payload whose `fromBotId` disagrees (400
+  `sender_mismatch`) and tells the receiving run whether the name was proven. Both settings come from
+  the platform, which exports `WAKE_SENDER_BOT_ID` and `WAKE_SENDER_TOKEN` into each of one bot's
+  commands; `WAKE_SENDER_BOT_ID` also beats the shared `self` file when the CLI has to name its own
+  bot. No token means no header, and the wake is delivered exactly as before, unverified. `wake --me`
+  says whether the token is set and never prints it.
+
 - **A rotation is recorded, and a second one inside a cooldown is refused.** `wake --setup --rotate` mints a new secret and writes only the caller's key file, so two rotations close together leave every other machine refused. On 2026-11-28 that happened twice in six minutes, the second mint undid the key files the first had installed, and sends returned 401 until the files were rewritten by hand. Each mint now appends one line to `$WAKE_KEY_DIR/wake-rotations.jsonl` beside the keys -- time, bot, sha256 prefix, sender label, host, uid, never a key. It sits beside the keys rather than in the shared store because a guest's host channel is an allow-list of the wake commands, so a host-store write would be refused in exactly the containers where a key is rotated; the record is per key dir. A rotation a rotation inside `WAKE_ROTATE_COOLDOWN` (default 600 s) stops with the previous record unless `WAKE_ROTATE_AGAIN=1` says the second one is intended. (#267)
 - **The CLI can read a thread the API opened, not only answer it (#102).** `--reply` has
   reached an API thread since #96; the read side could not see one at all, so a bot answered a
