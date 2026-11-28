@@ -6,9 +6,9 @@ the real ~/.config/wake, the real rate log in /tmp, or a real host. Run: python3
 
 import contextlib
 import datetime
+import hashlib
 import io
 import json
-import hashlib
 import os
 import re
 import shutil
