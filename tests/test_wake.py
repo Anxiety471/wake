@@ -471,7 +471,9 @@ class RotationGuardTests(WakeTestCase):
         self.assertEqual(self.wake("--setup", "engineer", env=env).returncode, 0)
         raw = slurp(os.path.join(self.state, "wake-rotations.jsonl"))
         self.assertNotIn("secret-value", raw)
-        self.assertEqual(self.rotations()[0]["sha256_12"], hashlib.sha256(b"secret-value-bot-engineer-0002").hexdigest()[:12])
+        self.assertEqual(
+            self.rotations()[0]["sha256_12"], hashlib.sha256(b"secret-value-bot-engineer-0002").hexdigest()[:12]
+        )
 
     def test_a_store_that_cannot_be_written_does_not_fail_the_rotation(self):
         env, _log = self.helper()
