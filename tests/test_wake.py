@@ -1592,6 +1592,23 @@ class HelperTests(WakeTestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(slurp(os.path.join(self.state, "inbox", "active", "abc123.json"))), {"pid": 2})
 
+    @unittest.skipIf(os.geteuid() == 0, "root reads a 000 file, so the failure cannot be planted")
+    def test_an_inbox_that_cannot_be_read_is_not_an_empty_one(self):
+        """cat's stderr is discarded, so an inbox this account may not open used to exit 1 with
+        nothing said and read as an empty queue: the #101 failure one layer down (#262 review).
+        An inbox that is simply not there is still an empty queue."""
+        r = self.run_bin("wake-inbox-io", "register", "abc123", json.dumps({"pid": 1}))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        box = r.stdout.strip()
+        os.chmod(box, 0o000)
+        r = self.run_bin("wake-inbox-io", "read", box)
+        self.assertEqual(r.returncode, 1, (r.stdout, r.stderr))
+        self.assertIn("permission denied", r.stderr)
+        self.assertEqual(r.stdout, "")
+        gone = self.run_bin("wake-inbox-io", "read", os.path.join(self.state, "inbox", "def456.jsonl"))
+        self.assertEqual(gone.returncode, 0, gone.stderr)
+        self.assertEqual(gone.stdout, "")
+
 
 class InboxIoHostileInputTests(WakeTestCase):
     """wake-inbox-io builds shell commands that may run on the host; hostile arguments must be refused."""
@@ -2584,6 +2601,51 @@ class SilenceTests(WakeTestCase):
         [req] = self.hook.requests
         self.assertEqual(req["json"]["source"], "human:tester")
         self.assertIs(req["json"]["silent"], False)
+
+    def test_an_operator_fan_out_is_quiet_for_a_person(self):
+        """--update --ping and --all fan out to every bot. They are operator actions, not answers to
+        a shell, so a person running them gets the quiet send the help and README promise: one
+        chat line per bot is not a health check (#262 review)."""
+        self.put_key("bot-engineer-0002")
+        self.put_key("bot-ops-0004")
+        r = self.wake("--update", "--ping", env={"WAKE_SOURCE": "human:hitori"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        pings = [q for q in self.hook.requests if q["json"]["event"] == "update-ping"]
+        self.assertEqual(len(pings), 2, self.hook.requests)
+        for ping in pings:
+            self.assertIs(ping["json"]["silent"], True, ping["json"])
+            self.assertIn(self.TAIL, ping["json"]["detail"])
+        for bid in (
+            "bot-coordinator-0001",
+            "bot-engineer-0002",
+            "bot-reviewer-0003",
+            "bot-ops-0004",
+            "bot-docs-0005",
+            "bot-research-0006",
+            "bot-notes-0007",
+        ):
+            self.put_key(bid)
+        self.hook.requests.clear()
+        r = self.wake("--all", "read-only window until 18:00", env={"WAKE_SOURCE": "human:hitori"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.hook.requests)
+        for req in self.hook.requests:
+            self.assertIs(req["json"]["silent"], True, req["json"])
+            self.assertIn(self.TAIL, req["json"]["detail"])
+
+    def test_chatty_still_wins_on_an_operator_fan_out(self):
+        """Quiet is the default for a fan-out, not a gag: a caller that asks for chat output, or a
+        machine pinned to WAKE_SILENT=0, still gets it."""
+        self.put_key("bot-engineer-0002")
+        r = self.wake("--update", "--ping", "--chatty", env={"WAKE_SOURCE": "human:hitori"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [ping] = [q for q in self.hook.requests if q["json"]["event"] == "update-ping"]
+        self.assertIs(ping["json"]["silent"], False)
+        self.hook.requests.clear()
+        r = self.wake("--update", "--ping", env={"WAKE_SOURCE": "human:hitori", "WAKE_SILENT": "0"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [ping] = [q for q in self.hook.requests if q["json"]["event"] == "update-ping"]
+        self.assertIs(ping["json"]["silent"], False)
 
     def test_an_agent_session_keeps_the_bot_tone(self):
         """A skill: or harness: session answers someone else, so it is silent even though a person

@@ -57,6 +57,17 @@ def tone_for(source):
     return SILENT if SILENT is not None else default_silent(source)
 
 
+def operator_tone():
+    """The tone of a command that fans out to every bot: quiet unless the machine forces one.
+
+    --update --ping and --all are operator actions, not answers to a shell, so a person who
+    runs them still gets the quiet send they got before the tone followed the sender. The docs call
+    the ping quiet, and a broadcast that starts a run on every bot posts one chat line per bot.
+    WAKE_SILENT=1/0 and --chatty still win: that caller said which tone it wanted.
+    """
+    return True if SILENT is None else SILENT
+
+
 AGENT_NAMES = {"omp": "Oh My Pi"}  # display names for agent harnesses; others show their label as is
 # The API accepts a 64 KiB body (413 above it). `message` repeats most of `detail`, so a long wake
 # would double past that and be lost; drop the duplicate once the encoded payload passes this.
@@ -192,7 +203,17 @@ def update_all(bots, source, ping, force):
         pg = "-"
         if ping and ks == "ok" and b["kind"] == "open" and not (me and me["id"] == b["id"]):
             try:
-                body = send(b, source, "update-ping", "ok", "wake update ping, no reply needed", "", force, quiet=True)
+                body = send(
+                    b,
+                    source,
+                    "update-ping",
+                    "ok",
+                    "wake update ping, no reply needed",
+                    "",
+                    force,
+                    quiet=True,
+                    silent=operator_tone(),
+                )
                 pg = "ignored" if "ignored" in (body or "") else "sent"
             except SystemExit as e:
                 pg = str(e)[:40]
@@ -207,7 +228,7 @@ def message_all(bots, text, source, event, level, ref, force):
         if b["kind"] != "open" or source == "bot:" + b["alias"]:
             continue
         try:
-            send(b, source, event, level, text, ref, force, quiet=True)
+            send(b, source, event, level, text, ref, force, quiet=True, silent=operator_tone())
         except SystemExit as e:
             failed += 1
             print(f"failed {b['alias']}: {str(e)[:120]}")

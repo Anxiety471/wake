@@ -24,12 +24,14 @@ User-Agent: wake-cli/2.1
 }
 ```
 
-`silent` is the rule as data, so a receiver does not have to infer it from prose: a wake is a message
-between bots and the human should see that one arrived, not the answer to it. The CLI also appends the
+`silent` is the rule as data, so a receiver does not have to infer it from prose: when one bot wakes
+another, the human should see that a message arrived, not the answer to it. The CLI also appends the
 same rule as one bracketed sentence at the end of `detail`, because a receiver that renders `detail`
 still needs to be told. The default follows the sender: a `human:` source sends `false` and appends
-nothing, a bot or skill session sends `true`; `--chatty` forces `false` for one send, and `WAKE_SILENT=1`
-or `0` pins one tone for every send. A thread opened
+nothing, a bot or skill session sends `true`. The default source is `human:<user>` on a host and
+`bot:container` inside a bot computer, so a person typing there is read as a bot and uses `--chatty` to
+get chat output. `--chatty` forces `false` for one send and wins over a pinned tone; `WAKE_SILENT=1`
+or `0` pins one tone for every send, and an empty value or `auto` follows the sender. A thread opened
 silent keeps it in its first record as `silent_payload`, and every answer inherits it, so the notice that
 wakes the asker carries it too. A record carrying `silent: true` instead was written by `--silent`: no run
 was started for it, so the field is a statement of fact rather than an instruction to a receiver.
