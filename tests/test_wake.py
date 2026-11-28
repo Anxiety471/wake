@@ -550,6 +550,57 @@ class RotationGuardTests(WakeTestCase):
             self.rotations()[0]["sha256_12"], hashlib.sha256(b"secret-value-bot-engineer-0002").hexdigest()[:12]
         )
 
+    def test_the_record_names_the_bot_holding_the_sender_token(self):
+        """A rotation changes a doorbell key, and the label cannot say who made it: one shared
+        home reads one self file for every run there (#455). This bot's sender token reaches
+        only this bot's runs, so the record can carry a name instead of only a claim.
+        """
+        env, _log = self.helper()
+        env["WAKE_SENDER_BOT_ID"] = "bot-engineer-0002"
+        env["WAKE_SENDER_TOKEN"] = "sender-token-abc"
+        r = self.wake("--setup", "engineer", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rec = self.rotations()[0]
+        self.assertEqual(rec["sender"], "bot-engineer-0002")
+        self.assertEqual(rec["sender_proof"], "token")
+        raw = slurp(os.path.join(self.keys, "wake-rotations.jsonl"))
+        self.assertNotIn("sender-token-abc", raw)
+
+    def test_a_run_without_a_token_records_the_id_the_platform_exported(self):
+        env, _log = self.helper()
+        env["WAKE_SENDER_BOT_ID"] = "bot-engineer-0002"
+        r = self.wake("--setup", "engineer", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rec = self.rotations()[0]
+        self.assertEqual(rec["sender"], "bot-engineer-0002")
+        self.assertEqual(rec["sender_proof"], "run")
+
+    def test_a_shared_self_file_is_recorded_as_a_label_only(self):
+        env, _log = self.helper()
+        with open(os.path.join(self.cfg, "self"), "w") as f:
+            f.write("ops\n")
+        r = self.wake("--setup", "engineer", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rec = self.rotations()[0]
+        self.assertIsNone(rec["sender"])
+        self.assertEqual(rec["sender_proof"], "label")
+        self.assertEqual(rec["source"], "bot:ops")
+
+    def test_a_token_without_the_exported_id_names_nobody(self):
+        """The token says which bot minted it, not which run holds it; a config file in a shared
+        home can carry one bot's token into every run there. Without the id the platform exports,
+        this shell cannot tell whose run it is, so it records a label and no name.
+        """
+        env, _log = self.helper()
+        env["WAKE_SENDER_TOKEN"] = "sender-token-abc"
+        with open(os.path.join(self.cfg, "self"), "w") as f:
+            f.write("ops\n")
+        r = self.wake("--setup", "engineer", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rec = self.rotations()[0]
+        self.assertIsNone(rec["sender"])
+        self.assertEqual(rec["sender_proof"], "label")
+
     def test_a_key_from_before_the_log_still_rotates(self):
         """Every install that predates this change has a key and no log; the guard must not
         read that silence as "rotated just now" and refuse the first real rotation.
