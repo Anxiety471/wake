@@ -33,6 +33,7 @@ DEFAULTS = {
     # auto (the default) follows the sender: silent from a bot or agent session, which answers
     # someone else and ends its turn, and chatty from human:, which reads the answer in that chat.
     # 1 forces silent for every sender, 0 forces chatty; --chatty overrides either for one send.
+    # An empty value reads as auto, which is the default: the sender decides.
     # --silent is a different flag: it starts no run at all, so this one never applies.
     "WAKE_SILENT": "auto",
 }

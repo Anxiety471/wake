@@ -282,6 +282,18 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **A fan-out command is quiet again.** The tone follows the sender, so `--update --ping` and `--all`
+  run by a person carried `silent: false`: a ping started a run and posted a chat line on every bot,
+  and a broadcast did the same, while the help and the README call the ping quiet. Both call sites now
+  send `silent: true` unless the machine pins a tone (`WAKE_SILENT=1`/`0`) or the caller passes
+  `--chatty`.
+
+- **An inbox that exists and cannot be read is a failure, not an empty queue.** Returning the command's
+  status fixed a refused host route, but `cat` discards its stderr, so a file this account may not open
+  still exited 1 with nothing said and was read as an empty queue: the same silent failure one layer
+  down. The local read route now names it - the inbox exists and is unreadable, so the bridge exits 1
+  with `permission denied`. A missing inbox is still an empty one, and the host route is unchanged.
+
 - **A refused inbox read is a failure, not an empty queue** ([#101](https://github.com/Anxiety471/wake/issues/101)).
   `wake-inbox-io read` discarded the status of the command it ran, so when the host gate refused the read
   the bridge exited 0 and printed nothing: a session whose reads had stopped working polled an inbox that

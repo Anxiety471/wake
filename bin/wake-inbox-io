@@ -292,6 +292,11 @@ def main():
         # A cat on a file that is not there is still an empty inbox; anything else is a failure
         # and says so, which is the one case a poll cannot tell from silence.
         if r.returncode == 0 or (r.returncode == 1 and not (r.stderr or "").strip()):
+            # cat's stderr is discarded above, so a file that is not there and a file this account
+            # may not open both exit 1 with nothing said. Only the first is an empty inbox: an
+            # inbox that exists and cannot be read is the same silent failure #101 was about.
+            if r.returncode == 1 and os.path.exists(key) and not os.access(key, os.R_OK):
+                sys.exit(f"cannot read inbox {key}: permission denied")
             sys.stdout.write(r.stdout)
             return
         checked(r)
