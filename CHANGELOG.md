@@ -7,6 +7,13 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Added
 
+- **A rotation record names the bot that ran it, and says how far that name is proven (#455).**
+  Every line's `source` is the same label for every run in a shared home, so two rotations six
+  minutes apart could not be told apart. Each line now also carries `sender`, the bot id the
+  platform exported into that run, and `sender_proof`: `token` when the run held that bot's
+  sender secret, `run` when it held only the exported id, and `label` when all it had was the
+  shared self file. The token itself is never written.
+
 - **A wake can carry proof of which bot sent it (#456).** The webhook key a wake travels with is the
   recipient's, so it proves permission to ring that bot and nothing about the sender; every run in a
   shared home holds every key, and one shared `self` file named the same bot for all of them. A shell
