@@ -435,7 +435,7 @@ class RotationGuardTests(WakeTestCase):
         return {"WAKE_KEY_HELPER": "fake-key-helper"}, log
 
     def rotations(self):
-        path = os.path.join(self.state, "wake-rotations.jsonl")
+        path = os.path.join(self.keys, "wake-rotations.jsonl")
         with open(path) as f:
             return [json.loads(line) for line in f]
 
@@ -469,18 +469,30 @@ class RotationGuardTests(WakeTestCase):
     def test_the_record_holds_a_prefix_and_never_the_key(self):
         env, _log = self.helper(minted="secret-value")
         self.assertEqual(self.wake("--setup", "engineer", env=env).returncode, 0)
-        raw = slurp(os.path.join(self.state, "wake-rotations.jsonl"))
+        raw = slurp(os.path.join(self.keys, "wake-rotations.jsonl"))
         self.assertNotIn("secret-value", raw)
         self.assertEqual(
             self.rotations()[0]["sha256_12"], hashlib.sha256(b"secret-value-bot-engineer-0002").hexdigest()[:12]
         )
 
-    def test_a_store_that_cannot_be_written_does_not_fail_the_rotation(self):
+    def test_a_key_from_before_the_log_still_rotates(self):
+        """Every install that predates this change has a key and no log; the guard must not
+        read that silence as "rotated just now" and refuse the first real rotation.
+        """
         env, _log = self.helper()
-        env["WAKE_STATE_DIR"] = os.path.join(self.tmp, "no-such-store", "deeper")
-        r = self.wake("--setup", "engineer", env=env)
+        self.put_key("bot-engineer-0002", key="from-before-the-log")
+        r = self.wake("--setup", "engineer", "--rotate", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue(os.path.exists(os.path.join(self.keys, "bot-engineer-0002.key")))
+        self.assertEqual(slurp(os.path.join(self.keys, "bot-engineer-0002.key")), "minted-bot-engineer-0002\n")
+
+    def test_a_damaged_log_line_does_not_hide_the_rotation_before_it(self):
+        env, _log = self.helper()
+        self.assertEqual(self.wake("--setup", "engineer", env=env).returncode, 0)
+        with open(os.path.join(self.keys, "wake-rotations.jsonl"), "a") as f:
+            f.write("not json at all\n")
+        r = self.wake("--setup", "engineer", "--rotate", env=env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("rotated", r.stderr)
 
 
 class LoopGuardTests(WakeTestCase):

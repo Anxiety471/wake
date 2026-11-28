@@ -584,31 +584,35 @@ ROTATE_COOLDOWN_S = float(os.environ.get("WAKE_ROTATE_COOLDOWN", "600"))
 
 
 def rotation_log():
-    return os.path.join(STATE, "wake-rotations.jsonl")
+    """Beside the keys, not in the host store: a guest reaches the host through an allow-list
+    gate that admits the exact thread/inbox commands wake sends and nothing else, so a note
+    written there would be refused exactly where a bot rotates a key. The cost is that the
+    record is per key dir; a rotation run from the host and one run in a container keep
+    separate logs, and the runbook's claim-the-ticket rule stays the cross-machine guard.
+    """
+    return os.path.join(KEYS, "wake-rotations.jsonl")
 
 
 def last_rotation(bot_id):
-    """The newest record for this bot, kept on the host so every machine reads the same one.
+    """The newest record for this bot in this key dir, or None.
 
     A rotation is invisible after the fact: the key file carries no history and the mint helper
     leaves no trace. On 2026-11-28 two runs rotated the same twelve keys six minutes apart, the
     second undid the key files the first had installed, and every send was refused until the
     files were rewritten by hand. This log is what lets the next rotation see the last one.
     """
-    try:
-        rc, out, _err = host(f"tail -n 200 {q(rotation_log())} 2>/dev/null")
-    except (subprocess.CalledProcessError, OSError):
-        return None
-    if rc != 0:
-        return None
     rec = None
-    for line in out.splitlines():  # append-only, so the last match is the newest
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if row.get("bot") == bot_id and row.get("ts"):
-            rec = row
+    try:
+        with open(rotation_log()) as f:
+            for line in f:  # append-only, so the last match is the newest
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if row.get("bot") == bot_id and row.get("ts"):
+                    rec = row
+    except OSError:
+        return None  # no log yet: a key from before this change must still rotate
     return rec
 
 
@@ -636,9 +640,11 @@ def record_rotation(bot_id, key, action):
         "host": os.uname().nodename,
     }
     try:
-        _host_run(f"mkdir -p {q(STATE)} 2>/dev/null; cat >> {q(rotation_log())}", json.dumps(rec) + "\n")
-    except (subprocess.CalledProcessError, OSError):
-        pass
+        fd = os.open(rotation_log(), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except OSError:
+        pass  # a note that cannot be saved must not fail a rotation that worked
 
 
 def ensure_key(b, rotate=False):
