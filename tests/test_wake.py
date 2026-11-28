@@ -6,6 +6,7 @@ the real ~/.config/wake, the real rate log in /tmp, or a real host. Run: python3
 
 import contextlib
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -407,6 +408,91 @@ class KeyTests(WakeTestCase):
         r = self.wake("--setup", "engineer", env={"WAKE_KEY_HELPER": "fake-key-helper"})
         self.assertEqual(r.returncode, 1)
         self.assertIn("--rotate", r.stderr)
+
+
+class RotationGuardTests(WakeTestCase):
+    """A rotation is invisible after the fact unless the CLI writes it down (#267).
+
+    On 2026-11-28 two runs rotated the same twelve doorbell keys six minutes apart. The second
+    mint invalidated the key files the first had just installed, every send was refused with 401
+    until they were rewritten by hand, and nothing recorded that either rotation had happened.
+    """
+
+    def helper(self, minted="minted"):
+        log = os.path.join(self.tmp, "helper.log")
+        write_exe(
+            os.path.join(self.fakebin, "fake-key-helper"),
+            f"""
+            #!/bin/sh
+            echo "$*" >> {log}
+            case "$1" in
+              has-key) echo no ;;
+              enable-bot) echo "1 routine" ;;
+              *) echo "{minted}-$1" ;;
+            esac
+        """,
+        )
+        return {"WAKE_KEY_HELPER": "fake-key-helper"}, log
+
+    def rotations(self):
+        path = os.path.join(self.keys, "wake-rotations.jsonl")
+        with open(path) as f:
+            return [json.loads(line) for line in f]
+
+    def test_a_second_rotation_inside_the_cooldown_is_refused(self):
+        env, _log = self.helper()
+        r = self.wake("--setup", "engineer", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        path = os.path.join(self.keys, "bot-engineer-0002.key")
+        first = slurp(path)
+
+        r = self.wake("--setup", "engineer", "--rotate", env=env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("rotated", r.stderr)
+        self.assertIn("WAKE_ROTATE_AGAIN=1", r.stderr)
+        self.assertEqual(slurp(path), first, "a refused rotation must leave the key file alone")
+        self.assertEqual(len(self.rotations()), 1)
+
+    def test_the_override_rotates_and_records_who_did_it(self):
+        env, _log = self.helper()
+        self.assertEqual(self.wake("--setup", "engineer", env=env).returncode, 0)
+        env["WAKE_ROTATE_AGAIN"] = "1"
+        r = self.wake("--setup", "engineer", "--rotate", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        first, second = self.rotations()
+        self.assertEqual(first["action"], "create")
+        self.assertEqual(second["action"], "rotate")
+        self.assertEqual(second["bot"], "bot-engineer-0002")
+        self.assertTrue(second["source"].startswith(("bot:", "human:")))
+        self.assertRegex(second["ts"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4}$")
+
+    def test_the_record_holds_a_prefix_and_never_the_key(self):
+        env, _log = self.helper(minted="secret-value")
+        self.assertEqual(self.wake("--setup", "engineer", env=env).returncode, 0)
+        raw = slurp(os.path.join(self.keys, "wake-rotations.jsonl"))
+        self.assertNotIn("secret-value", raw)
+        self.assertEqual(
+            self.rotations()[0]["sha256_12"], hashlib.sha256(b"secret-value-bot-engineer-0002").hexdigest()[:12]
+        )
+
+    def test_a_key_from_before_the_log_still_rotates(self):
+        """Every install that predates this change has a key and no log; the guard must not
+        read that silence as "rotated just now" and refuse the first real rotation.
+        """
+        env, _log = self.helper()
+        self.put_key("bot-engineer-0002", key="from-before-the-log")
+        r = self.wake("--setup", "engineer", "--rotate", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(slurp(os.path.join(self.keys, "bot-engineer-0002.key")), "minted-bot-engineer-0002\n")
+
+    def test_a_damaged_log_line_does_not_hide_the_rotation_before_it(self):
+        env, _log = self.helper()
+        self.assertEqual(self.wake("--setup", "engineer", env=env).returncode, 0)
+        with open(os.path.join(self.keys, "wake-rotations.jsonl"), "a") as f:
+            f.write("not json at all\n")
+        r = self.wake("--setup", "engineer", "--rotate", env=env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("rotated", r.stderr)
 
 
 class LoopGuardTests(WakeTestCase):

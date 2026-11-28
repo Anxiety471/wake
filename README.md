@@ -159,6 +159,8 @@ Every setting is an environment variable; the same names can be set in `~/.confi
 | `WAKE_INBOX` | *(none)* | this session's inbox file; set by a session extension |
 | `WAKE_DEPTH` | `0` | wake nesting depth; raised by `wake-run` for child commands |
 | `WAKE_TTL_HOURS` | `24` | a thread older than this refuses answers (`0` = never expire) |
+| `WAKE_ROTATE_COOLDOWN` | `600` | seconds a bot's next `--setup --rotate` is refused after a rotation recorded in this key dir |
+| `WAKE_ROTATE_AGAIN` | *(unset)* | `1` lets that second rotation through on purpose |
 | `WAKE_HOOK` | *(off)* | `errors` or `all` turns `wake-hook` on |
 
 ## Usage
