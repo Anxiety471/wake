@@ -580,6 +580,67 @@ def key_helper_available():
     return shutil.which(exe) is not None
 
 
+ROTATE_COOLDOWN_S = float(os.environ.get("WAKE_ROTATE_COOLDOWN", "600"))
+
+
+def rotation_log():
+    return os.path.join(STATE, "wake-rotations.jsonl")
+
+
+def last_rotation(bot_id):
+    """The newest record for this bot, kept on the host so every machine reads the same one.
+
+    A rotation is invisible after the fact: the key file carries no history and the mint helper
+    leaves no trace. On 2026-11-28 two runs rotated the same twelve keys six minutes apart, the
+    second undid the key files the first had installed, and every send was refused until the
+    files were rewritten by hand. This log is what lets the next rotation see the last one.
+    """
+    try:
+        rc, out, _err = host(f"tail -n 200 {q(rotation_log())} 2>/dev/null")
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    if rc != 0:
+        return None
+    rec = None
+    for line in out.splitlines():  # append-only, so the last match is the newest
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("bot") == bot_id and row.get("ts"):
+            rec = row
+    return rec
+
+
+def rotation_age_hours(rec):
+    try:
+        return (time.time() - datetime.datetime.strptime(rec["ts"], "%Y-%m-%dT%H:%M:%S%z").timestamp()) / 3600
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def record_rotation(bot_id, key, action):
+    """One line per mint: when, which bot, a sha256 prefix of the key, and the label that did it.
+
+    Never the key. The host may refuse the write (a guest with no host access); a rotation that
+    worked must not fail because its note could not be saved, so a failed write stays silent.
+    """
+    rec = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "bot": bot_id,
+        "action": action,
+        "sha256_12": hashlib.sha256(key.strip().encode()).hexdigest()[:12],
+        "source": default_source(),
+        "user": os.environ.get("USER", "?"),
+        "uid": os.getuid(),
+        "host": os.uname().nodename,
+    }
+    try:
+        _host_run(f"mkdir -p {q(STATE)} 2>/dev/null; cat >> {q(rotation_log())}", json.dumps(rec) + "\n")
+    except (subprocess.CalledProcessError, OSError):
+        pass
+
+
 def ensure_key(b, rotate=False):
     path = f"{KEYS}/{b['id']}.key"
     if os.path.exists(path) and not rotate:
@@ -590,6 +651,17 @@ def ensure_key(b, rotate=False):
     )
     if not key_helper_available():
         sys.exit(no_key)
+    if rotate:
+        prev = last_rotation(b["id"])
+        age = rotation_age_hours(prev) if prev else None
+        again = os.environ.get("WAKE_ROTATE_AGAIN", "").strip() == "1"
+        if age is not None and age * 3600 < ROTATE_COOLDOWN_S and not again:
+            sys.exit(
+                f"{b['name']}'s key was rotated {max(1, int(age * 60))} min ago by {prev.get('source', '?')} "
+                f"on {prev.get('host', '?')} ({prev.get('sha256_12', '?')}); every machine still holding "
+                f"the old key is refused until its key dir is refreshed (wake-keys). Not rotating again. "
+                f"Set WAKE_ROTATE_AGAIN=1 if a second rotation really is intended."
+            )
     try:
         rc, out, err = host(f"{KEY_HELPER} has-key {q(b['id'])}")
     except (subprocess.CalledProcessError, OSError):
@@ -607,6 +679,7 @@ def ensure_key(b, rotate=False):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(out + "\n")
+    record_rotation(b["id"], out, "rotate" if rotate else "create")
     rc, out, err = host(f"{KEY_HELPER} enable-bot {q(b['id'])}")
     print(f"created key for {b['name']}; routines enabled: {out}")
     return path
