@@ -273,6 +273,14 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Fixed
 
+- **The eslint config control runs in the job that has eslint, and skipping it there is a failure.** The
+  live check that `eslint.config.js` still reports an unused parameter skipped in every CI job: the `test`
+  jobs have no `node_modules`, and the `api (bun)` job, the one with it, did not run that module. The
+  `api (bun)` job now runs `tests/test_linter_configs.py` through `tests/run_module_strict.py` with
+  `WAKE_REQUIRE_LINTERS=1`, so a missing `node` or `node_modules/eslint` fails the step and names what is
+  missing. A developer checkout without `node_modules` still skips. `tests/test_ops_scripts.py` pins the
+  new step by position, name, env and run string ([#260](https://github.com/Anxiety471/wake/issues/260)).
+
 - **A co-author trailer no longer reds the default branch with the machine's own user.** The squash
   merge of #256 copied the branch commit's author identity, which a commit made on a fleet machine
   writes as its own user at the host, into a Co-authored-by trailer, and the scan failed the default

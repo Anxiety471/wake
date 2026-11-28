@@ -728,6 +728,65 @@ class OpsFilesTestCase(unittest.TestCase):
             "version that is not the one the suite was proved on",
         )
 
+    def test_ci_api_job_runs_the_linter_config_control_right_after_the_inline_pin(self):
+        """#260: `test_the_shipped_config_still_reports_an_unused_parameter` skips in every job but
+        `api (bun)`, which is the one job with node_modules. The step that runs its module is
+        pinned by value here, the way the inline pin step is: its position right after
+        "Inline suppressions bite", its name, its env and its run string. Each assertion names the
+        value that moved, so a deleted, renamed, moved or unarmed step fails with that name.
+        """
+        lines = text(os.path.join(ROOT, ".github/workflows/ci.yml")).splitlines()
+        self.assertIn("  api:", lines, "the api (bun) job is gone")
+        start = lines.index("  api:")
+        block = []
+        for line in lines[start + 1 :]:
+            if line.startswith("  ") and not line.startswith("   ") and line.strip():
+                break
+            block.append(line)
+        steps = ci_steps(block)
+        named = [step["values"].get("name") or step["values"].get("uses") for step in steps]
+        self.assertIn(
+            "Linter configs bite",
+            named,
+            f"the api steps are {named}: no step named 'Linter configs bite' is in the api job, so "
+            "test_linter_configs' control skips in every job (#260)",
+        )
+        self.assertIn(
+            "Inline suppressions bite",
+            named,
+            f"the api steps are {named}: the step 'Inline suppressions bite' is gone, so the new "
+            "linter-config step has no position to be pinned against (#260)",
+        )
+        position = named.index("Inline suppressions bite") + 1
+        self.assertEqual(
+            named.index("Linter configs bite"),
+            position,
+            f"the api steps are {named}: 'Linter configs bite' is at index "
+            f"{named.index('Linter configs bite')}, pinned to {position}, immediately after "
+            "'Inline suppressions bite' (#260)",
+        )
+        step = steps[position]
+        self.assertEqual(
+            step["keys"],
+            ["name", "env", "run"],
+            f"'Linter configs bite' carries {step['keys']}: pinned to name, env and run, and shell or "
+            "if or continue-on-error would let the control skip or report neutral (#260)",
+        )
+        self.assertEqual(
+            step["sections"].get("env"),
+            ['WAKE_REQUIRE_LINTERS: "1"'],
+            f"'Linter configs bite' env is {step['sections'].get('env')}, pinned to "
+            "['WAKE_REQUIRE_LINTERS: \"1\"']: without it a missing eslint skips the control and the step "
+            "stays green (#260)",
+        )
+        self.assertEqual(
+            step["values"].get("run"),
+            "python3 tests/run_module_strict.py test_linter_configs",
+            f"'Linter configs bite' runs {step['values'].get('run')!r}, pinned to "
+            "'python3 tests/run_module_strict.py test_linter_configs': the module through the strict "
+            "runner, so a skip fails the step (#260)",
+        )
+
     def test_ci_api_job_runs_the_inline_pin_where_eslint_is_installed(self):
         """#216: the inline pin's control never ran in CI. `LinterBitesTest` proves that one
         `eslint-disable` line takes `eslint apps` from rc 1 to rc 0, and a `prettier-ignore` the
@@ -853,6 +912,7 @@ class OpsFilesTestCase(unittest.TestCase):
             "Install": ["name", "run"],
             "actions/setup-python@v6": ["uses", "with"],
             "Inline suppressions bite": ["name", "env", "run"],
+            "Linter configs bite": ["name", "env", "run"],
             "Typecheck": ["name", "run"],
             "Lint": ["name", "run"],
             "Test": ["name", "run"],
@@ -911,6 +971,7 @@ class OpsFilesTestCase(unittest.TestCase):
             [
                 "bun install --frozen-lockfile",
                 "python3 tests/run_module_strict.py test_inline_suppressions",
+                "python3 tests/run_module_strict.py test_linter_configs",
                 "bun run typecheck",
                 "bun run lint",
                 "bun run test",

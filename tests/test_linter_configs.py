@@ -817,15 +817,26 @@ class EslintConfigTestCase(unittest.TestCase):
     def test_the_shipped_config_still_reports_an_unused_parameter(self):
         """The pin says the presets are intact; this proves it where eslint is installed.
 
-        The `test` job has neither node_modules nor eslint, so it skips there. The `api` job runs
-        a Python module, but not this one, so it skips in every CI job as well: what CI enforces
-        is the pin above, and this assertion is a backstop a developer's checkout runs (measured
-        with eslint 10.15.0). Wiring it into a job that has both Python and node_modules is
-        tracked as TASK-315, so nothing here claims CI coverage this tree does not have.
+        The `test` job has no node_modules, so this skips there. The `api (bun)` job has the
+        lockfile installed and runs this module through tests/run_module_strict.py with
+        WAKE_REQUIRE_LINTERS=1, where a skip is a failure. A developer checkout without
+        node_modules still skips.
         """
         eslint = os.path.join(ROOT, "node_modules", "eslint", "bin", "eslint.js")
         node = shutil.which("node")
-        if not node or not os.path.exists(eslint):
+        missing = []
+        if not node:
+            missing.append("node")
+        if not os.path.exists(eslint):
+            missing.append("node_modules/eslint")
+        if missing:
+            # Mirrors `linter_control_disposition` in test_inline_suppressions.py: only `1` arms it.
+            if os.environ.get("WAKE_REQUIRE_LINTERS") == "1":
+                self.fail(
+                    f"WAKE_REQUIRE_LINTERS=1 and missing: {', '.join(missing)}: the api job installs "
+                    "the lockfile with `bun install --frozen-lockfile`, so a skip here would hide that "
+                    "job without its linters (#260)"
+                )
             self.skipTest("eslint is not installed here (run `bun install --frozen-lockfile`)")
         root = tempfile.mkdtemp(prefix="eslint-probe-")
         try:
