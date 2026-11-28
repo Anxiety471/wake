@@ -156,6 +156,30 @@ WAKE_DOORBELL_MAX_PER_HOUR=30
   `rate_limited` with `attempts: 0`, and the outcome is still recorded. The
   window is in-process: it resets on restart and is per instance.
 
+### Rotating a doorbell secret
+
+One secret is held in three places, and a rotation has to change all three.
+Missing one breaks sends rather than the rotation:
+
+1. the Rakazo bot webhook secret, in the platform's secret store:
+   `bot-webhook-key <botId> --rotate` on the host, or the admin console;
+2. the target's `secret` in this API's `WAKE_DOORBELL_BOTS`
+   (`/etc/wake/api.env`), which the API presents when it rings the bot; the
+   file is read at boot, so the service needs a restart;
+3. every client key file `~/.config/wake/<botId>.key` in the containers that
+   send to that bot, because `bin/wake` reads the file, not the store.
+
+`bot-webhook-key <botId> --rotate` covers 1 and the caller's own key file. It
+does not cover 2, and it does not cover another container's key file. On
+2026-11-28 a rotation through the store and `api.env` left the key files on
+their old values, and every send to those bots answered `401` until the files
+were rewritten. Write a key file as the secret plus one newline, mode `0600`,
+and never echo the value. A private bot has no target and no key file, so it
+has nothing to rotate: its wakes are stored and never ring.
+
+Prove the rotation with one send per bot: `wake --ask <alias> "rotation check"`
+must report `delivered: true`.
+
 ## What a caller sees
 
 `POST /messages`, `POST /threads` and `POST /threads/:id/reply` answer with

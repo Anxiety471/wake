@@ -1172,6 +1172,17 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
   are refreshed, and the previous one refuses the new tail
   ([#89](https://github.com/Anxiety471/wake/issues/89)).
 
+### Fixed
+
+- **The doorbell doc names every consumer of a secret, not only the one that mints it.**
+  It said where a key is minted and left the rotation to the reader, and the readers were
+  three: the Rakazo secret store, the API's own `WAKE_DOORBELL_BOTS`, and the client key
+  file in each container that sends. On 2026-11-28 a rotation through the first two answered
+  `401` on every send until the key files were rewritten by hand. `docs/doorbell.md` now has
+  a "Rotating a doorbell secret" section that lists the three copies, the restart the second
+  one needs, and the one-send-per-bot check that proves them equal, and
+  `deploy/README.md` section 2 points at it.
+
 ## [0.2.0] - 2026-11-15
 
 ### Changed

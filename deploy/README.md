@@ -124,6 +124,12 @@ Two features, two switches: `WAKE_DOORBELL_BOTS` empty means no send rings a bot
 does not exist at all. Add `DASHBOARD_SECRET` (32+ chars) only when the dashboard is
 wanted.
 
+Rotating one of those secrets later touches more than this file: the platform's
+secret store, the `WAKE_DOORBELL_BOTS` entry here, and every client key file
+`~/.config/wake/<botId>.key` in the containers that send to the bot.
+`docs/doorbell.md`, "Rotating a doorbell secret", lists all three; miss one and
+sends answer `401`.
+
 `<generated>` and `<generated, 32+ chars>` are placeholders. Replace every one of
 them: the strings as written are credentials, not comments. `openssl rand -hex 32`
 writes 64 characters and clears the floor on both secrets. The app enforces a
