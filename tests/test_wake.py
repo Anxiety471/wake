@@ -300,7 +300,6 @@ class SendTests(WakeTestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(len(self.hook.requests), 1)
 
-
     def test_no_key_and_no_helper_is_a_clear_error(self):
         r = self.wake("engineer", "hello")
         self.assertEqual(r.returncode, 1)
@@ -614,7 +613,9 @@ class ThreadTests(WakeTestCase):
         self.put_key("bot-engineer-0002")
         inbox = os.path.join(self.state, "inbox", "s2.jsonl")
         tid = self.ask("human:tester", env={"WAKE_INBOX": inbox})
-        r = self.wake("--reply", tid, "same session", "--no-ring", env={"WAKE_SOURCE": "skill:agent", "WAKE_INBOX": inbox})
+        r = self.wake(
+            "--reply", tid, "same session", "--no-ring", env={"WAKE_SOURCE": "skill:agent", "WAKE_INBOX": inbox}
+        )
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.thread(tid)[1]["from"], "skill:agent")
 
