@@ -287,6 +287,20 @@ class SendTests(WakeTestCase):
         )
         self.assertTrue(body["detail"].startswith("PR #42 is ready | host="), body["detail"])
 
+    def test_a_wake_to_the_senders_own_alias_is_refused(self):
+        """A bot waking itself starts the run that is already sending, and in a shared home the
+        `self` file can name a bot this shell is not: this shape is an accident far more often
+        than a request (#455)."""
+        self.put_key("bot-engineer-0002")
+        r = self.wake("engineer", "note to self", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.hook.requests, [])
+        self.assertIn("so it would wake itself", r.stderr)
+        r = self.wake("engineer", "note to self", "--force", env={"WAKE_SOURCE": "bot:engineer"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.hook.requests), 1)
+
+
     def test_no_key_and_no_helper_is_a_clear_error(self):
         r = self.wake("engineer", "hello")
         self.assertEqual(r.returncode, 1)
@@ -581,6 +595,28 @@ class ThreadTests(WakeTestCase):
         self.assertIn("[bot:engineer] flaky test", r.stdout)
         r = self.wake("--thread", tid)
         self.assertIn("bot:engineer (reply): flaky test", r.stdout)
+
+    def test_a_harness_cannot_answer_a_human_thread_it_did_not_open(self):
+        """--source is free text, so a thread owned by human:tester used to accept any human:* or
+        skill:* answer. The owner's own label and the opening session are the identities this store
+        has, so a different kind of sender needs --force (#455)."""
+        self.put_key("bot-engineer-0002")
+        tid = self.ask("human:tester")
+        r = self.wake("--reply", tid, "hijack", env={"WAKE_SOURCE": "skill:agent"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("is neither", r.stderr)
+        self.assertEqual(len(self.thread(tid)), 1)
+        r = self.wake("--reply", tid, "hijack", "--force", env={"WAKE_SOURCE": "skill:agent"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.thread(tid)[1]["from"], "skill:agent")
+
+    def test_the_session_that_asked_can_still_answer(self):
+        self.put_key("bot-engineer-0002")
+        inbox = os.path.join(self.state, "inbox", "s2.jsonl")
+        tid = self.ask("human:tester", env={"WAKE_INBOX": inbox})
+        r = self.wake("--reply", tid, "same session", "--no-ring", env={"WAKE_SOURCE": "skill:agent", "WAKE_INBOX": inbox})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.thread(tid)[1]["from"], "skill:agent")
 
     def test_stranger_cannot_reply(self):
         self.put_key("bot-engineer-0002")

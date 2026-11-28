@@ -1133,6 +1133,8 @@ The version lives in `bin/wake_config.py` (`VERSION`) and is sent as `User-Agent
 
 ### Security
 
+- **A wake to the sender's own alias is refused, and a label alone no longer answers a human's thread.** In a shared home every run in the container resolved `self` to the same bot, so a wake labelled `bot:potato` reached potato from a shell that was not potato, asking it to rewrite the fleet's key files. `send` now refuses a payload whose label is the recipient's own alias unless `--force`: the run it would start is the run already sending, so this shape is an accident far more often than a request. Separately, `--reply` no longer treats any `human:*` or `skill:*` claim as the owner of a human's thread; the owner's own label and the session that opened the thread are the identities the store has, so a sender of a different kind needs that session or `--force`. Neither closes attribution on its own: the label is still chosen by the client, and only a sender-bound credential can fix that (#455).
+
 - **`wake-pingall` keeps every alias a bot name before it becomes a path or an argument.**
   `wake-pingall "a b"` asked two bots called `a` and `b`, and `--` asked a bot called `--`
   and wrote `--.log`, because `LIST=$*` re-split the names on whitespace; `""` and `"   "`

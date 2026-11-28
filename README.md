@@ -204,7 +204,7 @@ wake --reply 1114-a3f2 "flaky test, fixed in #43"
 wake --reply 1114-a3f2 "noted, no action" --no-ring   # leave it in the store, wake nobody
 ```
 
-Only the thread's target (`reply_to`) or its owner may write to it (`--force` overrides). When the target answers:
+Only the thread's target (`reply_to`) or its owner may write to it (`--force` overrides). A sender of a different kind than the owner, such as a harness or a bot answering a human question, must also be the session that opened the thread: `--source` is free text, so a claimed `human:` label is not proof. When the target answers:
 - owner is a bot → that bot's webhook is woken with event `reply` (always for bot senders, or with `--notify`);
 - owner is a human or session → the reply is appended to the owner's live inbox, if its process is still running.
 
@@ -364,10 +364,11 @@ Report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
 
 ## Loop guard
 
-Bots that wake bots can loop. Two limits apply to every send:
+Bots that wake bots can loop. Three limits apply to every send:
 
 1. **Depth.** `WAKE_DEPTH` is sent as `depth` in every payload, and `wake-run` raises it by one for the command it runs. A wake at depth 2 or more is refused (`refused: wake depth 2 >= 2 (loop guard)`). Receivers should export the incoming `depth` as `WAKE_DEPTH` for the run it starts.
 2. **Rate.** At most 30 wakes per target bot per hour per Unix user, tracked in `$WAKE_RATE_DIR/wake-rate-<uid>.json`.
+3. **Self.** A wake labelled with the recipient's own alias is refused before it is sent (`... is the alias of ..., so it would wake itself`): the run it would start is the one already sending, and in a shared home the `self` file can name a bot the shell is not. Name the bot you meant, or `--force` to send anyway.
 
 Depth alone does not stop an ask/reply ping-pong, because every reply is a fresh wake. Two thread rules close that:
 
