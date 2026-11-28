@@ -773,6 +773,15 @@ def read_key(path):
 def send(b, source, event, level, detail, ref, force=False, quiet=False, silent=None):
     if silent is None:
         silent = tone_for(source)
+    # A wake labelled with the recipient's own alias is a bot waking itself: the run it starts is the
+    # one already sending, and in a shared home the `self` file can name a bot this shell is not, so
+    # the label is as likely to be an accident as a request (#455).
+    if source == "bot:" + b["alias"] and not force:
+        sys.exit(
+            source + " is the alias of " + b["name"] + ", the bot this wake is addressed to, so it"
+            " would wake itself: a run cannot ask the run it is already in, and in a shared home the"
+            " `self` file can name the wrong bot. Name the bot to reach, or --force to send anyway."
+        )
     if not BASE:
         sys.exit("WAKE_API_BASE is not set (env or config.env), e.g. https://bots.example.com/api/v1/bots")
     depth = guard(b, force)
@@ -1203,11 +1212,11 @@ def reply(tid, text, source, notify, force, silent=False, notify_explicit=False,
         silent = True
     mine_inbox = os.environ.get("WAKE_INBOX", "")
     is_target = bool(reply_to) and source == reply_to
-    is_owner = (
-        source == owner
-        or (owner.startswith("human:") and source.split(":", 1)[0] in ("human", "skill"))
-        or (bool(mine_inbox) and mine_inbox == head.get("inbox"))
-    )
+    # A label is not proof: --source is free text, so any bot can claim human:joshua. The owner's own
+    # label and the session that opened the thread are the only two identities this store has, so an
+    # answer of a different kind than the owner (a harness or a bot answering a human) has to come
+    # from that session, and --force is the way past it (#455).
+    is_owner = source == owner or (bool(mine_inbox) and mine_inbox == head.get("inbox"))
     if not (is_target or is_owner) and not force:
         sys.exit(
             f"thread {tid} is owned by {owner} and replies go to {reply_to}; {source} is neither, so it cannot answer. Use --force to override."
